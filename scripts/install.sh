@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=v0.2.0
+version=v0.2.1
 base="${HARWIFF_RELEASE_BASE:-https://github.com/glender222/wifi-diagnostico-harness/releases/download/$version}"
 bin="${HARWIFF_BIN_DIR:-$HOME/.local/bin}"
 datos="${HARWIFF_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/harwiff}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { access, lstat, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson } from "./proyecto.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const clientes = ["demo", "azure-foundry", "chatgpt", "opencode"];
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const python = process.env.WIFI_PYTHON || "python3";
@@ -16,6 +16,7 @@ const fuente = (archivo) => fileURLToPath(new URL(archivo, import.meta.url));
 const seguro = (texto) => String(texto).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const comandos = {
   "/ayuda": "Comandos del entorno",
+  "/proyecto": "Crear o abrir un proyecto",
   "/adaptador": "Ver o elegir adaptador por número",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
   "/auditoria": "Listar ejecuciones o ver una por ID",
@@ -66,80 +67,26 @@ function errorBloqueado(motivo) {
   return Object.assign(new Error(motivo), { decision: "denegado", publico: motivo });
 }
 
-async function configurarInicio(destino, salida, preguntar) {
-  let carpeta = destino;
-  if (!carpeta) carpeta = await existe("harness.json") ? "." :
-    tty ? (await preguntar("Carpeta del proyecto [./proyecto-wifi] > ")).trim() : "";
-  const proyecto = resolve(carpeta || "./proyecto-wifi");
-  const ruta = join(proyecto, "harness.json");
-  if (!await existe(ruta)) {
-    const cliente = tty
-      ? (await preguntar("Agente del proyecto [demo, azure-foundry] (demo) > ")).trim() || "demo" : "demo";
-    if (!clientes.includes(cliente)) throw new Error("Cliente desconocido.");
-    await ejecutar("app.py", ["iniciar", proyecto, "--cliente", cliente]);
-  }
-  const config = await leerJson(ruta);
-  if (config?.esquema !== "wifi-proyecto/v1" || !clientes.includes(config.cliente)) {
-    throw new Error("La carpeta no contiene un proyecto Wi-Fi válido.");
-  }
-  if (tty && !Object.hasOwn(config, "adaptador")) {
-    try {
-      const opciones = await inventario();
-      if (opciones.length) {
-        salida(resumen(opciones));
-        const pregunta = opciones.length === 1 ? "Adaptador [1, 0 para demo] > " : "Adaptador [número, 0 para demo] > ";
-        const opcion = (await preguntar(pregunta)).trim() || (opciones.length === 1 ? "1" : "");
-        config.adaptador = /^[1-9][0-9]*$/.test(opcion) ? opciones[Number(opcion) - 1]?.id ?? null : null;
-      } else {
-        salida("Sin adaptadores Wi-Fi disponibles. Puedes empezar con la demo.");
-        config.adaptador = null;
-      }
-    } catch (error) {
-      if (error.code === "ABORT_ERR") throw error;
-      salida("NetworkManager no está disponible. Puedes empezar con la demo.");
-      config.adaptador = null;
-    }
-    await guardarJson(ruta, config);
-  }
-  return { proyecto, ruta, config };
-}
-
 async function aplicar(destino) {
   const salida = (texto) => console.log(seguro(texto));
-  const lector = createInterface({ input: process.stdin, output: process.stdout, terminal: tty });
-  const lineas = tty ? null : lector[Symbol.asyncIterator]();
-  const cerrarInicio = new AbortController();
-  lector.once("close", () => cerrarInicio.abort());
+  const lector = tty ? undefined : createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  const lineas = lector?.[Symbol.asyncIterator]();
+  const carpetaInicial = destino ? resolve(destino) : process.cwd();
   let proyecto;
   let ruta;
   let config;
-  try {
-    ({ proyecto, ruta, config } = await configurarInicio(destino, salida,
-      (pregunta) => lector.question(pregunta, { signal: cerrarInicio.signal })));
-  } catch (error) {
-    lector.close();
-    if (error.code === "ABORT_ERR") return;
-    throw error;
-  }
-  if (tty) lector.close();
-
   let interfaz;
   let agente;
   let sesion;
   let cerrando = false;
   let diagnosticoPendiente;
-  const agentes = new Map();
-  const agentesDir = join(proyecto, "agentes");
-  let mensajes = ["Proyecto listo. Usa /ayuda o agent harwiff."];
-  if (tty) {
-    const estado = await ejecutar("entorno.py", ["estado"], { tiempo: 6_000 }).then(JSON.parse).catch(() => ({}));
-    mensajes.push(estado.docker ? "Docker disponible. OpenSandbox se inicia con /diagnostico."
-      : "Docker inaccesible. /diagnostico demo está disponible.");
-  }
+  let agentes = new Map();
+  let agentesDir;
+  let mensajes = ["Usa /proyecto para crear o abrir un proyecto. /salir cierra Harwiff."];
   const app = (...args) => ejecutar("app.py", ["--proyecto", proyecto, ...args]);
   function actualizar() {
     interfaz?.render({
-      proyecto: seguro(basename(proyecto)), cliente: config.cliente,
+      proyecto: proyecto ? seguro(basename(proyecto)) : undefined, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()],
       mensajes: agente ? agente.mensajes : mensajes,
     });
@@ -161,7 +108,7 @@ async function aplicar(destino) {
     diagnosticoPendiente?.abort();
     for (const item of agentes.values()) item.controlador?.abort();
     interfaz?.cerrar();
-    lector.close();
+    lector?.close();
   }
   function enfocar(id) {
     agente = agentes.get(id);
@@ -169,17 +116,23 @@ async function aplicar(destino) {
   }
 
   try {
-    for (const id of await directorios(agentesDir)) {
-      if (ID_SESION.test(id)) await cargarAgente(id);
-    }
     if (tty) {
       const { pantalla } = await import("./pantalla.mjs");
       interfaz = pantalla(comandos, { salir: cerrar, volver, entrar: enfocar });
       actualizar();
-    } else {
-      salida(`Harwiff · ${config.cliente} · ${proyecto}`);
     }
     process.on("SIGTERM", cerrar);
+    process.on("SIGINT", cerrar);
+    const manifiesto = join(carpetaInicial, "harness.json");
+    if (await existe(manifiesto)) {
+      try {
+        await seleccionarProyecto(carpetaInicial);
+      } catch (error) {
+        mostrar(`Error: ${error.message}`);
+      }
+    } else if (!tty) {
+      salida("Harwiff · Sin proyecto. Usa /proyecto <carpeta>.");
+    }
     while (!cerrando) {
       const entrada = interfaz ? await interfaz.leer() : (await lineas.next()).value;
       if (entrada === undefined || cerrando) break;
@@ -195,11 +148,44 @@ async function aplicar(destino) {
   } finally {
     cerrar();
     process.off("SIGTERM", cerrar);
+    process.off("SIGINT", cerrar);
     await Promise.allSettled([...agentes.values()].map((item) => item.trabajo));
   }
 
-  async function cargarAgente(id) {
-    const dir = join(agentesDir, id);
+  async function seleccionarProyecto(carpeta, cliente = "demo") {
+    if ([...agentes.values()].some((item) => item.trabajo)) {
+      throw new Error("Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
+    }
+    const nuevaRuta = join(carpeta, "harness.json");
+    const crear = !await existe(nuevaRuta);
+    if (crear) await ejecutar("app.py", ["iniciar", carpeta, "--cliente", cliente]);
+    const nuevaConfig = await leerJson(nuevaRuta);
+    if (nuevaConfig?.esquema !== "wifi-proyecto/v1" || !clientes.includes(nuevaConfig.cliente)) {
+      throw new Error("La carpeta no contiene un proyecto Wi-Fi válido.");
+    }
+
+    const nuevaCarpetaAgentes = join(carpeta, "agentes");
+    const nuevosAgentes = new Map();
+    for (const id of await directorios(nuevaCarpetaAgentes)) {
+      if (!ID_SESION.test(id)) continue;
+      const item = await cargarAgente(nuevaCarpetaAgentes, id);
+      if (item) nuevosAgentes.set(id, item);
+    }
+    if (cerrando) return;
+    proyecto = carpeta;
+    ruta = nuevaRuta;
+    config = nuevaConfig;
+    agentesDir = nuevaCarpetaAgentes;
+    agentes = nuevosAgentes;
+    sesion = undefined;
+    agente = undefined;
+    mensajes = [];
+    mostrar(`${crear ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${proyecto}`);
+    if (crear) mostrar("Usa /diagnostico demo o /adaptador para preparar una lectura real.");
+  }
+
+  async function cargarAgente(raizAgentes, id) {
+    const dir = join(raizAgentes, id);
     const datos = await leerJson(join(dir, "sesion.json")).catch((error) => {
       if (error.code === "ENOENT") return undefined;
       throw error;
@@ -223,7 +209,7 @@ async function aplicar(destino) {
     const ultimo = turnos.at(-1);
     const estado = ultimo?.estado === "cancelado" ? "detenida" :
       ultimo && ultimo.estado !== "completo" ? "interrumpida" : "lista";
-    agentes.set(id, { ...datos, id, dir, estado, mensajes: texto.slice(-150) });
+    return { ...datos, id, dir, estado, mensajes: texto.slice(-150) };
   }
 
   async function abrirAgente(args) {
@@ -318,14 +304,32 @@ async function aplicar(destino) {
       return;
     }
     if (agente) throw new Error("Usa Esc o /volver para usar los comandos del proyecto.");
-    if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
     if (texto === "ls") texto = "/sesiones";
     const [comando] = texto.split(/\s+/);
     const args = texto.slice(comando.length).trim();
+    if (comando === "/ayuda") {
+      mostrar(Object.entries(comandos).map(([nombre, ayuda]) => `${nombre}  ${ayuda}`).join("\n"));
+      return;
+    }
+    if (comando === "/proyecto") {
+      const foundry = args === "--foundry" || args.startsWith("--foundry ");
+      let carpeta = foundry ? args.slice("--foundry".length).trim() : args;
+      if (!carpeta && interfaz) {
+        const predeterminada = destino ?? "./proyecto-wifi";
+        const respuesta = await interfaz.preguntar(`Carpeta [${seguro(predeterminada)}] > `);
+        if (respuesta === undefined || cerrando) return;
+        carpeta = respuesta.trim() || predeterminada;
+      }
+      if (!carpeta) throw new Error("Usa /proyecto [--foundry] <carpeta>.");
+      await seleccionarProyecto(resolve(carpeta), foundry ? "azure-foundry" : "demo");
+      return;
+    }
+    if (!proyecto) {
+      mostrar("Abre o crea un proyecto con /proyecto.");
+      return;
+    }
+    if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
     switch (comando) {
-      case "/ayuda":
-        mostrar(Object.entries(comandos).map(([nombre, ayuda]) => `${nombre}  ${ayuda}`).join("\n"));
-        break;
       case "/adaptador": {
         const invent = await inventario();
         if (!args) {
@@ -421,8 +425,11 @@ async function aplicar(destino) {
         if (!id && interfaz) id = (await interfaz.preguntar("Nombre de sesión (Enter para cancelar) > "))?.trim();
         if (!id && interfaz) break;
         if (!ID_SESION.test(id)) throw new Error("Usa /nueva <id> [objetivo].");
-        if (!objetivo && interfaz) objetivo = (await interfaz.preguntar(
-          "Objetivo [Revisar la conectividad Wi-Fi] > "))?.trim();
+        if (!objetivo && interfaz) {
+          const respuesta = await interfaz.preguntar("Objetivo [Revisar la conectividad Wi-Fi] > ");
+          if (respuesta === undefined) break;
+          objetivo = respuesta.trim();
+        }
         if (cerrando) break;
         objetivo ||= "Revisar la conectividad Wi-Fi";
         await app("nueva", id, "--objetivo", objetivo);

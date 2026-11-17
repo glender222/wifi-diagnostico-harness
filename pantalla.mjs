@@ -35,23 +35,30 @@ export function pantalla(comandos, acciones) {
   let estado;
   let mensajesVisibles;
   let pregunta;
-  editor.onSubmit = (texto) => {
-    if ((!texto && !pregunta) || !esperando) return;
-    if (!pregunta && texto) editor.addToHistory(texto);
+  function resolverEntrada(texto) {
     const resolver = esperando;
     esperando = undefined;
     pregunta = undefined;
-    resolver(texto);
+    resolver?.(texto);
     render(estado);
+  }
+  editor.onSubmit = (texto) => {
+    if (texto.trim() === "/salir") {
+      acciones.salir();
+      return;
+    }
+    if ((!texto && !pregunta) || !esperando) return;
+    if (!pregunta && texto) editor.addToHistory(texto);
+    resolverEntrada(texto);
   };
   ui.addInputListener((dato) => {
-    if (matchesKey(dato, "ctrl+c")) {
+    if (matchesKey(dato, "ctrl+c") || (matchesKey(dato, "ctrl+d") && !editor.getText())) {
       acciones.salir();
       return { consume: true };
     }
     if (pregunta && matchesKey(dato, "escape")) {
       editor.setText("");
-      editor.onSubmit("");
+      resolverEntrada(undefined);
       return { consume: true };
     }
     if (matchesKey(dato, "escape") && (enFila || (estado?.agente && !editor.capturesViewportInput))) {
@@ -79,7 +86,8 @@ export function pantalla(comandos, acciones) {
   function render(nuevo) {
     if (cerrado || !nuevo) return;
     estado = nuevo;
-    encabezado.setText(`${acento("Harwiff")}  ·  ${nuevo.proyecto}  ·  ${nuevo.cliente}`);
+    const contexto = nuevo.proyecto ? `${nuevo.proyecto}  ·  ${nuevo.cliente}` : "Sin proyecto";
+    encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}`);
     etiqueta.setText(pregunta || (nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a wifi` : "wifi >"));
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
     const agentes = nuevo.agentes.map(({ id, estado }, n) => {
@@ -88,7 +96,8 @@ export function pantalla(comandos, acciones) {
     });
     fila.setText(agentes.length
       ? `Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : nuevo.agente ? "" : "   ·   Tab"}`
-      : "Agentes  ·  agent harwiff para iniciar");
+      : nuevo.proyecto ? "Agentes  ·  agent harwiff para iniciar  ·  /salir o Ctrl+D"
+        : "/proyecto para empezar  ·  /salir o Ctrl+D");
     if (mensajesVisibles !== nuevo.mensajes) {
       historial.clear();
       for (const mensaje of nuevo.mensajes) historial.addChild(new Text(mensaje, 1));

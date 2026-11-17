@@ -5,19 +5,19 @@ Harwiff es un entorno de diagnóstico Wi-Fi por proyecto. Guarda las lecturas de
 ## Instalar en Linux x86-64
 
 ```bash
-curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.0/install.sh | bash
+curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.1/install.sh | bash
 ```
 
 El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo y NetworkManager. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
 
 ## Probar
 
-1. Ejecuta `harwiff` y elige una carpeta nueva o abre un proyecto existente. Selecciona **demo** para probar sin credenciales.
+1. Ejecuta `harwiff`. En `wifi >`, escribe `/proyecto` para elegir una carpeta o `/proyecto mi-proyecto` para abrirla o crearla directamente. Los proyectos nuevos usan demo por defecto.
 2. En `wifi >`, escribe `/diagnostico demo` para generar un informe sintético. `/auditoria` muestra su ID y `/auditoria <id>` muestra el detalle y la evidencia.
 3. Escribe `agent harwiff` y una consulta. **Esc** vuelve al entorno mientras el agente trabaja. En el editor vacío, **Tab** enfoca la fila de agentes, las flechas cambian la selección y **Enter** entra en la sesión. Usa `/detener` en la sesión para cancelar el turno.
-4. Sal con `/salir`. Al volver, `agent harwiff` recupera la sesión más reciente. Las consultas interrumpidas se muestran para reenviarlas manualmente.
+4. Sal con `/salir` o **Ctrl+D** con el editor vacío. Al volver, `agent harwiff` recupera la sesión más reciente. Las consultas interrumpidas se muestran para reenviarlas manualmente.
 
-También puedes abrir una carpeta explícita con `harwiff ruta/al/proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Usa `/ayuda` para ver los comandos.
+Harwiff abre automáticamente un proyecto existente en la carpeta actual, o puedes pasarlo con `harwiff ruta/al/proyecto`. Para crear un proyecto Foundry usa `/proyecto --foundry mi-proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Usa `/ayuda` para ver los comandos.
 
 ## Diagnóstico real
 

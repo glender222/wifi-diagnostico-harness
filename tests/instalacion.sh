@@ -8,7 +8,10 @@ curl -fsSL "$artefactos/install.sh" | HARWIFF_RELEASE_BASE="$artefactos" bash
 ejecutable="$HARWIFF_BIN_DIR/harwiff"
 "$ejecutable" --version
 proyecto="$temporal/proyecto nuevo"
-printf '%s\n' '/diagnostico demo' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
+printf '%s\n' '/salir' | "$ejecutable" "$proyecto" > "$temporal/arranque"
+grep -q 'Sin proyecto' "$temporal/arranque"
+test ! -e "$proyecto"
+printf '%s\n' "/proyecto $proyecto" '/diagnostico demo' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
   | "$ejecutable" "$proyecto" > "$temporal/salida"
 grep -q 'Demo · Leí los informes guardados' "$temporal/salida"
 grep -q 'leer_informes · completo' "$temporal/salida"
