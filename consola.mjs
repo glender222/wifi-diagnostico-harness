@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson } from "./proyecto.mjs";
 
-const VERSION = "0.2.2";
+const VERSION = "0.2.3";
 const clientes = ["demo", "azure-foundry", "chatgpt", "opencode"];
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const python = process.env.WIFI_PYTHON || "python3";
@@ -30,6 +30,13 @@ const comandos = {
   "/detener": "Cancelar el turno del agente activo",
   "/salir": "Cerrar Harwiff",
 };
+
+function disponibles(proyecto, agente) {
+  const nombres = agente ? ["/ayuda", "/config", "/detener", "/volver", "/salir"]
+    : proyecto ? Object.keys(comandos).filter((comando) => comando !== "/detener" && comando !== "/volver")
+      : ["/ayuda", "/proyecto", "/salir"];
+  return Object.fromEntries(nombres.map((comando) => [comando, comandos[comando]]));
+}
 
 function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000 } = {}) {
   const { FOUNDRY_API_KEY, OPENSANDBOX_API_KEY, ...env } = process.env;
@@ -89,7 +96,7 @@ async function aplicar(destino) {
     interfaz?.render({
       proyecto: proyecto ? seguro(basename(proyecto)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
-      mensajes: agente ? agente.mensajes : mensajes,
+      mensajes: agente ? agente.mensajes : mensajes, comandos: disponibles(proyecto, agente),
     });
   }
   function mostrar(texto, destino = agente) {
@@ -308,6 +315,10 @@ async function aplicar(destino) {
   }
 
   async function procesar(texto) {
+    if (texto === "/ayuda") {
+      mostrar(Object.entries(disponibles(proyecto, agente)).map(([nombre, ayuda]) => `${nombre}  ${ayuda}`).join("\n"));
+      return;
+    }
     if (texto === "/salir") return cerrar();
     if (texto === "/volver") {
       volver();
@@ -335,10 +346,6 @@ async function aplicar(destino) {
     if (texto === "ls") texto = "/sesiones";
     const [comando] = texto.split(/\s+/);
     const args = texto.slice(comando.length).trim();
-    if (comando === "/ayuda") {
-      mostrar(Object.entries(comandos).map(([nombre, ayuda]) => `${nombre}  ${ayuda}`).join("\n"));
-      return;
-    }
     if (comando === "/proyecto") {
       const foundry = args === "--foundry" || args.startsWith("--foundry ");
       let carpeta = foundry ? args.slice("--foundry".length).trim() : args;
@@ -495,7 +502,7 @@ async function aplicar(destino) {
         mostrar(sesion ? await app("abrir", sesion) : JSON.stringify(await informesAgente(proyecto), null, 2));
         break;
       default:
-        throw new Error("Usa /ayuda o inicia una conversación con agent harwiff.");
+        throw new Error(`Comando desconocido: ${comando}. Usa /ayuda para ver las opciones.`);
     }
   }
 }

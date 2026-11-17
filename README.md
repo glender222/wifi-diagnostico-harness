@@ -5,7 +5,7 @@ Harwiff es un entorno de diagnóstico Wi-Fi por proyecto. Guarda las lecturas de
 ## Instalar en Linux x86-64
 
 ```bash
-curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.2/install.sh | bash
+curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.3/install.sh | bash
 ```
 
 El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo y NetworkManager. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
@@ -17,7 +17,7 @@ El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`.
 3. En un proyecto demo o Foundry, escribe una consulta en `wifi >` y pulsa **Enter**. La vista y la fila de agentes aparecen al enviar la primera consulta. `agent harwiff <id>` permite elegir una sesión. **Esc** vuelve al entorno mientras el agente trabaja. Con el editor vacío, **Tab**, las flechas y **Enter** permiten cambiar de sesión. Dentro del agente, `/config` muestra su configuración y `/detener` cancela el turno.
 4. Sal con `/salir` o **Ctrl+D** con el editor vacío. Al volver, `agent harwiff` recupera la sesión más reciente. Las consultas interrumpidas se muestran para reenviarlas manualmente.
 
-Harwiff abre automáticamente un proyecto existente en la carpeta actual, o puedes pasarlo con `harwiff ruta/al/proyecto`. Para crear un proyecto Foundry usa `/proyecto --foundry mi-proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Usa `/ayuda` para ver los comandos.
+Harwiff abre automáticamente un proyecto existente en la carpeta actual, o puedes pasarlo con `harwiff ruta/al/proyecto`. Para crear un proyecto Foundry usa `/proyecto --foundry mi-proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Escribe `/` para ver el menú de comandos de la vista actual o `/ayuda` para listarlos.
 
 ## Diagnóstico real
 

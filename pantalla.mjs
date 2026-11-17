@@ -42,10 +42,23 @@ export function pantalla(comandos, acciones) {
   );
   editor.setAutocompleteProvider({
     getSuggestions: async (lineas, fila, columna, opciones) => {
-      if (fila !== 0 || !/^\/[a-z-]*$/.test(lineas[fila].slice(0, columna))) return null;
-      return completar.getSuggestions(lineas, fila, columna, { ...opciones, force: false });
+      if (pregunta || fila !== 0 || columna !== lineas[fila].length || !/^\/[a-z-]*$/.test(lineas[fila])) {
+        return null;
+      }
+      const sugerencias = await completar.getSuggestions(lineas, fila, columna, { ...opciones, force: false });
+      if (!sugerencias) return null;
+      const items = sugerencias.items.filter(({ value }) =>
+        Object.hasOwn(estado?.comandos ?? {}, `/${value}`) && value.startsWith(sugerencias.prefix.slice(1)))
+        .map((item) => ({ ...item, label: `/${item.label}` }));
+      return { ...sugerencias, items };
     },
-    applyCompletion: completar.applyCompletion.bind(completar),
+    applyCompletion(lineas, fila, columna, item, prefijo) {
+      if (pregunta || fila !== 0 || columna !== lineas[fila].length || lineas[fila] !== prefijo ||
+          !Object.hasOwn(estado?.comandos ?? {}, `/${item.value}`)) {
+        return { lines: lineas, cursorLine: fila, cursorCol: columna };
+      }
+      return completar.applyCompletion(lineas, fila, columna, item, prefijo);
+    },
   });
   ui.setLayoutRoot(new VStack([
     encabezado, { component: viewport, grow: 1, basis: 0 },
@@ -100,6 +113,11 @@ export function pantalla(comandos, acciones) {
       return { consume: true };
     }
     if (!enFila) return undefined;
+    if (dato === "/" || matchesKey(dato, "/")) {
+      enFila = false;
+      render(estado);
+      return undefined;
+    }
     if (matchesKey(dato, "left")) indice = Math.max(0, indice - 1);
     if (matchesKey(dato, "right")) indice = Math.min(estado.agentes.length - 1, indice + 1);
     if (matchesKey(dato, "enter")) {
