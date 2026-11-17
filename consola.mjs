@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson } from "./proyecto.mjs";
 
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 const clientes = ["demo", "azure-foundry", "chatgpt", "opencode"];
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const python = process.env.WIFI_PYTHON || "python3";
@@ -77,6 +77,7 @@ async function aplicar(destino) {
   let config;
   let interfaz;
   let agente;
+  let preparado;
   let sesion;
   let cerrando = false;
   let diagnosticoPendiente;
@@ -86,8 +87,8 @@ async function aplicar(destino) {
   const app = (...args) => ejecutar("app.py", ["--proyecto", proyecto, ...args]);
   function actualizar() {
     interfaz?.render({
-      proyecto: proyecto ? seguro(basename(proyecto)) : undefined, cliente: config?.cliente,
-      agente: agente?.id, agentes: [...agentes.values()],
+      proyecto: proyecto ? seguro(basename(proyecto)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
+      agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente ? agente.mensajes : mensajes,
     });
   }
@@ -99,6 +100,7 @@ async function aplicar(destino) {
     actualizar();
   }
   function volver() {
+    if (agente) preparado = agente;
     agente = undefined;
     actualizar();
   }
@@ -138,7 +140,9 @@ async function aplicar(destino) {
       if (entrada === undefined || cerrando) break;
       const texto = entrada.trim();
       if (!texto) continue;
-      if (tty) mostrar(`${agente ? "Tú" : "wifi >"}  ${texto}`);
+      if (tty && (texto.startsWith("/") || texto === "ls" || /^agent\s+harwiff(?:\s|$)/.test(texto))) {
+        mostrar(`${agente ? "Tú" : "wifi"}  ${texto}`);
+      }
       try {
         await procesar(texto);
       } catch (error) {
@@ -179,9 +183,12 @@ async function aplicar(destino) {
     agentes = nuevosAgentes;
     sesion = undefined;
     agente = undefined;
+    preparado = undefined;
     mensajes = [];
     mostrar(`${crear ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${proyecto}`);
-    if (crear) mostrar("Usa /diagnostico demo o /adaptador para preparar una lectura real.");
+    if (config.cliente === "demo" || config.cliente === "azure-foundry") {
+      mostrar("Escribe una consulta para iniciar el agente.");
+    }
   }
 
   async function cargarAgente(raizAgentes, id) {
@@ -209,10 +216,10 @@ async function aplicar(destino) {
     const ultimo = turnos.at(-1);
     const estado = ultimo?.estado === "cancelado" ? "detenida" :
       ultimo && ultimo.estado !== "completo" ? "interrumpida" : "lista";
-    return { ...datos, id, dir, estado, mensajes: texto.slice(-150) };
+    return { ...datos, id, dir, estado, iniciado: datos.iniciado === true || turnos.length > 0, mensajes: texto.slice(-150) };
   }
 
-  async function abrirAgente(args) {
+  async function abrirAgente(args, entrar = true) {
     const partes = args.split(/\s+/).slice(2);
     const usaDemo = partes.includes("--demo");
     const ids = partes.filter((parte) => parte !== "--demo");
@@ -229,30 +236,44 @@ async function aplicar(destino) {
       }
       const dir = join(agentesDir, id);
       await mkdir(join(dir, "turnos"), { recursive: true, mode: 0o700 });
-      item = { id, dir, modo, estado: "lista", mensajes: ["Sesión de agente lista. Escribe una consulta."] };
+      item = { id, dir, modo, estado: "lista", iniciado: false, mensajes: [] };
       agentes.set(id, item);
     }
     if (usaDemo && item.modo !== "demo") throw new Error("Esa sesión usa Foundry. Elige otro ID para la demo.");
     item.uso = new Date().toISOString();
-    await guardarJson(join(item.dir, "sesion.json"), { modo: item.modo, uso: item.uso });
-    enfocar(id);
-    if (!tty) {
-      mostrar(`Agente ${id} · ${item.modo} · ${item.estado}`);
-      for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
+    await guardarJson(join(item.dir, "sesion.json"), {
+      modo: item.modo, uso: item.uso, iniciado: item.iniciado,
+    });
+    preparado = item;
+    if (entrar && item.iniciado) {
+      enfocar(id);
+      if (!tty) {
+        salida(`Agente ${id} · ${item.modo} · ${item.estado}`);
+        for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
+      }
+    } else if (entrar) {
+      mostrar(`Escribe tu primera consulta para ${id} · ${item.modo}.`, null);
     }
+    return item;
   }
 
-  function iniciarTurno(texto) {
-    const item = agente;
+  function iniciarTurno(texto, item) {
     if (item.trabajo) throw new Error("El turno anterior sigue trabajando. Usa /detener para cancelarlo.");
+    const primerTurno = !item.iniciado;
     const control = new AbortController();
     item.controlador = control;
     item.estado = "trabajando";
-    actualizar();
+    item.iniciado = true;
+    agente = item;
+    preparado = undefined;
+    mostrar(`Tú  ${texto}`, item);
     const signal = AbortSignal.any([control.signal, AbortSignal.timeout(120_000)]);
     item.trabajo = auditar(proyecto, {
       origen: "agente", sesion: item.id, operacion: "turno", proveedor: item.modo,
     }, async (id) => {
+      if (primerTurno) {
+        await guardarJson(join(item.dir, "sesion.json"), { modo: item.modo, uso: item.uso, iniciado: true });
+      }
       const modelo = item.modo === "demo" ? { modelo: MODELO_DEMO } : modeloFoundry(config);
       await responder({
         id, sesion: item.dir, texto, ...modelo, signal,
@@ -298,8 +319,15 @@ async function aplicar(destino) {
       agente.controlador.abort();
       return;
     }
+    if (agente && texto === "/config") {
+      mostrar(`Agente: ${agente.id} · Modo: ${agente.modo} · Estado: ${agente.estado}`);
+      if (agente.modo === "azure-foundry") {
+        mostrar(`Deployment: ${config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT ?? "pendiente"}`);
+      }
+      return;
+    }
     if (agente && !texto.startsWith("/")) {
-      iniciarTurno(texto);
+      iniciarTurno(texto, agente);
       if (!tty) await agente.trabajo;
       return;
     }
@@ -329,6 +357,12 @@ async function aplicar(destino) {
       return;
     }
     if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
+    if (!texto.startsWith("/")) {
+      const item = preparado ?? await abrirAgente("agent harwiff", false);
+      iniciarTurno(texto, item);
+      if (!tty) await item.trabajo;
+      return;
+    }
     switch (comando) {
       case "/adaptador": {
         const invent = await inventario();

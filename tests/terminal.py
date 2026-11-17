@@ -39,6 +39,8 @@ def terminal(carpeta):
                         raise AssertionError(captura.decode(errors="replace")) from error
                     raise
 
+        return bytes(captura)
+
     def escribir(entrada):
         captura.clear()
         os.write(master, entrada)
@@ -87,6 +89,44 @@ class TerminalTest(unittest.TestCase):
             self.assertEqual(list(Path(raiz).iterdir()), [])
             escribir(b"/proyecto\r")
             esperar("Carpeta [")
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
+
+    def test_apartado_agente_aparece_al_enviar_consulta(self):
+        with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
+            inicial = esperar("wifi >")
+            self.assertNotIn("─".encode(), inicial)
+            self.assertNotIn(b"Agentes", inicial)
+            escribir(b"/proyecto prueba\r")
+            esperar("Proyecto creado")
+            escribir(b"agent harwiff\r")
+            preparada = esperar("Escribe tu primera consulta")
+            self.assertNotIn(b"agente/harwiff >", preparada)
+            self.assertNotIn(b"Agentes", preparada)
+            escribir(b"Consulta de prueba\r")
+            iniciada = esperar("agente/harwiff >")
+            self.assertNotIn(b"wifi >", iniciada)
+            esperar("Agentes")
+            escribir(b"/config\r")
+            esperar("Agente: harwiff")
+            escribir(b"\x1b")
+            esperar("wifi >")
+            escribir(b"\t")
+            esperar("[harwiff")
+            escribir(b"\r")
+            esperar("agente/harwiff >")
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_consulta_directa_desde_wifi(self):
+        with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
+            esperar("wifi >")
+            escribir(b"/proyecto prueba\r")
+            esperar("Proyecto creado")
+            escribir(b"Consulta directa\r")
+            esperar("agente/harwiff >")
+            esperar("Todavía no hay informes")
             escribir(b"/salir\r")
             self.assertEqual(proceso.wait(timeout=5), 0)
 
