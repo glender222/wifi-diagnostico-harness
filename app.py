@@ -219,6 +219,10 @@ def main():
             diagnosticar(carpeta, args)
         elif args.accion == "explicar":
             explicar_con_foundry(carpeta, cliente)
+    except PermissionError:
+        ubicacion = args.carpeta if args.accion == "iniciar" else RAIZ
+        print(f"Error: Sin permiso para guardar en {ubicacion}. Elige una carpeta donde puedas escribir.", file=sys.stderr)
+        return 1
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

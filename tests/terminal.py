@@ -170,5 +170,44 @@ class TerminalTest(unittest.TestCase):
             self.assertEqual(proceso.wait(timeout=5), 0)
 
 
+    def test_proyecto_en_carpeta_de_trabajo_con_archivos(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            carpeta = Path(raiz)
+            (carpeta / "app.py").write_text("# archivo del usuario\n")
+            (carpeta / "harness.json").write_text('{"app":"otro proyecto"}')
+            with terminal(raiz) as (proceso, esperar, escribir):
+                esperar("Sin proyecto")
+                self.assertFalse((carpeta / ".harwiff").exists())
+                escribir(b"/proyecto\r")
+                esperar("Carpeta [.]")
+                escribir(b"\r")
+                esperar("Datos de Harwiff guardados en .harwiff/")
+                self.assertTrue((carpeta / ".harwiff/harness.json").is_file())
+                self.assertEqual((carpeta / "app.py").read_text(), "# archivo del usuario\n")
+                self.assertEqual((carpeta / "harness.json").read_text(), '{"app":"otro proyecto"}')
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+            with terminal(raiz) as (proceso, esperar, escribir):
+                esperar("Proyecto abierto")
+                escribir(b"/diagnostico demo\r")
+                esperar("Informe guardado")
+                self.assertTrue(list((carpeta / ".harwiff/informes").glob("*.json")))
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_proyecto_desde_raiz_pide_una_carpeta(self):
+        with terminal("/") as (proceso, esperar, escribir):
+            esperar("Sin proyecto")
+            escribir(b"/proyecto\r")
+            esperar("Carpeta (ej. ~/wifi-prueba)")
+            escribir(b"\r")
+            salida = esperar("Escribe una ruta")
+            self.assertNotIn(b".wifi-init", salida)
+            escribir(b"/proyecto /\r")
+            esperar("Elige una carpeta de trabajo")
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

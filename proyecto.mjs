@@ -11,6 +11,22 @@ export async function leerJson(ruta) {
   return JSON.parse(await readFile(ruta, "utf8"));
 }
 
+export async function localizarProyecto(carpeta) {
+  const interno = join(carpeta, ".harwiff");
+  for (const raiz of [interno, carpeta]) {
+    const archivo = join(raiz, "harness.json");
+    const config = await leerJson(archivo).catch((error) => {
+      if (error.code === "ENOENT") return undefined;
+      if (error instanceof SyntaxError && raiz === carpeta) return undefined;
+      if (error instanceof SyntaxError) throw new Error(`Revisa el manifiesto de Harwiff en ${archivo}.`);
+      throw error;
+    });
+    if (config?.esquema === "wifi-proyecto/v1") return { raiz, archivo, config };
+    if (config && raiz === interno) throw new Error(`El manifiesto de Harwiff en ${archivo} tiene un formato desconocido.`);
+  }
+  return undefined;
+}
+
 export async function directorios(ruta) {
   try {
     return (await readdir(ruta, { withFileTypes: true })).filter((entrada) => entrada.isDirectory())

@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { access, mkdir } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { mkdir, realpath, stat } from "node:fs/promises";
+import { basename, join, parse, resolve } from "node:path";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
-import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson } from "./proyecto.mjs";
+import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson, localizarProyecto } from "./proyecto.mjs";
 
-const VERSION = "0.2.3";
+const VERSION = "0.2.4";
 const clientes = ["demo", "azure-foundry", "chatgpt", "opencode"];
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const python = process.env.WIFI_PYTHON || "python3";
@@ -43,7 +44,7 @@ function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000 } = {})
   return new Promise((ok, fail) => {
     const proceso = execFile(python, ["-B", fuente(script), ...args],
       { env, timeout: tiempo, signal, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) fail(new Error(seguro(stderr.trim()) || "No se pudo completar la operación local."));
+        if (error) fail(new Error(seguro(stderr.trim().replace(/^Error: /, "")) || "No se pudo completar la operación local."));
         else ok(stdout.trim());
       });
     proceso.stdin.on("error", () => {});
@@ -51,14 +52,14 @@ function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000 } = {})
   });
 }
 
-async function existe(ruta) {
-  try {
-    await access(ruta);
-    return true;
-  } catch (error) {
-    if (error.code === "ENOENT") return false;
-    throw error;
-  }
+function resolverCarpeta(valor) {
+  if (valor === "~") return homedir();
+  if (valor.startsWith("~/")) return resolve(homedir(), valor.slice(2));
+  return resolve(valor);
+}
+
+function esRaiz(carpeta) {
+  return carpeta === parse(carpeta).root;
 }
 
 function resumen(adaptadores) {
@@ -78,8 +79,9 @@ async function aplicar(destino) {
   const salida = (texto) => console.log(seguro(texto));
   const lector = tty ? undefined : createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const lineas = lector?.[Symbol.asyncIterator]();
-  const carpetaInicial = destino ? resolve(destino) : process.cwd();
+  const carpetaInicial = destino ? resolverCarpeta(destino) : process.cwd();
   let proyecto;
+  let carpetaTrabajo;
   let ruta;
   let config;
   let interfaz;
@@ -90,11 +92,16 @@ async function aplicar(destino) {
   let diagnosticoPendiente;
   let agentes = new Map();
   let agentesDir;
-  let mensajes = ["Usa /proyecto para crear o abrir un proyecto. /salir cierra Harwiff."];
+  let mensajes = [
+    `Carpeta actual: ${seguro(process.cwd())}`,
+    esRaiz(carpetaInicial)
+      ? "Usa /proyecto ~/wifi-prueba para crear un proyecto en tu carpeta personal."
+      : "Usa /proyecto y pulsa Enter para usar la carpeta de trabajo, o escribe otra ruta.",
+  ];
   const app = (...args) => ejecutar("app.py", ["--proyecto", proyecto, ...args]);
   function actualizar() {
     interfaz?.render({
-      proyecto: proyecto ? seguro(basename(proyecto)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
+      proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente ? agente.mensajes : mensajes, comandos: disponibles(proyecto, agente),
     });
@@ -125,22 +132,19 @@ async function aplicar(destino) {
   }
 
   try {
-    if (tty) {
+    process.on("SIGTERM", cerrar);
+    process.on("SIGINT", cerrar);
+    try {
+      const existente = !esRaiz(carpetaInicial) && await localizarProyecto(carpetaInicial);
+      if (existente) await seleccionarProyecto(carpetaInicial);
+      else if (!tty) salida("Harwiff · Sin proyecto. Usa /proyecto <carpeta>.");
+    } catch (error) {
+      mostrar(`Error: ${error.message}`);
+    }
+    if (tty && !cerrando) {
       const { pantalla } = await import("./pantalla.mjs");
       interfaz = pantalla(comandos, { salir: cerrar, volver, entrar: enfocar });
       actualizar();
-    }
-    process.on("SIGTERM", cerrar);
-    process.on("SIGINT", cerrar);
-    const manifiesto = join(carpetaInicial, "harness.json");
-    if (await existe(manifiesto)) {
-      try {
-        await seleccionarProyecto(carpetaInicial);
-      } catch (error) {
-        mostrar(`Error: ${error.message}`);
-      }
-    } else if (!tty) {
-      salida("Harwiff · Sin proyecto. Usa /proyecto <carpeta>.");
     }
     while (!cerrando) {
       const entrada = interfaz ? await interfaz.leer() : (await lineas.next()).value;
@@ -167,15 +171,24 @@ async function aplicar(destino) {
     if ([...agentes.values()].some((item) => item.trabajo)) {
       throw new Error("Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
     }
-    const nuevaRuta = join(carpeta, "harness.json");
-    const crear = !await existe(nuevaRuta);
-    if (crear) await ejecutar("app.py", ["iniciar", carpeta, "--cliente", cliente]);
-    const nuevaConfig = await leerJson(nuevaRuta);
-    if (nuevaConfig?.esquema !== "wifi-proyecto/v1" || !clientes.includes(nuevaConfig.cliente)) {
-      throw new Error("La carpeta no contiene un proyecto Wi-Fi válido.");
+    const existente = await stat(carpeta).catch((error) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (existente && !existente.isDirectory()) throw new Error("Elige una carpeta de trabajo.");
+    const fisica = existente ? await realpath(carpeta) : carpeta;
+    if (esRaiz(fisica)) throw new Error("Elige una carpeta de trabajo, por ejemplo /proyecto ~/wifi-prueba.");
+    let ubicacion = await localizarProyecto(fisica);
+    const crear = !ubicacion;
+    if (crear) {
+      const raiz = existente ? join(fisica, ".harwiff") : fisica;
+      await ejecutar("app.py", ["iniciar", raiz, "--cliente", cliente]);
+      ubicacion = await localizarProyecto(fisica);
     }
+    const { raiz, archivo, config: nuevaConfig } = ubicacion;
+    if (!clientes.includes(nuevaConfig.cliente)) throw new Error("El proyecto tiene un cliente desconocido.");
 
-    const nuevaCarpetaAgentes = join(carpeta, "agentes");
+    const nuevaCarpetaAgentes = join(raiz, "agentes");
     const nuevosAgentes = new Map();
     for (const id of await directorios(nuevaCarpetaAgentes)) {
       if (!ID_SESION.test(id)) continue;
@@ -183,8 +196,9 @@ async function aplicar(destino) {
       if (item) nuevosAgentes.set(id, item);
     }
     if (cerrando) return;
-    proyecto = carpeta;
-    ruta = nuevaRuta;
+    carpetaTrabajo = fisica;
+    proyecto = raiz;
+    ruta = archivo;
     config = nuevaConfig;
     agentesDir = nuevaCarpetaAgentes;
     agentes = nuevosAgentes;
@@ -192,7 +206,8 @@ async function aplicar(destino) {
     agente = undefined;
     preparado = undefined;
     mensajes = [];
-    mostrar(`${crear ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${proyecto}`);
+    mostrar(`${crear ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${carpetaTrabajo}`);
+    if (crear && proyecto !== carpetaTrabajo) mostrar("Datos de Harwiff guardados en .harwiff/.");
     if (config.cliente === "demo" || config.cliente === "azure-foundry") {
       mostrar("Escribe una consulta para iniciar el agente.");
     }
@@ -350,13 +365,16 @@ async function aplicar(destino) {
       const foundry = args === "--foundry" || args.startsWith("--foundry ");
       let carpeta = foundry ? args.slice("--foundry".length).trim() : args;
       if (!carpeta && interfaz) {
-        const predeterminada = destino ?? "./proyecto-wifi";
-        const respuesta = await interfaz.preguntar(`Carpeta [${seguro(predeterminada)}] > `);
+        const predeterminada = esRaiz(carpetaInicial) ? "" : destino ?? ".";
+        if (predeterminada) mostrar(`Enter usa ${seguro(carpetaInicial)}. Esc cancela.`);
+        const respuesta = await interfaz.preguntar(predeterminada
+          ? `Carpeta [${seguro(predeterminada)}] > ` : "Carpeta (ej. ~/wifi-prueba) > ");
         if (respuesta === undefined || cerrando) return;
         carpeta = respuesta.trim() || predeterminada;
+        if (!carpeta) throw new Error("Escribe una ruta, por ejemplo /proyecto ~/wifi-prueba.");
       }
       if (!carpeta) throw new Error("Usa /proyecto [--foundry] <carpeta>.");
-      await seleccionarProyecto(resolve(carpeta), foundry ? "azure-foundry" : "demo");
+      await seleccionarProyecto(resolverCarpeta(carpeta), foundry ? "azure-foundry" : "demo");
       return;
     }
     if (!proyecto) {
