@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.19" },
+  "bin": { "harwiff": "./consola.mjs" },
   "scripts": { "start": "node consola.mjs" },
   "dependencies": { "@earendil-works/pi-ai": "1.5.2" },
   "devDependencies": { "@earendil-works/pi-agent-core": "1.5.2" }

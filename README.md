@@ -2,16 +2,19 @@
 
 El harness se instala en una carpeta independiente. Cada proyecto elige un cliente al crearse y conserva sus sesiones como archivos Markdown e informes JSON. El diagnóstico puede ejecutarse localmente o en OpenSandbox.
 
-## Abrir la aplicación
+## Abrir Harwiff
 
 Se usa Linux, Node.js 22.19 o posterior y Python 3.10 o posterior.
 
+Desde el repositorio, instala Harwiff una vez:
+
 ```bash
 npm ci --ignore-scripts
-npm start
+mkdir -p "$HOME/.local/bin"
+ln -s "$PWD/consola.mjs" "$HOME/.local/bin/harwiff"
 ```
 
-Al arrancar, indica la carpeta del proyecto. Si está vacía, el asistente de inicio pregunta qué cliente usar. Para abrir una carpeta existente directamente, usa `npm start -- ../proyecto-wifi`. La app usa el cliente registrado en `harness.json`. Cada proyecto conserva su elección.
+Con `$HOME/.local/bin` en tu `PATH`, ejecuta `harwiff` desde una carpeta que contenga `harness.json`. Puedes abrir otra carpeta con `harwiff ruta/al/proyecto`. Si ejecutas `harwiff` fuera de un proyecto, el asistente pregunta qué carpeta abrir y qué cliente usar al crearla. Cada proyecto conserva el cliente registrado en `harness.json`.
 
 Dentro de la aplicación:
 

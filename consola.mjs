@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -28,6 +29,16 @@ function textoSeguro(texto) {
 
 function mostrar(texto) {
   console.log(textoSeguro(String(texto)));
+}
+
+async function existe(ruta) {
+  try {
+    await access(ruta);
+    return true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return false;
+  }
 }
 
 async function consola() {
@@ -65,13 +76,14 @@ async function consola() {
   let archivoConfig;
   let config;
   try {
-    const entrada = process.argv[2] ?? (tty ? (await salida("Carpeta del proyecto [./proyecto-wifi] > ")).trim() : "");
+    let entrada = process.argv[2];
+    if (entrada === undefined) {
+      if (await existe("harness.json")) entrada = ".";
+      else if (tty) entrada = (await salida("Carpeta del proyecto [./proyecto-wifi] > ")).trim();
+    }
     proyecto = resolve(entrada || "./proyecto-wifi");
     archivoConfig = join(proyecto, "harness.json");
-    try {
-      await access(archivoConfig);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+    if (!(await existe(archivoConfig))) {
       const cliente = tty
         ? (await salida("Cliente [chatgpt, opencode, azure-foundry] (chatgpt) > ")).trim() || "chatgpt"
         : "chatgpt";
@@ -250,7 +262,15 @@ async function consola() {
 }
 
 try {
-  await consola();
+  const [carpeta, ...extra] = process.argv.slice(2);
+  if (extra.length || (carpeta?.startsWith("-") && carpeta !== "--help" && carpeta !== "-h")) {
+    throw new Error("Uso: harwiff [carpeta-del-proyecto]");
+  }
+  if (carpeta === "--help" || carpeta === "-h") {
+    mostrar("Uso: harwiff [carpeta-del-proyecto]\nAbre el proyecto actual o inicia el asistente.");
+  } else {
+    await consola();
+  }
 } catch (error) {
   console.error(textoSeguro("Error: " + error.message));
   process.exitCode = 1;
