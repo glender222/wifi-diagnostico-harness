@@ -21,8 +21,9 @@ Dentro de la aplicación:
 | Comando | Acción |
 | --- | --- |
 | `/ayuda` | Ver los comandos y sus argumentos. Tab completa los nombres. |
-| `/nueva revision Revisar la conexión` | Crear y abrir una sesión con ese objetivo. |
-| `/sesiones` · `/abrir revision` | Ver y retomar sesiones guardadas. |
+| `/nueva` | Crear y abrir una sesión. Harwiff pregunta el nombre y el objetivo. |
+| `/sesiones` o `ls` | Listar las sesiones guardadas. |
+| `/abrir` | Elegir una sesión de la lista. También puedes usar `/abrir revision` para entrar directamente. |
 | `/diagnostico demo` · `/diagnostico` | Guardar una muestra sintética o un diagnóstico de la conexión activa. |
 | `/guardar texto` | Añadir una nota fechada. |
 | `/contexto` | Leer o copiar el objetivo, las reglas, los informes y la conversación guardada. |

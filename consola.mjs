@@ -45,9 +45,9 @@ async function consola() {
   const comandos = {
     "/ayuda": ["", "Muestra los comandos", ayuda],
     "/config": ["[local|opensandbox|dominio deployment]", "Consulta o guarda la configuración", configurar],
-    "/sesiones": ["", "Lista las sesiones", async () => mostrar(await app("sesiones") || "Todavía no hay sesiones.")],
-    "/nueva": ["<id> <objetivo>", "Crea y abre una sesión", nueva],
-    "/abrir": ["<id>", "Retoma una sesión", abrir],
+    "/sesiones": ["", "Lista las sesiones. También puedes escribir ls", listar],
+    "/nueva": ["[id] [objetivo]", "Crea y abre una sesión", nueva],
+    "/abrir": ["[id]", "Te deja elegir una sesión para retomar", abrir],
     "/contexto": ["", "Muestra reglas, notas, informes y conversación de la sesión activa", exportar],
     "/guardar": ["<nota>", "Guarda el avance en la sesión activa", guardar],
     "/diagnostico": ["[demo]", "Guarda un diagnóstico actual o sintético", diagnostico],
@@ -88,7 +88,8 @@ async function consola() {
         ? (await salida("Cliente [chatgpt, opencode, azure-foundry] (chatgpt) > ")).trim() || "chatgpt"
         : "chatgpt";
       if (!clientes.includes(cliente)) throw new Error("Cliente desconocido.");
-      mostrar(await ejecutar(instalador, ["iniciar", proyecto, "--cliente", cliente]));
+      await ejecutar(instalador, ["iniciar", proyecto, "--cliente", cliente]);
+      mostrar("Proyecto creado. Escribe /nueva para crear tu primera sesión.");
     }
     config = JSON.parse(await readFile(archivoConfig, "utf8"));
     if (config?.esquema !== "wifi-proyecto/v1" || !clientes.includes(config.cliente)) {
@@ -101,7 +102,9 @@ async function consola() {
     for await (const entrada of lineas) {
       const texto = entrada.trim();
       try {
-        if (texto.startsWith("/")) {
+        if (texto === "ls") {
+          await listar();
+        } else if (texto.startsWith("/")) {
           const [nombre] = texto.split(/\s+/, 1);
           const comando = comandos[nombre];
           if (!comando) throw new Error("Comando desconocido. Usa /ayuda.");
@@ -110,6 +113,7 @@ async function consola() {
           await conversar(texto);
         }
       } catch (error) {
+        if (error.code === "ABORT_ERR" && cierre.signal.aborted) break;
         mostrar("Error: " + error.message);
       }
       if (salir) break;
@@ -194,16 +198,41 @@ async function consola() {
     mostrar("Configuración guardada.");
   }
 
+  async function listar() {
+    mostrar(await app("sesiones") || "Todavía no hay sesiones. Escribe /nueva para empezar.");
+  }
+
   async function nueva(argumentos) {
-    const [id] = argumentos.split(/\s+/, 1);
-    const objetivo = argumentos.slice(id.length).trim();
-    if (!id || !objetivo) throw new Error("Usa /nueva <id> <objetivo>.");
+    let [id] = argumentos.split(/\s+/, 1);
+    let objetivo = argumentos.slice(id.length).trim();
+    if (!tty && (!id || !objetivo)) throw new Error("Usa /nueva <id> <objetivo>.");
+    if (!id) id = (await salida("Nombre de la sesión (Enter para cancelar) > ")).trim();
+    if (!id) return;
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) {
+      throw new Error("Usa letras minúsculas, números, guiones o guiones bajos para el nombre.");
+    }
+    if (!objetivo) {
+      const predeterminado = "Revisar la conectividad Wi-Fi";
+      objetivo = (await salida(`Objetivo [${predeterminado}] > `)).trim() || predeterminado;
+    }
     await app("nueva", id, "--objetivo", objetivo);
     await abrir(id);
   }
 
   async function abrir(id) {
-    if (!id) throw new Error("Usa /abrir <id>.");
+    if (!id) {
+      const sesiones = (await app("sesiones")).split("\n").filter(Boolean);
+      if (!sesiones.length) {
+        mostrar("Todavía no hay sesiones. Escribe /nueva para empezar.");
+        return;
+      }
+      for (const [indice, nombre] of sesiones.entries()) mostrar(`${indice + 1}. ${nombre}`);
+      if (!tty) return;
+      const opcion = (await salida("Número de sesión (Enter para cancelar) > ")).trim();
+      if (!opcion) return;
+      id = /^[1-9][0-9]*$/.test(opcion) ? sesiones[Number(opcion) - 1] : undefined;
+      if (!id) throw new Error("Elige uno de los números de la lista.");
+    }
     await app("abrir", id);
     const carpeta = join(proyecto, "sesiones", id);
     const turnos = await leerTurnos(carpeta);
