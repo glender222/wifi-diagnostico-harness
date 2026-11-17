@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as esperar } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 
 export const DOMINIO_AZURE = /^[a-z0-9][a-z0-9-]*\.(?:openai\.azure\.com|services\.ai\.azure\.com)$/i;
@@ -65,7 +66,7 @@ export function modeloFoundry(config, entorno = process.env) {
   };
 }
 
-export async function responder({ sesion, texto, modelo, clave, leerContexto, emitir, signal, streamFn }) {
+export async function responder({ id, sesion, texto, modelo, clave, leerContexto, emitir, signal, streamFn }) {
   const { runAgentLoop } = await import("./vendor/pi/agent-loop.ts");
   const { streamSimple } = await import("@earendil-works/pi-ai/api/openai-completions");
   const turnos = await leerTurnos(sesion);
@@ -80,14 +81,13 @@ export async function responder({ sesion, texto, modelo, clave, leerContexto, em
   const herramientas = [{
     name: "leer_contexto_wifi",
     label: "Leer el contexto Wi-Fi",
-    description: "Lee el objetivo, las notas y los informes de diagnóstico de la sesión activa.",
+    description: "Lista y lee los informes depurados guardados en el proyecto actual.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       return { content: [{ type: "text", text: await leerContexto() }] };
     },
   }];
 
-  const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
   const ruta = join(sesion, "turnos", id);
   await mkdir(ruta, { recursive: true, mode: 0o700 });
   await guardarJson(join(ruta, "inicio.json"), { esquema: "wifi-turno/v1", usuario });
@@ -109,7 +109,41 @@ export async function responder({ sesion, texto, modelo, clave, leerContexto, em
     });
     if (!completa) throw new Error("El turno quedó incompleto. Revisa la configuración o vuelve a enviar tu mensaje.");
   } catch (error) {
-    if (signal?.aborted) throw new Error("Turno interrumpido. La entrada quedó guardada.");
+    if (signal?.aborted) {
+      await guardarJson(join(ruta, "resultado.json"), { estado: "cancelado", usuario });
+      throw new Error("Turno interrumpido. La entrada quedó guardada.");
+    }
     throw error;
   }
+}
+
+export const MODELO_DEMO = {
+  id: "harwiff-demo", name: "Harwiff demo", provider: "azure", api: "openai-completions",
+  baseUrl: "https://invalid.example", input: ["text"], reasoning: false,
+  contextWindow: 16384, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+
+export async function demo(modelo, contexto, { signal }) {
+  const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+  await esperar(650, undefined, { signal });
+  const evidencia = contexto.messages.at(-1);
+  const tieneInforme = evidencia?.role === "toolResult";
+  const text = tieneInforme
+    ? (evidencia.content[0]?.text === "[]" ? "Demo · Todavía no hay informes en el proyecto."
+      : "Demo · Leí los informes guardados. Puedes consultar sus ID y resultados en /auditoria.")
+    : "";
+  const content = tieneInforme
+    ? [{ type: "text", text }]
+    : [{ type: "toolCall", id: randomUUID(), name: "leer_contexto_wifi", arguments: {} }];
+  const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  const stopReason = tieneInforme ? "stop" : "toolUse";
+  const mensaje = {
+    role: "assistant", content, api: modelo.api, provider: modelo.provider, model: modelo.id,
+    usage: { ...cost, cost, totalTokens: 0 }, stopReason, timestamp: Date.now(),
+  };
+  const stream = createAssistantMessageEventStream();
+  stream.push({ type: "start", partial: mensaje });
+  if (text) stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: mensaje });
+  stream.push({ type: "done", reason: stopReason, message: mensaje });
+  return stream;
 }

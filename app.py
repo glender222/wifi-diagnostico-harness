@@ -13,8 +13,9 @@ from uuid import uuid4
 
 import fcntl
 
-RAIZ = Path(__file__).resolve().parent
-CLIENTES = ("chatgpt", "opencode", "azure-foundry")
+FUENTE = Path(__file__).resolve().parent
+RAIZ = FUENTE
+CLIENTES = ("chatgpt", "opencode", "azure-foundry", "demo")
 ESQUEMA = "wifi-proyecto/v1"
 
 
@@ -32,7 +33,7 @@ def iniciar(destino, cliente):
                                (not destino.is_dir() or any(destino.iterdir()))):
         raise ValueError("Elige una carpeta nueva o vacía.")
     destino.parent.mkdir(parents=True, exist_ok=True)
-    reglas = RAIZ / "AGENTS.proyecto.md"
+    reglas = FUENTE / "AGENTS.proyecto.md"
     if not reglas.is_file():
         raise ValueError("Usa el app.py del harness original para iniciar otro proyecto.")
 
@@ -47,7 +48,7 @@ def iniciar(destino, cliente):
         if cliente == "azure-foundry":
             archivos.append("foundry.py")
         for archivo in archivos:
-            shutil.copyfile(RAIZ / archivo, codigo / archivo)
+            shutil.copyfile(FUENTE / archivo, codigo / archivo)
         escribir(nuevo / "harness.json", json.dumps(
             {"esquema": ESQUEMA, "cliente": cliente}, indent=2
         ) + "\n")
@@ -155,7 +156,9 @@ def explicar_con_foundry(carpeta, cliente):
 
 
 def main():
+    global RAIZ
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--proyecto", type=Path, default=FUENTE)
     comandos = parser.add_subparsers(dest="accion", required=True)
     inicio = comandos.add_parser("iniciar", help="Crea una carpeta de proyecto.")
     inicio.add_argument("carpeta", type=Path)
@@ -179,6 +182,7 @@ def main():
     diagnostico.add_argument("--motor", choices=("local", "opensandbox"), default="local")
     comandos.add_parser("explicar", help="Consulta el deployment de un proyecto Azure Foundry.").add_argument("id")
     args = parser.parse_args()
+    RAIZ = args.proyecto.resolve()
 
     try:
         if args.accion == "iniciar":

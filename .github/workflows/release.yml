@@ -1,0 +1,45 @@
+name: Harwiff Linux x86-64
+on:
+  workflow_dispatch:
+  push:
+    branches: [mvp-entorno]
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.12.5
+      - run: npm ci --ignore-scripts
+      - run: node tests/runtime.mjs
+      - run: python3 -B tests/adaptadores.py
+      - run: scripts/build-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harwiff-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+  clean-install:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        distribution: ['ubuntu:22.04', 'debian:12-slim']
+    container:
+      image: ${{ matrix.distribution }}
+    steps:
+      - name: Instalar utilidades base
+        run: apt-get update && apt-get install -y ca-certificates curl git
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harwiff-linux-x86_64
+          path: dist
+      - run: bash tests/instalacion.sh "file://$GITHUB_WORKSPACE/dist"

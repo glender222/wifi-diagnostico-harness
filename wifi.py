@@ -109,7 +109,7 @@ def recolectar(interfaz):
     return muestra
 
 
-async def analizar_aislado(muestra, denegar_egreso):
+async def analizar_aislado(muestra, denegar_egreso, *, dominio=None, clave=None, imagen="python:3.12-alpine"):
     try:
         from opensandbox import Sandbox
         from opensandbox.config import ConnectionConfig
@@ -118,14 +118,15 @@ async def analizar_aislado(muestra, denegar_egreso):
         raise RuntimeError("Instala primero requirements-opensandbox.txt en un entorno virtual.") from error
 
     conexion = ConnectionConfig(
-        domain=os.environ.get("OPENSANDBOX_DOMAIN", "127.0.0.1:8090"),
-        protocol=os.environ.get("OPENSANDBOX_PROTOCOL", "http"),
-        api_key=os.environ.get("OPENSANDBOX_API_KEY"),
+        domain=dominio or os.environ.get("OPENSANDBOX_DOMAIN", "127.0.0.1:8090"),
+        protocol="http" if dominio else os.environ.get("OPENSANDBOX_PROTOCOL", "http"),
+        api_key=clave or os.environ.get("OPENSANDBOX_API_KEY"),
+        disable_metrics=True,
         request_timeout=timedelta(seconds=60),
     )
     politica = NetworkPolicy(default_action="deny", egress=[]) if denegar_egreso else None
     sandbox = await Sandbox.create(
-        "python:3.12-alpine",
+        imagen,
         resource={"cpu": "500m", "memory": "256Mi"},
         timeout=timedelta(minutes=3),
         ready_timeout=timedelta(seconds=60),

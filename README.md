@@ -1,51 +1,38 @@
-# Harness de diagnóstico Wi-Fi
+# Harwiff
 
-El harness se instala en una carpeta independiente. Cada proyecto elige un cliente al crearse y conserva sus sesiones como archivos Markdown e informes JSON. El diagnóstico puede ejecutarse localmente o en OpenSandbox.
+Harwiff es un entorno de diagnóstico Wi-Fi por proyecto. Guarda las lecturas de solo lectura, notas e historial del agente y vincula cada operación con su evidencia.
 
-## Abrir Harwiff
-
-Se usa Linux, Node.js 22.19 o posterior y Python 3.10 o posterior.
-
-Desde el repositorio, instala Harwiff una vez:
+## Instalar en Linux x86-64
 
 ```bash
-npm ci --ignore-scripts
-mkdir -p "$HOME/.local/bin"
-ln -s "$PWD/consola.mjs" "$HOME/.local/bin/harwiff"
+curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.0/install.sh | bash
 ```
 
-Con `$HOME/.local/bin` en tu `PATH`, ejecuta `harwiff` desde una carpeta que contenga `harness.json`. Puedes abrir otra carpeta con `harwiff ruta/al/proyecto`. Si ejecutas `harwiff` fuera de un proyecto, el asistente pregunta qué carpeta abrir y qué cliente usar al crearla. Cada proyecto conserva el cliente registrado en `harness.json`.
+El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo y NetworkManager. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
 
-Dentro de la aplicación:
+## Probar
 
-| Comando | Acción |
-| --- | --- |
-| `/ayuda` | Ver los comandos y sus argumentos. Tab completa los nombres. |
-| `/nueva` | Crear y abrir una sesión. Harwiff pregunta el nombre y el objetivo. |
-| `/sesiones` o `ls` | Listar las sesiones guardadas. |
-| `/abrir` | Elegir una sesión de la lista. También puedes usar `/abrir revision` para entrar directamente. |
-| `/diagnostico demo` · `/diagnostico` | Guardar una muestra sintética o un diagnóstico de la conexión activa. |
-| `/guardar texto` | Añadir una nota fechada. |
-| `/contexto` | Leer o copiar el objetivo, las reglas, los informes y la conversación guardada. |
-| `/config` | Ver el cliente y el motor. `/config local` y `/config opensandbox` guardan el motor. |
-| `/salir` | Cerrar la aplicación. |
+1. Ejecuta `harwiff` y elige una carpeta nueva o abre un proyecto existente. Selecciona **demo** para probar sin credenciales.
+2. En `wifi >`, escribe `/diagnostico demo` para generar un informe sintético. `/auditoria` muestra su ID y `/auditoria <id>` muestra el detalle y la evidencia.
+3. Escribe `agent harwiff` y una consulta. **Esc** vuelve al entorno mientras el agente trabaja. En el editor vacío, **Tab** enfoca la fila de agentes, las flechas cambian la selección y **Enter** entra en la sesión. Usa `/detener` en la sesión para cancelar el turno.
+4. Sal con `/salir`. Al volver, `agent harwiff` recupera la sesión más reciente. Las consultas interrumpidas se muestran para reenviarlas manualmente.
 
-### Conversar en la aplicación
+También puedes abrir una carpeta explícita con `harwiff ruta/al/proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Usa `/ayuda` para ver los comandos.
 
-Para un proyecto creado con **Azure Foundry**, configura el dominio y el nombre del deployment con `/config recurso.openai.azure.com nombre-del-deployment`. Proporciona `FOUNDRY_API_KEY` en el entorno antes de arrancar. El deployment debe admitir Chat Completions v1 y llamadas a herramientas. Con una sesión abierta, escribe una consulta en texto normal. La herramienta del agente lee únicamente el contexto de esa sesión. [Referencia de Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
+## Diagnóstico real
 
-Para los proyectos de **OpenCode** o **ChatGPT**, la conversación ocurre en el cliente elegido. Si el agente accede a la carpeta, puede leer `AGENTS.md` y trabajar con los archivos de la sesión. Cuando trabaja solo con texto, comparte la salida de `/contexto` y añade la nota que devuelva con `/guardar`.
+`/adaptador` lista los dispositivos reconocidos por NetworkManager, identifica si son USB o integrados cuando Linux lo permite y muestra la conexión activa. `/adaptador <número>` guarda la selección física. Ejecuta `/diagnostico` desde `wifi >`.
 
-### Qué queda en la carpeta
+Harwiff descarga las imágenes fijadas la primera vez que hacen falta. Ejecuta el OpenSandbox incluido bajo un puerto de loopback con una clave efímera. `/config sandbox auto` elige un puerto libre y `/config sandbox <puerto>` fija uno. El colector lee el estado local del adaptador. El sandbox recibe solo indicadores depurados y aplica reglas fijas. La lectura no mide alcance a Internet ni resolución DNS. [OpenSandbox](https://open-sandbox.ai/getting-started/installation)
 
-- `OBJETIVO.md`, `REGISTRO.md` e `informes/` guardan el objetivo, los avances fechados y los informes. [Ejemplo de informe](ejemplos/informe-demo.json)
-- `turnos/` guarda la consulta antes de llamar a Foundry y el resultado al finalizar. Cada resultado conserva mensajes y respuestas de herramientas. Los turnos completos vuelven al contexto del agente al retomar la sesión. Si una ejecución se interrumpe, `/contexto` muestra la consulta pendiente para que puedas reenviarla.
-- El código del loop se tomó de [Pi v1.5.2](vendor/pi/README.md). La aplicación arranca con su propia consola y sus reglas de sesión. El recolector de diagnóstico sigue disponible para automatizaciones mediante `app.py`.
+## Agente y datos del proyecto
 
-## Diagnóstico y OpenSandbox
+En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e inicia Harwiff con `FOUNDRY_API_KEY` en el entorno. El deployment debe admitir Chat Completions v1 y herramientas. El agente puede consultar informes guardados. Usa `/diagnostico` en el entorno para generar una lectura real. En proyectos previos de ChatGPT y OpenCode, el cliente externo conserva su flujo y `agent harwiff --demo` abre el agente local de prueba. [Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
 
-`python3 app.py diagnosticar revision` usa NetworkManager en Linux para leer la conexión activa. El informe incluye el número de interfaces, el estado de conexión, la señal y la presencia de configuración IP, gateway y DNS. Omite identificadores, direcciones y claves. El alcance a Internet y la resolución DNS quedan sin medir. Si hay varias interfaces activas, usa `--interfaz NOMBRE`.
+- `auditoria/` contiene la solicitud previa y el resultado por ejecución. Un inicio sin resultado se muestra como pendiente de cierre.
+- `informes/` contiene el JSON de cada diagnóstico con la referencia y SHA-256 en su registro. Los informes de sesiones existentes siguen disponibles como evidencia histórica.
+- `agentes/` contiene sesiones del agente con su historial y estado. `sesiones/` conserva las notas e informes de las sesiones de trabajo existentes.
 
-Con un servidor OpenSandbox disponible, instala `requirements-opensandbox.txt` en un entorno virtual y arranca la aplicación con `WIFI_PYTHON` apuntando al ejecutable Python de ese entorno. Dentro de la aplicación selecciona `/config opensandbox`. El valor por defecto del servidor es `http://127.0.0.1:8090`. Revisa `OPENSANDBOX_DOMAIN`, `OPENSANDBOX_PROTOCOL` y `OPENSANDBOX_API_KEY` según la instalación.
+## Desarrollo
 
-El sandbox recibe el analizador fijo y la muestra depurada, y se elimina al terminar. [SDK de Python](https://open-sandbox.ai/sdks/python)
+Usa Node.js 22.23.5, Python 3.12 y `uv`. Ejecuta `npm ci --ignore-scripts` y `npm start`. El entorno de desarrollo usa el Python del sistema o el intérprete indicado en `WIFI_PYTHON`. Para probar el modo real en desarrollo, instala `requirements-runtime.txt` en ese intérprete. `scripts/build-release.sh` genera los artefactos. [Atribuciones y licencias](THIRD_PARTY.md)

@@ -1,0 +1,121 @@
+import {
+  CombinedAutocompleteProvider, Container, Editor, matchesKey, ProcessTerminal,
+  ScrollView, Text, TuiAltScreen, VStack,
+} from "@earendil-works/pi-tui";
+
+const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
+const simple = (texto) => texto;
+const tema = {
+  selectedPrefix: acento, selectedText: acento, description: simple, scrollInfo: simple, noMatch: simple,
+};
+
+export function pantalla(comandos, acciones) {
+  const ui = new TuiAltScreen(new ProcessTerminal(), true);
+  const encabezado = new Text("", 1);
+  const historial = new Container();
+  const viewport = new ScrollView(historial, { follow: "end", primary: true, scrollbar: "auto" });
+  const fila = new Text("", 1);
+  const etiqueta = new Text("", 1);
+  const editor = new Editor(ui, { borderColor: acento, selectList: tema }, { paddingX: 1 });
+  const completar = new CombinedAutocompleteProvider(
+    Object.entries(comandos).map(([name, description]) => ({ name: name.slice(1), description })), process.cwd(),
+  );
+  editor.setAutocompleteProvider({
+    getSuggestions: async (lineas, fila, columna, opciones) => {
+      if (fila !== 0 || !/^\/[a-z-]*$/.test(lineas[fila].slice(0, columna))) return null;
+      return completar.getSuggestions(lineas, fila, columna, { ...opciones, force: false });
+    },
+    applyCompletion: completar.applyCompletion.bind(completar),
+  });
+  ui.setLayoutRoot(new VStack([encabezado, { component: viewport, grow: 1, basis: 0 }, etiqueta, editor, fila]));
+  let esperando;
+  let cerrado = false;
+  let enFila = false;
+  let indice = 0;
+  let estado;
+  let mensajesVisibles;
+  let pregunta;
+  editor.onSubmit = (texto) => {
+    if ((!texto && !pregunta) || !esperando) return;
+    if (!pregunta && texto) editor.addToHistory(texto);
+    const resolver = esperando;
+    esperando = undefined;
+    pregunta = undefined;
+    resolver(texto);
+    render(estado);
+  };
+  ui.addInputListener((dato) => {
+    if (matchesKey(dato, "ctrl+c")) {
+      acciones.salir();
+      return { consume: true };
+    }
+    if (pregunta && matchesKey(dato, "escape")) {
+      editor.setText("");
+      editor.onSubmit("");
+      return { consume: true };
+    }
+    if (matchesKey(dato, "escape") && (enFila || (estado?.agente && !editor.capturesViewportInput))) {
+      if (enFila) enFila = false;
+      else acciones.volver();
+      render(estado);
+      return { consume: true };
+    }
+    if (matchesKey(dato, "tab") && !editor.getText() && !pregunta && !estado?.agente && estado?.agentes.length) {
+      enFila = !enFila;
+      render(estado);
+      return { consume: true };
+    }
+    if (!enFila) return undefined;
+    if (matchesKey(dato, "left")) indice = Math.max(0, indice - 1);
+    if (matchesKey(dato, "right")) indice = Math.min(estado.agentes.length - 1, indice + 1);
+    if (matchesKey(dato, "enter")) {
+      enFila = false;
+      acciones.entrar(estado.agentes[indice].id);
+    }
+    render(estado);
+    return { consume: true };
+  });
+
+  function render(nuevo) {
+    if (cerrado || !nuevo) return;
+    estado = nuevo;
+    encabezado.setText(`${acento("Harwiff")}  ·  ${nuevo.proyecto}  ·  ${nuevo.cliente}`);
+    etiqueta.setText(pregunta || (nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a wifi` : "wifi >"));
+    indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
+    const agentes = nuevo.agentes.map(({ id, estado }, n) => {
+      const texto = `${id} · ${estado}`;
+      return enFila && n === indice ? acento(`[${texto}]`) : texto;
+    });
+    fila.setText(agentes.length
+      ? `Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : nuevo.agente ? "" : "   ·   Tab"}`
+      : "Agentes  ·  agent harwiff para iniciar");
+    if (mensajesVisibles !== nuevo.mensajes) {
+      historial.clear();
+      for (const mensaje of nuevo.mensajes) historial.addChild(new Text(mensaje, 1));
+      viewport.scrollToEnd();
+      mensajesVisibles = nuevo.mensajes;
+    }
+    ui.setFocus(enFila ? null : editor);
+    ui.requestRender();
+  }
+
+  ui.start();
+  return {
+    render,
+    leer() {
+      return cerrado ? Promise.resolve(undefined) : new Promise((resuelve) => { esperando = resuelve; });
+    },
+    preguntar(texto) {
+      if (cerrado) return Promise.resolve(undefined);
+      pregunta = texto;
+      render(estado);
+      return new Promise((resuelve) => { esperando = resuelve; });
+    },
+    cerrar() {
+      if (cerrado) return;
+      cerrado = true;
+      esperando?.(undefined);
+      ui.stop();
+    },
+  };
+}
