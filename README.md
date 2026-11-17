@@ -2,52 +2,46 @@
 
 El harness se instala en una carpeta independiente. Cada proyecto elige un cliente al crearse y conserva sus sesiones como archivos Markdown e informes JSON. El diagnóstico puede ejecutarse localmente o en OpenSandbox.
 
-## Iniciar un proyecto
+## Abrir la aplicación
 
-Clona el repositorio en Linux con Python 3.10 o posterior:
-
-```bash
-git clone https://github.com/glender222/wifi-diagnostico-harness.git
-cd wifi-diagnostico-harness
-python3 app.py iniciar ../mi-proyecto --cliente chatgpt
-cd ../mi-proyecto
-python3 app.py nueva revision --objetivo "Revisar el estado de la conexión Wi-Fi"
-python3 app.py abrir revision
-```
-
-El instalador también acepta una carpeta vacía. Elige `chatgpt`, `opencode` o `azure-foundry` al crearla. `harness.json` registra esa elección y `AGENTS.md` contiene las reglas de trabajo. Las sesiones se guardan en `sesiones/ID/` con `OBJETIVO.md`, `REGISTRO.md` e `informes/`.
-
-## Trabajar y retomar
+Se usa Linux, Node.js 22.19 o posterior y Python 3.10 o posterior.
 
 ```bash
-python3 app.py sesiones
-python3 app.py diagnosticar revision --demo
-python3 app.py guardar revision --nota "Qué hice: probé la demo. Evidencia: informe sintético. Próximo paso: ejecutar la lectura local."
-python3 app.py abrir revision
+npm ci --ignore-scripts
+npm start
 ```
 
-Con un agente que tenga acceso a archivos, abre la carpeta del proyecto y pídele que lea `AGENTS.md` y retome la sesión `revision`. El agente puede consultar el historial y guardar avances con `app.py guardar`. Para cambiar de sesión, guarda el avance actual y abre el nuevo ID.
+Al arrancar, indica la carpeta del proyecto. Si está vacía, el asistente de inicio pregunta qué cliente usar. Para abrir una carpeta existente directamente, usa `npm start -- ../proyecto-wifi`. La app usa el cliente registrado en `harness.json`. Cada proyecto conserva su elección.
 
-Cuando el chat no tenga acceso a la carpeta, copia la salida de `abrir revision` en el chat. Guarda la nota Markdown que te devuelva con `python3 app.py guardar revision --archivo nota.md`. El historial de la carpeta queda disponible aunque empieces otro chat.
+Dentro de la aplicación:
 
-Si el proyecto se creó con `azure-foundry`, `python3 app.py explicar revision` envía el contexto al deployment configurado y devuelve una nota propuesta. Configura `FOUNDRY_HOST` con el dominio del recurso, `FOUNDRY_DEPLOYMENT` con el nombre del deployment y `FOUNDRY_API_KEY` con su clave. El deployment debe admitir Chat Completions v1. [Referencia de Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
+| Comando | Acción |
+| --- | --- |
+| `/ayuda` | Ver los comandos y sus argumentos. Tab completa los nombres. |
+| `/nueva revision Revisar la conexión` | Crear y abrir una sesión con ese objetivo. |
+| `/sesiones` · `/abrir revision` | Ver y retomar sesiones guardadas. |
+| `/diagnostico demo` · `/diagnostico` | Guardar una muestra sintética o un diagnóstico de la conexión activa. |
+| `/guardar texto` | Añadir una nota fechada. |
+| `/contexto` | Leer o copiar el objetivo, las reglas, los informes y la conversación guardada. |
+| `/config` | Ver el cliente y el motor. `/config local` y `/config opensandbox` guardan el motor. |
+| `/salir` | Cerrar la aplicación. |
+
+### Conversar en la aplicación
+
+Para un proyecto creado con **Azure Foundry**, configura el dominio y el nombre del deployment con `/config recurso.openai.azure.com nombre-del-deployment`. Proporciona `FOUNDRY_API_KEY` en el entorno antes de arrancar. El deployment debe admitir Chat Completions v1 y llamadas a herramientas. Con una sesión abierta, escribe una consulta en texto normal. La herramienta del agente lee únicamente el contexto de esa sesión. [Referencia de Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
+
+Para los proyectos de **OpenCode** o **ChatGPT**, la conversación ocurre en el cliente elegido. Si el agente accede a la carpeta, puede leer `AGENTS.md` y trabajar con los archivos de la sesión. Cuando trabaja solo con texto, comparte la salida de `/contexto` y añade la nota que devuelva con `/guardar`.
+
+### Qué queda en la carpeta
+
+- `OBJETIVO.md`, `REGISTRO.md` e `informes/` guardan el objetivo, los avances fechados y los informes. [Ejemplo de informe](ejemplos/informe-demo.json)
+- `turnos/` guarda la consulta antes de llamar a Foundry y el resultado al finalizar. Cada resultado conserva mensajes y respuestas de herramientas. Los turnos completos vuelven al contexto del agente al retomar la sesión. Si una ejecución se interrumpe, `/contexto` muestra la consulta pendiente para que puedas reenviarla.
+- El código del loop se tomó de [Pi v1.5.2](vendor/pi/README.md). La aplicación arranca con su propia consola y sus reglas de sesión. El recolector de diagnóstico sigue disponible para automatizaciones mediante `app.py`.
 
 ## Diagnóstico y OpenSandbox
 
 `python3 app.py diagnosticar revision` usa NetworkManager en Linux para leer la conexión activa. El informe incluye el número de interfaces, el estado de conexión, la señal y la presencia de configuración IP, gateway y DNS. Omite identificadores, direcciones y claves. El alcance a Internet y la resolución DNS quedan sin medir. Si hay varias interfaces activas, usa `--interfaz NOMBRE`.
 
-Con un servidor OpenSandbox disponible, ejecuta desde la carpeta de tu proyecto:
+Con un servidor OpenSandbox disponible, instala `requirements-opensandbox.txt` en un entorno virtual y arranca la aplicación con `WIFI_PYTHON` apuntando al ejecutable Python de ese entorno. Dentro de la aplicación selecciona `/config opensandbox`. El valor por defecto del servidor es `http://127.0.0.1:8090`. Revisa `OPENSANDBOX_DOMAIN`, `OPENSANDBOX_PROTOCOL` y `OPENSANDBOX_API_KEY` según la instalación.
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r harness/requirements-opensandbox.txt
-.venv/bin/python app.py diagnosticar revision --motor opensandbox --demo
-```
-
-El valor por defecto es `http://127.0.0.1:8090`. Configura `OPENSANDBOX_DOMAIN` y `OPENSANDBOX_PROTOCOL` si usas otro servidor. Configura `OPENSANDBOX_API_KEY` cuando el servidor requiera autenticación. El sandbox recibe el analizador fijo y la muestra depurada, y se elimina al terminar. Si el servidor tiene el componente de egreso configurado, `--denegar-egreso` solicita una política restrictiva. [SDK de Python](https://open-sandbox.ai/sdks/python) · [Políticas de egreso](https://open-sandbox.ai/guides/network-security)
-
-## Estado de la versión 0.1.0
-
-- `OBJETIVO.md` registra el objetivo. `REGISTRO.md` conserva las notas con fecha UTC y las referencias a los informes. `informes/` guarda cada lectura depurada o muestra sintética por separado. [Ejemplo de informe](ejemplos/informe-demo.json)
-- El flujo actual se ejecuta por pasos. Abre la sesión, lee el contexto, realiza el diagnóstico o registra el trabajo, guarda la nota y vuelve a abrir la sesión cuando quieras continuar.
-- Queda pendiente definir y validar el loop del agente, incluyendo qué eventos registra, cuándo hace un checkpoint y cómo reanuda una ejecución que se interrumpió. Las notas de esta versión se guardan por comando y pueden leerse desde otro chat o proceso.
+El sandbox recibe el analizador fijo y la muestra depurada, y se elimina al terminar. [SDK de Python](https://open-sandbox.ai/sdks/python)
