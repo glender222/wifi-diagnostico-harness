@@ -1,0 +1,21 @@
+{
+  "esquema": "wifi-diagnostico/v1",
+  "observaciones": {
+    "interfaces_wifi": 1,
+    "conectada": true,
+    "senal_dbm": -82,
+    "ipv4_no_link_local": false,
+    "ipv6_no_link_local": false,
+    "gateway_ipv4": false,
+    "gateway_ipv6": false,
+    "dns_wifi": false
+  },
+  "hallazgos": [
+    "sin_ip_distinta_de_link_local",
+    "sin_gateway_configurado_en_wifi",
+    "sin_dns_configurado_en_wifi",
+    "senal_debil_segun_umbral_orientativo"
+  ],
+  "alcance": "Estado local de la interfaz. Alcance a Internet y resolución DNS sin medir.",
+  "origen": "demo"
+}
