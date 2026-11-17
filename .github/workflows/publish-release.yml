@@ -1,0 +1,59 @@
+name: Publicar release Harwiff
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Etiqueta de la release y del borrador
+        required: true
+        type: string
+      build_run:
+        description: ID del workflow de compilación y pruebas
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      BUILD_RUN: ${{ inputs.build_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verificar el origen del paquete
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          commit="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          gh run view "$BUILD_RUN" --json headSha,conclusion,workflowName |
+            jq -e --arg commit "$commit" '.headSha == $commit and .conclusion == "success" and .workflowName == "Harwiff Linux x86-64"'
+          gh release view "$TAG" --json isDraft --jq '.isDraft' | grep -qx true
+      - uses: actions/download-artifact@v4
+        with:
+          name: harwiff-linux-x86_64
+          path: dist
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run }}
+      - name: Publicar los artefactos verificados
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS)
+          gh release upload "$TAG" dist/install.sh dist/harwiff-linux-x86_64.tar.gz dist/SHA256SUMS
+          gh release edit "$TAG" --draft=false --latest
+      - name: Instalar desde la URL pública
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --mount "type=bind,source=$PWD/tests,target=/tests,readonly" debian:12-slim bash -ec '
+            apt-get update -qq
+            apt-get install -y -qq ca-certificates curl >/dev/null
+            bash /tests/instalacion.sh "$1"
+          ' _ "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
