@@ -103,7 +103,7 @@ else process.exit(1);
                 escribir(b"\x1b[200~" + secreto + b"\x1b[201~")
                 self.assertNotIn(secreto, esperar("•"))
                 escribir(b"\r")
-                self.assertNotIn(secreto, esperar("Modelos compatibles de OpenAI"))
+                self.assertNotIn(secreto, esperar("Modelos de tu proyecto OpenAI"))
                 escribir(b"\x1b[B\r")
                 self.assertNotIn(secreto, esperar("OpenAI API conectado · Modelo: gpt-5-mini · Credencial: Secret Service"))
                 self.assertEqual(almacen.read_text(), "presente")

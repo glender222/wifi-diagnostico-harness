@@ -274,8 +274,8 @@ async function aplicar(destino) {
     const entorno = entrada ? credenciales.conClave(entrada) : existente.entorno;
     const modelos = await listarModelosOpenAI({ entorno });
     if (cerrando) return;
-    if (!modelos.length) throw new Error("La clave no tiene acceso a los modelos compatibles de Harwiff.");
-    const id = await interfaz.elegir("Modelos compatibles de OpenAI · Enter guarda · Esc cancela",
+    if (!modelos.length) throw new Error("La API de OpenAI no devolvió modelos para este proyecto.");
+    const id = await interfaz.elegir("Modelos de tu proyecto OpenAI · Enter guarda · Esc cancela",
       modelos.map((modelo) => ({ value: modelo, label: modelo })), config.llm?.openaiModelId);
     if (!id || cerrando) return;
     await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: elegido, openaiModelId: id } }));
@@ -633,8 +633,8 @@ async function aplicar(destino) {
         if (host === "modelos") {
           if (deployment) throw new Error("Usa /config modelos.");
           const modelos = await listarModelosOpenAI(await credenciales.resolver());
-          mostrar(modelos.length ? `Modelos compatibles disponibles en OpenAI: ${modelos.join(", ")}`
-            : "La clave no tiene acceso a los modelos compatibles de Harwiff.");
+          mostrar(modelos.length ? `Modelos disponibles en tu proyecto OpenAI: ${modelos.join(", ")}`
+            : "La API de OpenAI no devolvió modelos para este proyecto.");
           break;
         }
         if (host === "modelo") {

@@ -87,7 +87,7 @@ Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso. Si ya lo seleccionast
 /agente Revisa la postura de seguridad del AP de laboratorio y resume la evidencia del fixture
 ```
 
-`/config modelos` consulta los IDs de la cuenta y muestra los compatibles del catálogo verificado. Harwiff comprueba el acceso al guardar el modelo y al iniciar la sesión. `/config proveedor demo` y `/config proveedor azure-foundry` eligen las otras opciones de `/agente`. La configuración del chat legado pertenece al cliente del proyecto. [Disponibilidad de modelos en OpenAI](https://developers.openai.com/api/docs/guides/rate-limits#model-availability)
+`/connect` y `/config modelos` muestran todos los IDs que OpenAI devuelve para el proyecto, con los más recientes al principio cuando la API informa su fecha. Harwiff comprueba el acceso al guardar el ID y al iniciar la sesión. Para usar `/agente`, el modelo elegido debe admitir Responses y function calling. Puedes comprobarlo con `/connect test`. `/config proveedor demo` y `/config proveedor azure-foundry` eligen las otras opciones de `/agente`. [Disponibilidad de modelos en OpenAI](https://developers.openai.com/api/docs/guides/rate-limits#model-availability)
 
 El resultado y la vista de la sesión incluyen el ID solicitado, los IDs devueltos y los tokens informados por Responses. Una medición parcial indica que alguna solicitud carece de cifras. Desde el repositorio, `node tests/openai.mjs` ejecuta la simulación. El fixture de `gpt-4.1-mini` reporta 101 tokens de entrada, 22 de salida y 123 en total, todos simulados.
 

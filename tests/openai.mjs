@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listarModelosOpenAI, validarModeloOpenAI } from "../proveedor-openai.mjs";
+import { comprobarHerramientasOpenAI, listarModelosOpenAI, validarModeloOpenAI } from "../proveedor-openai.mjs";
 import { guardarAlcance, leerAuditoria, usarAdaptador } from "../proyecto.mjs";
 import { iniciarSesionAgente, proveedorAgente } from "../sesion-agente.mjs";
 
@@ -22,6 +22,11 @@ const objetivo = "Revisar la postura del escenario sintético";
 const leer = async (ruta) => JSON.parse(await readFile(ruta, "utf8"));
 const baseApi = "https://api.openai.com/v1";
 const listado = () => Response.json({ data: [{ id: "whisper-1" }, { id: modelId }, { id: "gpt-5-mini" }] });
+const modeloNuevo = "gpt-6.2-sol";
+const catalogoNuevo = () => Response.json({ data: [
+  { id: "whisper-1", created: 1 }, { id: modeloNuevo, created: 3 }, { id: "ft:gpt-4.1-mini:proyecto:prueba", created: 2 },
+  { id: modeloNuevo, created: 3 }, { id: "\n" },
+] });
 
 function valorHttp(input, init) {
   const request = new Request(input, init);
@@ -32,19 +37,19 @@ function valorHttp(input, init) {
   return request;
 }
 
-function api({ pasos, solicitudes = [] }) {
+function api({ pasos, solicitudes = [], id = modelId, catalogo = listado }) {
   let i = 0;
   return async (input, init) => {
     const request = valorHttp(input, init);
     if (request.url === `${baseApi}/models`) {
       assert.equal(request.method, "GET");
-      return listado();
+      return catalogo();
     }
     assert.equal(request.url, `${baseApi}/responses`);
     assert.equal(request.method, "POST");
     const payload = await request.json();
     solicitudes.push(payload);
-    assert.equal(payload.model, modelId);
+    assert.equal(payload.model, id);
     assert.equal(payload.store, false);
     assert.equal(payload.stream, true);
     assert.equal(payload.max_output_tokens, 2048);
@@ -97,11 +102,18 @@ try {
   await assert.rejects(listarModelosOpenAI({ entorno: {}, fetchFn: () => assert.fail() }), { code: "openai_key_missing" });
   await assert.rejects(listarModelosOpenAI({ entorno: { OPENAI_API_KEY: "oauth-falso" }, fetchFn: () => assert.fail() }),
     { code: "openai_key_invalid" });
-  await assert.rejects(validarModeloOpenAI("whisper-1", { entorno, fetchFn: () => assert.fail() }), { code: "openai_model_incompatible" });
+  await assert.rejects(validarModeloOpenAI("id con espacios", { entorno, fetchFn: () => assert.fail() }),
+    { code: "openai_model_incompatible" });
   assert.deepEqual(await listarModelosOpenAI({ entorno, fetchFn: async (input, init) => {
     assert.equal(valorHttp(input, init).url, `${baseApi}/models`);
     return listado();
-  } }), [modelId, "gpt-5-mini"]);
+  } }), ["whisper-1", modelId, "gpt-5-mini"]);
+  assert.deepEqual(await listarModelosOpenAI({ entorno, fetchFn: async () => catalogoNuevo() }),
+    [modeloNuevo, "ft:gpt-4.1-mini:proyecto:prueba", "whisper-1"]);
+  assert.equal((await validarModeloOpenAI("whisper-1", { entorno, fetchFn: async () => listado() })).modelo.id, "whisper-1");
+  await assert.rejects(comprobarHerramientasOpenAI("whisper-1", { entorno, fetchFn: async (url) =>
+    url.endsWith("/models") ? listado() : Response.json({ error: { param: "model" } }, { status: 400 }) }),
+  { code: "openai_request" });
   await assert.rejects(validarModeloOpenAI("gpt-5.4-mini", { entorno, fetchFn: async () => listado() }), { code: "openai_model_access" });
   for (const [status, code, esperado] of [[401, "invalid_api_key", "openai_key_invalid"],
     [403, "permission_denied", "openai_model_access"], [429, "credit_balance_exhausted", "openai_quota"],
@@ -153,6 +165,22 @@ try {
   ] })));
   assert.equal(alternativa.estado.status, "completed");
   assert.deepEqual(alternativa.herramientas.map(({ tool }) => tool), ["inspeccionar_postura", "observar_entorno"]);
+
+  const proyectoModeloNuevo = { ...proyecto, config: { ...config,
+    llm: { proveedor: "openai", openaiModelId: modeloNuevo } } };
+  const nuevaSesion = await finalizar(await iniciar(api({ id: modeloNuevo, catalogo: catalogoNuevo, pasos: [
+    (payload) => {
+      assert.ok(payload.include.includes("reasoning.encrypted_content"));
+      return respuesta(1, herramienta(1, "observar_entorno"));
+    },
+    (payload) => {
+      assert.ok(payload.input.some(({ type }) => type === "function_call_output"));
+      return respuesta(2, mensaje(2));
+    },
+  ] }), { proyecto: proyectoModeloNuevo }));
+  assert.equal(nuevaSesion.estado.status, "completed");
+  assert.equal(nuevaSesion.resultado.modelId, modeloNuevo);
+  assert.deepEqual(nuevaSesion.herramientas.map(({ tool }) => tool), ["observar_entorno"]);
 
   const cuota = await finalizar(await iniciar(api({ pasos: [
     () => respuesta(1, herramienta(1, "observar_entorno")),
@@ -224,7 +252,7 @@ try {
     input: comandos, encoding: "utf8", env: { ...process.env, ...entorno, WIFI_PYTHON: python },
   });
   assert.equal(cliResult.status, 0, cliResult.stderr);
-  assert.match(cliResult.stdout, /Modelos compatibles disponibles en OpenAI: gpt-4\.1-mini/);
+  assert.match(cliResult.stdout, /Modelos disponibles en tu proyecto OpenAI: gpt-4\.1-mini, whisper-1/);
   assert.match(cliResult.stdout, /Modelo OpenAI guardado: gpt-4\.1-mini/);
   assert.match(cliResult.stdout, /Alcance guardado/);
   assert.doesNotMatch(cliResult.stdout + cliResult.stderr, new RegExp(clave));

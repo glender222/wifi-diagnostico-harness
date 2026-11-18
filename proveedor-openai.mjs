@@ -1,7 +1,6 @@
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 
 const BASE = "https://api.openai.com/v1";
-const MODELOS_VERIFICADOS = ["gpt-4.1-mini", "gpt-5-mini", "gpt-5.4-mini"];
 const modelosPi = new Map(openaiProvider().getModels()
   .filter(({ provider, api, baseUrl }) => provider === "openai" && api === "openai-responses" && baseUrl === BASE)
   .map((modelo) => [modelo.id, modelo]));
@@ -12,7 +11,7 @@ export const MENSAJES_OPENAI = {
   openai_key_missing: "Conecta OpenAI con /connect o define OPENAI_API_KEY en el entorno de Harwiff.",
   openai_key_invalid: "OpenAI rechazó la autenticación. Revisa la clave y sus permisos.",
   openai_model_missing: "Selecciona un modelo con /config modelos y /config modelo <model-id>.",
-  openai_model_incompatible: "El modelo no está en el catálogo compatible de Harwiff. Consulta /config modelos.",
+  openai_model_incompatible: "El ID de modelo no es válido. Consulta /config modelos.",
   openai_model_access: "OpenAI no autoriza el acceso al modelo o a este recurso. Revisa el proyecto y /config modelos.",
   openai_quota: "OpenAI indica que se agotó la cuota, el crédito o el límite de gasto del proyecto.",
   openai_rate_limit: "Se alcanzó el límite de solicitudes o tokens por minuto de OpenAI. Espera antes de reintentar.",
@@ -81,19 +80,28 @@ async function solicitarOpenAI(ruta, { entorno = process.env, fetchFn = globalTh
 export async function listarModelosOpenAI(opciones) {
   const listado = await solicitarOpenAI("models", opciones);
   if (!Array.isArray(listado?.data)) throw errorOpenAI("openai_service");
-  const disponibles = new Set(listado.data.map((modelo) => modelo?.id));
-  return MODELOS_VERIFICADOS.filter((id) => modelosPi.has(id) && disponibles.has(id));
+  const fecha = (modelo) => Number.isSafeInteger(modelo.created) ? modelo.created : 0;
+  const disponibles = listado.data.filter((modelo) => modeloValido(modelo?.id))
+    .sort((a, b) => fecha(b) - fecha(a));
+  return [...new Set(disponibles.map(({ id }) => id))];
 }
 
 export async function validarModeloOpenAI(id, opciones) {
   if (!id) throw errorOpenAI("openai_model_missing");
-  if (!MODELOS_VERIFICADOS.includes(id) || !modelosPi.has(id)) throw errorOpenAI("openai_model_incompatible");
+  if (!modeloValido(id)) throw errorOpenAI("openai_model_incompatible");
   if (!(await listarModelosOpenAI(opciones)).includes(id)) throw errorOpenAI("openai_model_access");
-  return { modelo: modelosPi.get(id), clave: claveOpenAI(opciones?.entorno ?? process.env) };
+  // El catálogo de la cuenta puede incorporar un modelo antes que el catálogo de Pi.
+  const modelo = modelosPi.get(id) ?? {
+    id, name: id, provider: "openai", api: "openai-responses", baseUrl: BASE,
+    input: ["text"], reasoning: false, contextWindow: 0, maxTokens: 2048,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  return { modelo, clave: claveOpenAI(opciones?.entorno ?? process.env) };
 }
 
 const esConteo = (valor) => Number.isSafeInteger(valor) && valor >= 0;
-const modeloValido = (modelo) => typeof modelo === "string" && /^gpt-[a-z0-9.-]{1,96}$/.test(modelo);
+const modeloValido = (modelo) => typeof modelo === "string" && /^[^\s\x00-\x1f\x7f-\x9f]{1,256}$/.test(modelo)
+  && !modelo.startsWith("sk-");
 
 function tokensReportados(uso) {
   if (!uso || ![uso.input_tokens, uso.output_tokens, uso.total_tokens].every(esConteo)) return null;
@@ -152,7 +160,12 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) 
     },
     hooks: {
       onPayload(payload) {
-        return JSON.parse(ocultarClaveOpenAI(JSON.stringify(payload), entorno));
+        const limpio = JSON.parse(ocultarClaveOpenAI(JSON.stringify(payload), entorno));
+        if (!modelosPi.has(limpio.model)) {
+          // Los modelos que razonan necesitan poder continuar sin estado remoto.
+          limpio.include = [...new Set([...(limpio.include ?? []), "reasoning.encrypted_content"])];
+        }
+        return limpio;
       },
       async fetch(input, init) {
         const solicitud = actual;
