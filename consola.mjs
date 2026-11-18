@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson, localizarProyecto } from "./proyecto.mjs";
 
-const VERSION = "0.2.4";
+const VERSION = "0.2.5";
+const NOMBRE_ENTORNO = "harwiff";
+const PROMPT_ENTORNO = `${NOMBRE_ENTORNO} >`;
 const clientes = ["demo", "azure-foundry", "chatgpt", "opencode"];
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const python = process.env.WIFI_PYTHON || "python3";
@@ -104,6 +106,7 @@ async function aplicar(destino) {
       proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente ? agente.mensajes : mensajes, comandos: disponibles(proyecto, agente),
+      promptEntorno: PROMPT_ENTORNO,
     });
   }
   function mostrar(texto, destino = agente) {
@@ -152,7 +155,7 @@ async function aplicar(destino) {
       const texto = entrada.trim();
       if (!texto) continue;
       if (tty && (texto.startsWith("/") || texto === "ls" || /^agent\s+harwiff(?:\s|$)/.test(texto))) {
-        mostrar(`${agente ? "Tú" : "wifi"}  ${texto}`);
+        mostrar(`${agente ? "Tú" : NOMBRE_ENTORNO}  ${texto}`);
       }
       try {
         await procesar(texto);
@@ -337,7 +340,7 @@ async function aplicar(destino) {
     if (texto === "/salir") return cerrar();
     if (texto === "/volver") {
       volver();
-      if (!tty) salida("wifi >");
+      if (!tty) salida(PROMPT_ENTORNO);
       return;
     }
     if (texto === "/detener") {

@@ -140,8 +140,8 @@ export function pantalla(comandos, acciones) {
     if (!nuevo.agentes.length) enFila = false;
     const contexto = nuevo.proyecto ? `${nuevo.proyecto}  ·  ${nuevo.cliente}` : "Sin proyecto";
     encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}`);
-    editor.prefijo = pregunta || (nuevo.agente ? undefined : "wifi >");
-    etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a wifi` : "");
+    editor.prefijo = pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno);
+    etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}` : "");
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
     const agentes = nuevo.agentes.map(({ id, estado }, n) => {
       const texto = `${id} · ${estado}`;

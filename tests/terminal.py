@@ -63,7 +63,7 @@ class TerminalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raiz:
             proyecto = Path(raiz) / "prueba con espacios"
             with terminal(raiz) as (proceso, esperar, escribir):
-                esperar("wifi >")
+                esperar("harwiff >")
                 esperar("Sin proyecto")
                 self.assertEqual(list(Path(raiz).iterdir()), [])
                 escribir(b"/proyecto\r")
@@ -81,11 +81,11 @@ class TerminalTest(unittest.TestCase):
 
     def test_escape_cancela_y_salir_cierra_desde_pregunta(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("wifi >")
+            esperar("harwiff >")
             escribir(b"/proyecto\r")
             esperar("Carpeta [")
             escribir(b"\x1b")
-            esperar("wifi >")
+            esperar("harwiff >")
             self.assertEqual(list(Path(raiz).iterdir()), [])
             escribir(b"/proyecto\r")
             esperar("Carpeta [")
@@ -95,7 +95,7 @@ class TerminalTest(unittest.TestCase):
 
     def test_apartado_agente_aparece_al_enviar_consulta(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            inicial = esperar("wifi >")
+            inicial = esperar("harwiff >")
             self.assertNotIn("─".encode(), inicial)
             self.assertNotIn(b"Agentes", inicial)
             escribir(b"/proyecto prueba\r")
@@ -107,11 +107,12 @@ class TerminalTest(unittest.TestCase):
             escribir(b"Consulta de prueba\r")
             iniciada = esperar("agente/harwiff >")
             self.assertNotIn(b"wifi >", iniciada)
+            self.assertIn(b"Esc vuelve a harwiff >", iniciada)
             esperar("Agentes")
             escribir(b"/config\r")
             esperar("Agente: harwiff")
             escribir(b"\x1b")
-            esperar("wifi >")
+            esperar("harwiff >")
             escribir(b"\t")
             esperar("[harwiff")
             escribir(b"\r")
@@ -121,7 +122,7 @@ class TerminalTest(unittest.TestCase):
 
     def test_consulta_directa_desde_wifi(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("wifi >")
+            esperar("harwiff >")
             escribir(b"/proyecto prueba\r")
             esperar("Proyecto creado")
             escribir(b"Consulta directa\r")
@@ -133,7 +134,7 @@ class TerminalTest(unittest.TestCase):
 
     def test_comandos_rapidos_no_usan_el_prefijo_del_menu_anterior(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("wifi >")
+            esperar("harwiff >")
             escribir(b"/")
             inicial = esperar("Crear o abrir un proyecto")
             self.assertNotIn(b"/diagnostico", inicial)
@@ -161,7 +162,7 @@ class TerminalTest(unittest.TestCase):
             escribir(b"ayuda\r")
             esperar("/volver  Volver del agente al entorno")
             escribir(b"\x1b")
-            esperar("wifi >")
+            esperar("harwiff >")
             escribir(b"\t")
             esperar("[harwiff")
             escribir(b"/")
