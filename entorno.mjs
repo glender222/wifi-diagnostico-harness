@@ -44,3 +44,39 @@ export async function conBloqueoProyecto(raiz, tarea, mensajeOcupado = "Otra con
     await directorio.close();
   }
 }
+
+const valores = (lista, valor) => lista.includes(valor) ? valor : "unknown";
+const fuentesInventario = ["sysfs", "sysfs/net", "sysfs/ieee80211", "sysfs/rfkill", "nmcli", "iw_dev", "iw_phy", "iw_reg", "ip-4", "ip-6", "ethtool"];
+const codigosInventario = ["source_unavailable", "permission_denied", "probe_timeout", "parse_unsupported", "adapter_disconnected", "ambiguous_interface"];
+const avisosInventario = (lista) => lista
+  .filter(({ code, source }) => codigosInventario.includes(code) && fuentesInventario.includes(source))
+  .slice(0, 8).map(({ code, source }) => ({ code, source }));
+
+export function depurarInventario(perfil) {
+  if (perfil?.schema !== "harwiff-adapter-inventory/v1" || !Array.isArray(perfil.devices)) {
+    throw new Error("El inventario local tiene un formato desconocido.");
+  }
+  const maxDispositivos = 4;
+  const maxRadios = 4;
+  const limitados = perfil.devices.slice(0, maxDispositivos);
+  return {
+    ok: true, origen: "host_readonly", adaptadorSesion: "mock",
+    inventarioEstado: valores(["complete", "partial", "unavailable"], perfil.status),
+    truncado: perfil.devices.length > maxDispositivos || limitados.some(({ phys }) => phys.length > maxRadios)
+      || perfil.warnings.length > 8 || limitados.some(({ phys }) => phys.some(({ probe }) => probe.warnings.length > 8)),
+    avisos: avisosInventario(perfil.warnings),
+    dispositivos: limitados.map(({ bus, phys }, indice) => ({
+      alias: "dispositivo-" + (indice + 1),
+      bus: valores(["usb", "pci", "sdio", "platform", "virtual"], bus),
+      radios: phys.slice(0, maxRadios).map(({ interfaces, capabilities, connectivity, probe }, numero) => ({
+        alias: "radio-" + (numero + 1),
+        interfaces: interfaces.length,
+        conectividad: valores(["critical", "noncritical", "potentially_critical"], connectivity.criticality),
+        monitorAnunciado: valores(["supported", "unsupported"], capabilities.monitor.declared),
+        concurrenciaAnunciada: valores(["supported", "unsupported"], capabilities.concurrency.declared),
+        verificacionOperativa: "not_tested",
+        avisos: avisosInventario(probe.warnings),
+      })),
+    })),
+  };
+}

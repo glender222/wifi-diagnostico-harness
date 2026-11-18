@@ -16,7 +16,7 @@ mkdir -- "$proyecto"
 test ! -e "$proyecto/.harwiff"
 printf '%s\n' '/init' '/nueva registro Prueba de notas' '/guardar Nota de instalación' '/contexto' \
   '/diagnostico demo' '/alcance set --ssid "Red de laboratorio"' \
-  '/adaptador usar mock' '/alcance ver' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
+  '/adaptador detalle mock' '/adaptador usar mock' '/alcance ver' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
   | "$ejecutable" "$proyecto" > "$temporal/salida"
 test -f "$proyecto/.harwiff/harness.json"
 test ! -e "$proyecto/.harwiff/app.py"
@@ -24,6 +24,7 @@ test ! -e "$proyecto/.harwiff/harness"
 test ! -e "$proyecto/harness.json"
 grep -q 'Nota de instalación' "$proyecto/.harwiff/sesiones/registro/REGISTRO.md"
 grep -q 'Contexto de la sesión registro' "$temporal/salida"
+grep -q 'Mock · Simulado' "$temporal/salida"
 grep -q 'Adaptador seleccionado: mock' "$temporal/salida"
 grep -q '"preflightPassed": true' "$temporal/salida"
 grep -q 'Demo · Leí los informes guardados' "$temporal/salida"

@@ -9,7 +9,7 @@ import { guardarJson, respuestaSimulada } from "../bucle.mjs";
 import { entorno } from "../entorno.mjs";
 import { authorize, cargarObjetivosMock } from "../policy.mjs";
 import { buildScopeSnapshot, guardarAlcance, hashAlcance, leerAuditoria, leerControlWifi, usarAdaptador } from "../proyecto.mjs";
-import { cargarSesionAutonoma, iniciarSesionAgente } from "../sesion-agente.mjs";
+import { cargarSesionAutonoma, enviarMensajeAgente, iniciarSesionAgente } from "../sesion-agente.mjs";
 
 const raiz = await mkdtemp(join(tmpdir(), "harwiff-agente-"));
 const proyecto = { raiz, config: { cliente: "demo" } };
@@ -110,7 +110,7 @@ try {
         objetivosAutorizados: [{ bssid: permitido, ssid: "LAB_TEST_AP", canal: 6 }],
         canalesPermitidos: [6],
         capacidades: ["informe-sintetico"],
-        herramientas: ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo"],
+        herramientas: ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo", "consultar_adaptadores"],
         limites: { solicitudesModelo: 8, intentosHerramienta: 8, tiempoSesionMs: 120_000, tiempoBrokerMs: 5_000 },
       });
       assert.ok(!sistema.includes(ajeno) && !sistema.includes("ssid-privado-no-mock") && !sistema.includes(snapshot.projectId));
@@ -234,6 +234,101 @@ try {
   assert.equal(limiteModelo.datos.reason, "iteration_limit");
   assert.equal(limiteModelo.datos.toolAttempts, 8);
 
+  const sensible = "contenido-privado-del-host";
+  const radio = {
+    nameNow: sensible, interfaces: [{ ifname: sensible, serial: sensible }],
+    capabilities: { monitor: { declared: "supported" }, concurrency: { declared: sensible } },
+    connectivity: { criticality: "critical", interfaz: sensible },
+    probe: { warnings: [{ source: "iw_phy", code: "probe_timeout", message: sensible }] },
+  };
+  const perfil = { schema: "harwiff-adapter-inventory/v1", status: "partial", warnings: [],
+    devices: Array.from({ length: 6 }, () => ({ bus: "usb", deviceId: sensible, phys: [radio] })) };
+  let leidas = 0;
+  const consulta = await iniciar({ leerInventario: async () => (leidas++, perfil),
+    streamFn: guion(
+      [llamada("consultar_adaptadores", { interfaz: sensible }), llamada("consultar_adaptadores")],
+      (ctx) => {
+        const inventario = resultadoDe(ctx, "consultar_adaptadores");
+        assert.equal(inventario.origen, "host_readonly");
+        assert.equal(inventario.adaptadorSesion, "mock");
+        assert.equal(inventario.dispositivos.length, 4);
+        assert.equal(inventario.truncado, true);
+        assert.equal(inventario.dispositivos[0].radios[0].monitorAnunciado, "supported");
+        assert.equal(inventario.dispositivos[0].radios[0].concurrenciaAnunciada, "unknown");
+        assert.doesNotMatch(JSON.stringify(inventario), /contenido-privado-del-host/);
+        return [fin];
+      }),
+  });
+  const consultada = await finalizar(consulta);
+  assert.equal(leidas, 1);
+  assert.equal(consultada.resultados[0].result.code, "invalid_arguments");
+  const idConsulta = consultada.resultados[1].auditId;
+  const auditConsulta = await leerAuditoria(raiz, idConsulta);
+  assert.equal(auditConsulta.autorizacion.decision, "ALLOWED");
+  assert.deepEqual(auditConsulta.referenciasEvidencia, []);
+  assert.equal(auditConsulta.evidencia, undefined);
+  await assert.rejects(readdir(join(consultada.turno, "evidencias")), { code: "ENOENT" });
+  assert.doesNotMatch(JSON.stringify([consultada, auditConsulta]), /contenido-privado-del-host|dispositivo-1/);
+  await enviarMensajeAgente({ proyecto, item: consulta, texto: "Revisar el resultado de la consulta",
+    entornoLlm: {}, streamFn: guion(
+      (ctx) => {
+        const historial = ctx.messages.map(({ content }) => JSON.stringify(content)).join(" ");
+        assert.match(historial, /consulta_auditada/);
+        assert.doesNotMatch(historial, /dispositivo-1|evidenceId/);
+        return [llamada("registrar_hallazgo", { ...argsHallazgo, evidenceId: idConsulta })];
+      },
+      [fin],
+    ),
+  });
+  assert.equal((await finalizar(consulta)).resultados.at(-1).result.code, "evidence_denied");
+
+  leidas = 0;
+  const limiteInventario = await finalizar(await iniciar({ leerInventario: async () => (leidas++, perfil),
+    streamFn: guion(Array.from({ length: 9 }, () => llamada("consultar_adaptadores"))),
+  }));
+  assert.equal(leidas, 8);
+  assert.equal(limiteInventario.datos.reason, "tool_limit");
+  assert.equal(limiteInventario.resultados.at(-1).result.code, "tool_limit");
+
+  const inventarioEmpezado = Promise.withResolvers();
+  const inventarioLiberado = Promise.withResolvers();
+  const inventarioRevocado = await iniciar({
+    streamFn: guion([llamada("consultar_adaptadores")]),
+    leerInventario: async () => {
+      inventarioEmpezado.resolve();
+      await inventarioLiberado.promise;
+      return perfil;
+    },
+  });
+  await inventarioEmpezado.promise;
+  try {
+    await guardarAlcance(proyecto, alternativa);
+    await guardarAlcance(proyecto, scope);
+  } finally {
+    inventarioLiberado.resolve();
+  }
+  const consultaRevocada = await finalizar(inventarioRevocado);
+  assert.equal(consultaRevocada.datos.reason, "scope_changed");
+  assert.deepEqual(consultaRevocada.resultados[0].result, { ok: false, code: "scope_changed" });
+  assert.equal((await leerAuditoria(raiz, consultaRevocada.resultados[0].auditId)).consultaInventario, undefined);
+  const revisionAntesDeBroker = (await leerControlWifi(proyecto)).revision;
+
+  const inventarioPendiente = Promise.withResolvers();
+  const inventarioCancelado = await iniciar({
+    streamFn: guion([llamada("consultar_adaptadores")]),
+    leerInventario: async (signal) => {
+      inventarioPendiente.resolve();
+      await esperar(30_000, undefined, { signal });
+    },
+  });
+  await inventarioPendiente.promise;
+  inventarioCancelado.controlador.abort();
+  const consultaCancelada = await finalizar(inventarioCancelado);
+  assert.equal(consultaCancelada.datos.status, "cancelled");
+  const cancelacionInventario = await leerAuditoria(raiz, consultaCancelada.resultados[0].auditId);
+  assert.equal(cancelacionInventario.estado, "cancelado");
+  assert.deepEqual(cancelacionInventario.referenciasEvidencia, []);
+
   const llego = Promise.withResolvers();
   const continuar = Promise.withResolvers();
   const revocada = await iniciar({ streamFn: guion([llamada("observar_entorno")]), broker: async (entrada, signal) => {
@@ -248,7 +343,7 @@ try {
     await guardarAlcance(proyecto, alternativa);
     await guardarAlcance(proyecto, scope);
     assert.equal(hashAlcance(await buildScopeSnapshot(proyecto)), scopeId);
-    assert.equal((await leerControlWifi(proyecto)).revision, revision + 2);
+    assert.equal((await leerControlWifi(proyecto)).revision, revisionAntesDeBroker + 2);
   } finally {
     continuar.resolve();
   }
@@ -306,7 +401,7 @@ try {
   assert.equal(recuperada.estado, "error");
   assert.equal((await estado(conDenegacion)).reason, "interrupted");
   assert.equal((await readdir(join(primera.turno, "evidencias"))).length, 2);
-  console.log("Fase 2A · política, broker, secuencias Pi, presupuestos, revocación, cancelación y recuperación verificados.");
+  console.log("Fase 2A · política, broker, secuencias Pi, presupuestos, revocación, cancelación, recuperación e inventario informativo verificados.");
 } finally {
   await rm(raiz, { recursive: true, force: true });
 }

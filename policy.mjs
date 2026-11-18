@@ -19,6 +19,7 @@ export const HERRAMIENTAS = Object.freeze({
     detalle: texto(1000),
     evidenceId: { type: "string", pattern: ID_EVIDENCIA.source },
   }),
+  consultar_adaptadores: objeto({}),
 });
 
 export async function cargarObjetivosMock(scope) {
@@ -66,7 +67,7 @@ export function authorize({ name, args }, contexto, { status, intento, vigente }
   if (!args || typeof args !== "object" || Array.isArray(args)
       || Object.keys(args).length !== claves.length || !claves.every((clave) => Object.hasOwn(args, clave))
       || !claves.every((clave) => typeof args[clave] === "string")) return denegar("invalid_arguments");
-  if (name === "observar_entorno") return { ok: true, params: {} };
+  if (name === "observar_entorno" || name === "consultar_adaptadores") return { ok: true, params: {} };
   const bssid = normalizarBssid(args.bssid);
   if (!bssid) return denegar("invalid_arguments");
   if (!contexto.objetivos.has(bssid)) return denegar("target_denied");

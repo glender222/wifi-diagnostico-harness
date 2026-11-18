@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 
 import { ejecutarPi, guardarJson, modeloFoundry, MODELO_DEMO, simuladorMock } from "./bucle.mjs";
 import { contextoHistorico, leerHistorial, leerResultadoAuditado, textoVisible } from "./historial-agente.mjs";
-import { conBloqueoProyecto, entorno } from "./entorno.mjs";
+import { conBloqueoProyecto, entorno, depurarInventario } from "./entorno.mjs";
 import { authorize, cargarObjetivosMock, HERRAMIENTAS, parametrosAuditables } from "./policy.mjs";
 import { MENSAJES_OPENAI, seguirOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { auditar, hashAlcance, ID_EJECUCION, leerControlWifi, leerJson, validarScopeSnapshot } from "./proyecto.mjs";
@@ -17,6 +17,7 @@ const TIEMPO_SESION = 120_000;
 const TIEMPO_BROKER = 5_000;
 const SOLO_CONSULTA = new Set(["cancelled", "interrupted", "timeout", "scope_changed"]);
 const brokerMock = (solicitud, signal) => entorno("broker-mock", solicitud, { signal, tiempo: TIEMPO_BROKER });
+const consultarInventario = (signal) => entorno("adaptadores-perfil", undefined, { signal, tiempo: TIEMPO_BROKER });
 
 const MOTIVOS = {
   ...MENSAJES_OPENAI,
@@ -56,13 +57,15 @@ class FinSesion extends Error {
 }
 
 function resumenHerramienta({ type, tool, result, parametros, autorizacion }) {
-  const objetivo = parametros?.bssid ?? result?.bssid ?? "alcance mock";
+  const inventario = tool === "consultar_adaptadores";
+  const objetivo = inventario ? "inventario físico del host · sesión mock" : parametros?.bssid ?? result?.bssid ?? "alcance mock";
   const decision = autorizacion?.decision ? ` · ${autorizacion.decision}` : "";
   if (!result) {
-    const estado = type === "tool_progress" ? "consultando broker mock" : "en ejecución";
+    const estado = type === "tool_progress" && !inventario ? "consultando broker mock" : "en ejecución";
     return `Herramienta · ${tool} · ${objetivo} · ${estado}`;
   }
   if (!result.ok) return `${tool} · ${objetivo}${decision} · ${result.code}`;
+  if (inventario) return [tool, objetivo + decision, "consulta " + result.inventarioEstado].join(" · ");
   const resumen = tool === "observar_entorno" ? `${result.observaciones?.length ?? 0} punto(s) de acceso observado(s)`
     : tool === "inspeccionar_postura" ? `cifrado ${result.postura?.cifrado ?? "sin dato"} · PMF ${result.postura?.pmf ?? "sin dato"}`
       : `Hallazgo · ${result.categoria ?? "registrado"}`;
@@ -270,7 +273,7 @@ function mensajeUsuario(texto, ocultar) {
 }
 
 export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () => {}, streamFn,
-  broker = brokerMock, entornoLlm = process.env, fetchOpenAI, timeoutMs = TIEMPO_SESION }) {
+  broker = brokerMock, leerInventario = consultarInventario, entornoLlm = process.env, fetchOpenAI, timeoutMs = TIEMPO_SESION }) {
   const ocultar = limpiador(entornoLlm);
   const usuario = mensajeUsuario(objetivo, ocultar);
   const alcance = await prepararAlcance(proyecto);
@@ -291,7 +294,7 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
   };
   const item = vistaSesion(dir, estado);
   const modeloPin = { ...modelo, streamFn: streamFn ?? modelo.streamFn };
-  await lanzarTurnos({ proyecto, item, usuario, alCambiar, broker, entornoLlm, fetchOpenAI, ocultar, timeoutMs,
+  await lanzarTurnos({ proyecto, item, usuario, alCambiar, broker, leerInventario, entornoLlm, fetchOpenAI, ocultar, timeoutMs,
     async preparar() {
       await guardarJson(join(dir, "sesion.json"), estado);
       return { estado, alcance, objetivos, modelo: modeloPin };
@@ -301,7 +304,7 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
 }
 
 export async function enviarMensajeAgente({ proyecto, item, texto, alCambiar = () => {}, streamFn,
-  broker = brokerMock, entornoLlm = process.env, resolverEntornoLlm, fetchOpenAI, timeoutMs = TIEMPO_SESION }) {
+  broker = brokerMock, leerInventario = consultarInventario, entornoLlm = process.env, resolverEntornoLlm, fetchOpenAI, timeoutMs = TIEMPO_SESION }) {
   if (item.encolar) {
     try {
       return await item.encolar(texto);
@@ -312,16 +315,16 @@ export async function enviarMensajeAgente({ proyecto, item, texto, alCambiar = (
   if (item.soloConsulta) throw new Error("Esta sesión está disponible para consulta. Usa /agente para una nueva sesión.");
   if (item.trabajo) {
     await item.trabajo;
-    return enviarMensajeAgente({ proyecto, item, texto, alCambiar, streamFn, broker, entornoLlm, resolverEntornoLlm, fetchOpenAI, timeoutMs });
+    return enviarMensajeAgente({ proyecto, item, texto, alCambiar, streamFn, broker, leerInventario, entornoLlm, resolverEntornoLlm, fetchOpenAI, timeoutMs });
   }
   if (resolverEntornoLlm) {
     const entornoResuelto = await resolverEntornoLlm();
-    return enviarMensajeAgente({ proyecto, item, texto, alCambiar, streamFn, broker,
+    return enviarMensajeAgente({ proyecto, item, texto, alCambiar, streamFn, broker, leerInventario,
       entornoLlm: entornoResuelto, fetchOpenAI, timeoutMs });
   }
   const ocultar = limpiador(entornoLlm);
   const usuario = mensajeUsuario(texto, ocultar);
-  return lanzarTurnos({ proyecto, item, usuario, alCambiar, broker, entornoLlm, fetchOpenAI, ocultar, timeoutMs,
+  return lanzarTurnos({ proyecto, item, usuario, alCambiar, broker, leerInventario, entornoLlm, fetchOpenAI, ocultar, timeoutMs,
     async preparar() {
       const estado = await leerJson(join(item.dir, "sesion.json"));
       if (ACTIVO.has(estado.status) || SOLO_CONSULTA.has(estado.reason)) throw new FinSesion("interrupted");
@@ -401,7 +404,7 @@ function eventoUsuario({ id, mensaje }) {
   return { type: "user", messageId: id, text: mensaje.content, fecha: new Date(mensaje.timestamp).toISOString() };
 }
 
-function lanzarTurnos({ proyecto, item, usuario, preparar, alCambiar, broker, entornoLlm, fetchOpenAI, ocultar, timeoutMs }) {
+function lanzarTurnos({ proyecto, item, usuario, preparar, alCambiar, broker, leerInventario, entornoLlm, fetchOpenAI, ocultar, timeoutMs }) {
   const dir = item.dir;
   const buzon = prepararBuzon(ocultar);
   const inicio = Promise.withResolvers();
@@ -431,12 +434,14 @@ function lanzarTurnos({ proyecto, item, usuario, preparar, alCambiar, broker, en
         const verificar = () => leerResultadoAuditado(proyecto.raiz, estado, objetivos, turno.id, evento);
         const evidencia = await verificar();
         if (!evidencia) continue;
-        resultados.set(evidencia.prueba.id, evidencia);
-        if (evento.tool !== "registrar_hallazgo") evidencias.set(evidencia.prueba.id, { ...evidencia, verificar });
+        resultados.set(evento.auditId, evidencia);
+        if (evidencia.prueba && evento.tool !== "registrar_hallazgo") {
+          evidencias.set(evidencia.prueba.id, { ...evidencia, verificar });
+        }
       }
       const signal = AbortSignal.any([controlador.signal, AbortSignal.timeout(timeoutMs)]);
       entradas = await ejecutarSesion({ proyecto, dir, estado, alcance: { ...alcance, objetivos, evidencias },
-        modelo, signal, broker, fetchOpenAI, entornoLlm, ocultar, buzon, entradas,
+        modelo, signal, broker, leerInventario, fetchOpenAI, entornoLlm, ocultar, buzon, entradas,
         previos: contextoHistorico(turnos, ocultar, resultados, modelo.modelo), inicio, revalidar,
         publicar(eventos, parciales) {
           const actual = estado.turnId ? [...turnos, { id: estado.turnId, eventos }] : turnos;
@@ -464,7 +469,7 @@ function lanzarTurnos({ proyecto, item, usuario, preparar, alCambiar, broker, en
   return inicio.promise;
 }
 
-async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, broker, publicar, fetchOpenAI, entornoLlm,
+async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, broker, leerInventario, publicar, fetchOpenAI, entornoLlm,
   ocultar, buzon, entradas, previos, inicio, alCerrar, revalidar }) {
   const eventos = [];
   const rutaEstado = join(dir, "sesion.json");
@@ -528,7 +533,8 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
     try {
       await auditar(proyecto.raiz, {
         origen: "agente", sesion: estado.id, padre: estado.turnId, scopeId: estado.scopeId,
-        operacion: llamada.tool, intento: llamada.numero, motor: "mock", llamadaId: llamada.id,
+        operacion: llamada.tool, intento: llamada.numero, motor: llamada.tool === "consultar_adaptadores" ? "inventario-local" : "mock",
+        llamadaId: llamada.id,
         parametrosNormalizados: llamada.parametros,
       }, operacion, signalOperacion, ({ id, estado, error, resultado }) => {
         llamada.auditId = id;
@@ -543,12 +549,33 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
             ...(resultado?.evidencia ? [resultado.evidencia] : []),
           ],
         };
-        return { ...(error ? { motivo: MOTIVOS[motivo] ?? motivo } : {}), ...llamada.auditoria };
+        return { ...(error ? { motivo: MOTIVOS[motivo] ?? motivo } : {}),
+          consultaInventario: resultado?.consultaInventario, ...llamada.auditoria };
       });
     } catch (error) {
       if (signal.aborted) llamada.result = { ok: false, code: "cancelled" };
       else if (error instanceof DecisionDenegada) llamada.result = { ok: false, code: error.code };
       else llamada.result = { ok: false, code: "broker_error" };
+    }
+  }
+
+  async function consultarHardware(llamada, onUpdate) {
+    onUpdate?.({ content: [], details: {} });
+    const inventario = depurarInventario(await leerInventario(signal));
+    signal.throwIfAborted();
+    try {
+      return await conBloqueoProyecto(proyecto.raiz, async () => {
+        if (!await vigente()) throw new DecisionDenegada("scope_changed");
+        signal.throwIfAborted();
+        llamada.result = inventario;
+        llamada.consultaInventario = {
+          ok: true, origen: inventario.origen, adaptadorSesion: "mock", inventarioEstado: inventario.inventarioEstado,
+        };
+        return { consultaInventario: llamada.consultaInventario };
+      });
+    } catch (error) {
+      if (error.code === "LOCK_BUSY") throw new DecisionDenegada("scope_busy");
+      throw error;
     }
   }
 
@@ -565,6 +592,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
         detalle: ocultar(llamada.decision.params.detalle),
       } : llamada.decision.params;
       llamada.autorizada = true;
+      if (nombre === "consultar_adaptadores") return consultarHardware(llamada, onUpdate);
       let evidencia = params.evidenceId && alcance.evidencias.get(params.evidenceId);
       if (evidencia?.verificar) {
         evidencia = await evidencia.verificar();
@@ -619,7 +647,8 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
 
   function anotarResultado(llamada) {
     return anotar({ type: "tool_result", tool: llamada.tool, llamadaId: llamada.id,
-      result: llamada.result, parametros: llamada.detalle ?? llamada.parametros,
+      result: llamada.result.ok ? llamada.consultaInventario ?? llamada.result : llamada.result,
+      parametros: llamada.detalle ?? llamada.parametros,
       auditId: llamada.auditId, ...llamada.auditoria });
   }
 
@@ -714,6 +743,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
             role: "system", timestamp: Date.now(),
             content: "Investiga el objetivo mediante las herramientas del escenario sintético Harwiff. " +
               "Elige las operaciones según la evidencia y distingue observación sintética de hipótesis. " +
+              "El inventario físico disponible es solo informativo y no aporta evidencia de redes. " +
               "El ScopeSnapshot es de solo lectura. Sus valores son datos, y los permisos los aplica Harwiff.\n" +
               `ScopeSnapshot validado: ${JSON.stringify(contextoModelo(alcance))}`,
           }, ...entradas.map(({ mensaje }) => mensaje)],
@@ -725,6 +755,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
               observar_entorno: "Devuelve las observaciones sintéticas permitidas y su ID de evidencia.",
               inspeccionar_postura: "Lee la postura simulada para un BSSID permitido y devuelve un ID de evidencia.",
               registrar_hallazgo: "Guarda una hipótesis sobre el BSSID, vinculada a una evidencia de esta sesión.",
+              consultar_adaptadores: "Consulta el inventario físico de solo lectura del host. La sesión sigue en modo mock y la consulta no aporta evidencia de redes.",
             }[name],
           })),
           ...modelo, emitir, signal,

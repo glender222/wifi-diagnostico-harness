@@ -56,7 +56,7 @@ function api({ pasos, solicitudes = [], id = modelId, catalogo = listado }) {
     assert.ok(payload.tool_choice === undefined || payload.tool_choice === "auto");
     const herramientas = [...(payload.tools ?? []), ...payload.input
       .filter(({ type }) => type === "additional_tools").flatMap(({ tools }) => tools)];
-    assert.deepEqual(herramientas.map(({ name }) => name), ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo"]);
+    assert.deepEqual(herramientas.map(({ name }) => name), ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo", "consultar_adaptadores"]);
     assert.doesNotMatch(JSON.stringify(payload), new RegExp(clave));
     return pasos[i++](payload, request);
   };

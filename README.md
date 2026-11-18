@@ -48,9 +48,13 @@ Los dos listados revisan por defecto la propia carpeta y sus hijas inmediatas. `
 
 Desde `harwiff >`, guarda primero el alcance con `/alcance set --ssid "Wi-Fi del laboratorio" --canales 1,6,11`. Puedes repetir `--ssid` y `--bssid`. Debes indicar al menos un SSID o BSSID. Si configuras varias listas, la asociación debe coincidir con un valor de cada una.
 
-Usa `/adaptador listar` para consultar el inventario y `/adaptador usar <nombre>` para cargar un adaptador. `/adaptador` y `/adaptador <número>` también funcionan. `/alcance ver` vuelve a ejecutar el preflight y muestra el snapshot cuando pasa. La configuración se guarda en `control-wifi.json` junto al manifiesto.
+Abre `/adaptador` dentro de un proyecto para consultar radios e interfaces, incluso con alcance pendiente o sin Docker. Usa las flechas y **Enter** para abrir un perfil. Desde allí puedes consultar capacidades, restricciones y avisos. **Actualizar inventario** lee de nuevo el estado del host. **Esc** vuelve sin guardar cambios. Las capacidades anunciadas de monitor y concurrencia se muestran como **no probadas**. La reserva que muestra el panel representa la coordinación local de Harwiff.
 
-`/diagnostico` usa la selección guardada. Con `mock`, genera un informe sintético. Con un adaptador físico, Harwiff exige que esté libre, fuera de las rutas por defecto del host y asociado a una red que cumpla el alcance. El diagnóstico consulta la asociación que ya conoce NetworkManager y mantiene una reserva local hasta terminar.
+Selecciona **Usar este adaptador** para ejecutar el preflight y guardar la selección cuando pase. También funcionan `/adaptador listar`, `/adaptador detalle <nombre>`, `/adaptador usar <nombre>` y `/adaptador <número>`. Por tubería, `/adaptador` muestra el listado textual. `/alcance ver` repite el preflight de la selección guardada. Los ajustes se guardan en `control-wifi.json` junto al manifiesto.
+
+El inventario usa sysfs. Las utilidades Linux `iw`, `ip` (iproute2), `nmcli` (NetworkManager) y `ethtool` complementan la consulta. Si falta una fuente, se muestran los datos parciales y los avisos disponibles. Para revisar un equipo físico en modo lectura, abre `/adaptador`, consulta el perfil y las restricciones, pulsa **Actualizar inventario** y vuelve con **Esc**. Puedes hacerlo desde un proyecto nuevo y sin configurar el alcance.
+
+`/diagnostico` usa la selección guardada. Con `mock`, genera un informe sintético. En el flujo físico existente, Harwiff comprueba la reserva local, el alcance y las rutas por defecto IPv4 e IPv6. Si una interfaz del mismo radio sostiene una de esas rutas o la dependencia es indeterminada, bloquea la operación. Lee la asociación desde la caché de NetworkManager y mantiene la reserva hasta terminar.
 
 Harwiff descarga las imágenes fijadas la primera vez que hacen falta. Ejecuta el OpenSandbox incluido bajo un puerto de loopback con una clave efímera. `/config sandbox auto` elige un puerto libre y `/config sandbox <puerto>` fija uno. El colector lee el estado local del adaptador. El sandbox recibe solo indicadores depurados y aplica reglas fijas. La lectura no mide alcance a Internet ni resolución DNS. [OpenSandbox](https://open-sandbox.ai/getting-started/installation)
 
@@ -71,6 +75,8 @@ Desde `harwiff >`, prueba este recorrido en un proyecto de laboratorio.
 **Esc**, `/volver` y `/salir` regresan a `harwiff >` sin cancelar el turno. En la raíz, `/salir` cierra Harwiff. `/detener` cancela el trabajo activo. Usa `/detalle` para ver los parámetros depurados, la decisión y la evidencia de una herramienta.
 
 Con OpenAI o Foundry configurado, el modelo elige la secuencia de herramientas de Pi. El modo **Demo local · simulación** usa un guion de respuestas para probar el mismo recorrido con el fixture. Al configurar el BSSID `AA:BB:CC:11:22:33` explícitamente, el simulador empieza por inspeccionar la postura. Con el alcance del ejemplo, empieza por observar el entorno. Las dos rutas guardan evidencia sintética y permiten registrar una hipótesis vinculada. La sesión congela el alcance inicial. Un cambio de adaptador o alcance invalida sus operaciones pendientes, incluso si se restaura la configuración anterior.
+
+Durante una sesión `mock`, `consultar_adaptadores` puede leer un resumen depurado del inventario físico del host. La consulta comparte los límites y la autorización del turno. El historial conserva el hecho auditado de la consulta, con cero referencias de evidencia sobre redes.
 
 Puedes continuar una sesión finalizada desde la misma vista o después de reabrir el proyecto. Cada turno tiene su propia auditoría y hasta ocho solicitudes al modelo, ocho intentos de herramienta y 120 segundos. Reutilizar una evidencia histórica exige validarla contra la auditoría y el alcance vigente. Las sesiones canceladas, interrumpidas o revocadas quedan disponibles para consulta. La ejecución usa el escenario sintético.
 
