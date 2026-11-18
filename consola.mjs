@@ -11,6 +11,7 @@ import {
   ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarInforme, idsAuditoria,
   informesAgente, inspeccionarControlWifi, leerAuditoria, leerControlWifi, leerJson, localizarProyecto, usarAdaptador,
 } from "./proyecto.mjs";
+import { cargarSesionAutonoma, iniciarSesionAgente } from "./sesion-agente.mjs";
 
 const VERSION = "0.2.6";
 const NOMBRE_ENTORNO = "harwiff";
@@ -24,6 +25,7 @@ const comandos = {
   "/adaptador": "Listar adaptadores o usar uno por nombre",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
   "/alcance": "Definir o ver el alcance autorizado",
+  "/agente": "Iniciar una sesión sobre el escenario mock",
   "/auditoria": "Listar ejecuciones o ver una por ID",
   "/config": "Ver configuración o fijar dominio y deployment de Foundry",
   "/sesiones": "Listar sesiones de trabajo del proyecto",
@@ -158,7 +160,7 @@ async function aplicar(destino) {
     actualizar();
   }
   function volver() {
-    if (agente) preparado = agente;
+    if (agente && !agente.autonoma) preparado = agente;
     agente = undefined;
     actualizar();
   }
@@ -266,6 +268,8 @@ async function aplicar(destino) {
       if (error.code === "ENOENT") return undefined;
       throw error;
     });
+    const autonoma = await cargarSesionAutonoma(dir, datos);
+    if (autonoma) return autonoma;
     if (!datos || !["demo", "azure-foundry"].includes(datos.modo)) return;
     const turnos = await leerTurnos(dir);
     const texto = [];
@@ -293,11 +297,16 @@ async function aplicar(destino) {
     const usaDemo = partes.includes("--demo");
     const ids = partes.filter((parte) => parte !== "--demo");
     if (ids.length > 1 || partes.length > ids.length + 1) throw new Error("Usa agent harwiff [id] [--demo].");
-    const reciente = [...agentes.values()].filter((item) => !usaDemo || item.modo === "demo")
+    const reciente = [...agentes.values()].filter((item) => !item.autonoma && (!usaDemo || item.modo === "demo"))
       .sort((a, b) => b.uso.localeCompare(a.uso))[0];
     const id = ids[0] || reciente?.id || (usaDemo ? "demo" : "harwiff");
     if (!ID_SESION.test(id)) throw new Error("ID de agente inválido.");
     let item = agentes.get(id);
+    if (item?.autonoma) {
+      if (entrar) enfocar(item.id);
+      if (!tty) for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
+      return item;
+    }
     if (!item) {
       const modo = usaDemo || config.cliente === "demo" ? "demo" : config.cliente;
       if (modo !== "demo" && modo !== "azure-foundry") {
@@ -400,6 +409,7 @@ async function aplicar(destino) {
       return;
     }
     if (agente && !texto.startsWith("/")) {
+      if (agente.autonoma) throw new Error("Usa Esc o /volver y /agente <objetivo> para iniciar otra sesión.");
       iniciarTurno(texto, agente);
       if (!tty) await agente.trabajo;
       return;
@@ -455,6 +465,17 @@ async function aplicar(destino) {
       return;
     }
     switch (comando) {
+      case "/agente": {
+        const item = await iniciarSesionAgente({ proyecto: proyectoWifi(), objetivo: args, alCambiar: actualizar });
+        agentes.set(item.id, item);
+        if (cerrando) item.controlador?.abort();
+        mostrar(`Sesión iniciada · ${item.id}${item.modo === "demo" ? " · Demo local · simulación" : " · Azure Foundry"}`, null);
+        if (!tty) {
+          await item.trabajo;
+          for (const mensaje of item.mensajes) salida(mensaje);
+        }
+        break;
+      }
       case "/adaptador": {
         if (!args || args === "listar") {
           const { adaptadores, aviso } = await entorno("adaptadores");

@@ -2,6 +2,7 @@
 
 import errno
 import fcntl
+import json
 import os
 import pty
 import select
@@ -18,10 +19,10 @@ FUENTE = Path(__file__).resolve().parent.parent / "consola.mjs"
 
 
 @contextmanager
-def terminal(carpeta):
+def terminal(carpeta, env=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 110, 0, 0))
-    proceso = subprocess.Popen(["node", str(FUENTE)], cwd=carpeta, stdin=slave, stdout=slave, stderr=slave)
+    proceso = subprocess.Popen(["node", str(FUENTE)], cwd=carpeta, stdin=slave, stdout=slave, stderr=slave, env=env)
     os.close(slave)
     captura = bytearray()
 
@@ -59,6 +60,67 @@ def terminal(carpeta):
 
 
 class TerminalTest(unittest.TestCase):
+    def configurar_sesion_mock(self, esperar, escribir):
+        esperar("harwiff >")
+        escribir(b"/proyecto prueba\r")
+        esperar("Proyecto creado")
+        escribir(b"/agente Revisar fixture\r")
+        esperar("Selecciona un adaptador")
+        escribir(b"/alcance set --ssid LAB_TEST_AP --canales 6\r")
+        esperar("Alcance guardado")
+        escribir(b"/adaptador usar mock\r")
+        esperar("Adaptador: mock | Alcance: 1 SSID, 1 canal(es) | Preflight: OK")
+
+    @staticmethod
+    def entorno_demo():
+        return {clave: valor for clave, valor in os.environ.items()
+                if clave not in {"FOUNDRY_HOST", "FOUNDRY_DEPLOYMENT", "FOUNDRY_API_KEY"}}
+
+    def test_sesion_mock_detach_continua_y_reabre(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            proyecto = Path(raiz) / "prueba"
+            with terminal(raiz, self.entorno_demo()) as (proceso, esperar, escribir):
+                self.configurar_sesion_mock(esperar, escribir)
+                escribir(b"/agente Revisar fixture\r")
+                esperar("Sesión iniciada")
+                [sesion] = (proyecto / "agentes").iterdir()
+                escribir(b"\t")
+                esperar(f"[{sesion.name}")
+                escribir(b"\r")
+                esperar(f"agente/{sesion.name} >")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                esperar("objetivo finalizado")
+                datos = json.loads((sesion / "sesion.json").read_text())
+                self.assertEqual(datos["status"], "completed")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+            with terminal(proyecto, self.entorno_demo()) as (proceso, esperar, escribir):
+                esperar(f"{sesion.name} · completed")
+                escribir(b"\t")
+                esperar(f"[{sesion.name}")
+                escribir(b"\r")
+                esperar("Sesión completada.")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_detener_sesion_mock_seleccionada(self):
+        with tempfile.TemporaryDirectory() as raiz, terminal(raiz, self.entorno_demo()) as (proceso, esperar, escribir):
+            self.configurar_sesion_mock(esperar, escribir)
+            escribir(b"/agente Revisar fixture\r")
+            esperar("Sesión iniciada")
+            [sesion] = (Path(raiz) / "prueba" / "agentes").iterdir()
+            escribir(b"\t")
+            esperar(f"[{sesion.name}")
+            escribir(b"\r")
+            esperar(f"agente/{sesion.name} >")
+            escribir(b"/detener\r")
+            esperar("Sesión cancelada.")
+            datos = json.loads((sesion / "sesion.json").read_text())
+            self.assertEqual(datos["status"], "cancelled")
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
     def test_cabecera_del_plano_de_control(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
             esperar("Adaptador: ninguno | Alcance: pendiente | Preflight: Pendiente")

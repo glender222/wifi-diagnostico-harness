@@ -66,9 +66,15 @@ export function modeloFoundry(config, entorno = process.env) {
   };
 }
 
-export async function responder({ id, sesion, texto, modelo, clave, leerContexto, emitir, signal, streamFn }) {
+export async function ejecutarPi({ prompts, previos = [], herramientas, modelo, clave, hooks, emitir, signal, streamFn }) {
   const { runAgentLoop } = await import("./vendor/pi/agent-loop.ts");
-  const { streamSimple } = await import("@earendil-works/pi-ai/api/openai-completions");
+  const stream = streamFn ?? (await import("@earendil-works/pi-ai/api/openai-completions")).streamSimple;
+  return runAgentLoop(prompts, { messages: previos, tools: herramientas }, {
+    model: modelo, apiKey: clave, maxTokens: 2048, convertToLlm: (entradas) => entradas, ...hooks,
+  }, emitir, signal, stream);
+}
+
+export async function responder({ id, sesion, texto, modelo, clave, leerContexto, emitir, signal, streamFn }) {
   const turnos = await leerTurnos(sesion);
   const previos = turnos.filter((turno) => turno.estado === "completo").flatMap((turno) => turno.mensajes);
   const usuario = { role: "user", content: texto, timestamp: Date.now() };
@@ -93,15 +99,10 @@ export async function responder({ id, sesion, texto, modelo, clave, leerContexto
   await guardarJson(join(ruta, "inicio.json"), { esquema: "wifi-turno/v1", usuario });
   let solicitudes = 0;
   try {
-    const mensajes = (await runAgentLoop(
-      [instrucciones, usuario], { messages: previos, tools: herramientas },
-      {
-        model: modelo, apiKey: clave, maxTokens: 2048,
-        convertToLlm: (entradas) => entradas,
-        finishTurn: () => ++solicitudes >= 4 ? { action: "end" } : undefined,
-      },
-      emitir, signal, streamFn ?? streamSimple,
-    )).filter((mensaje) => mensaje.role !== "system");
+    const mensajes = (await ejecutarPi({
+      prompts: [instrucciones, usuario], previos, herramientas, modelo, clave, emitir, signal, streamFn,
+      hooks: { finishTurn: () => ++solicitudes >= 4 ? { action: "end" } : undefined },
+    })).filter((mensaje) => mensaje.role !== "system");
     const ultima = mensajes.at(-1);
     const completa = ultima?.role === "assistant" && ultima.stopReason === "stop";
     await guardarJson(join(ruta, "resultado.json"), {
@@ -122,6 +123,51 @@ export const MODELO_DEMO = {
   baseUrl: "https://invalid.example", input: ["text"], reasoning: false,
   contextWindow: 16384, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
+
+export async function respuestaSimulada(modelo, content) {
+  const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+  const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  const stopReason = content.some((parte) => parte.type === "toolCall") ? "toolUse" : "stop";
+  const mensaje = {
+    role: "assistant", content, api: modelo.api, provider: modelo.provider, model: modelo.id,
+    usage: { ...cost, cost, totalTokens: 0 }, stopReason, timestamp: Date.now(),
+  };
+  const stream = createAssistantMessageEventStream();
+  stream.push({ type: "start", partial: mensaje });
+  stream.push({ type: "done", reason: stopReason, message: mensaje });
+  return stream;
+}
+
+export function simuladorMock(bssidInicial) {
+  return async (modelo, contexto, { signal }) => {
+    await esperar(650, undefined, { signal });
+    const resultados = contexto.messages.filter((mensaje) => mensaje.role === "toolResult");
+    const resultado = (nombre) => {
+      const mensaje = resultados.find((item) => item.toolName === nombre && !item.isError);
+      return mensaje ? JSON.parse(mensaje.content[0].text) : undefined;
+    };
+    const observar = resultado("observar_entorno");
+    const postura = resultado("inspeccionar_postura");
+    const hallazgo = resultado("registrar_hallazgo");
+    const herramienta = (name, args = {}) => respuestaSimulada(modelo,
+      [{ type: "toolCall", id: randomUUID(), name, arguments: args }]);
+    if (!resultados.length && bssidInicial) return herramienta("inspeccionar_postura", { bssid: bssidInicial });
+    if (!observar && !resultados.some((item) => item.toolName === "observar_entorno")) return herramienta("observar_entorno");
+    if (observar?.observaciones.length && !resultados.some((item) => item.toolName === "inspeccionar_postura")) {
+      return herramienta("inspeccionar_postura", { bssid: observar.observaciones[0].bssid });
+    }
+    if (postura && !resultados.some((item) => item.toolName === "registrar_hallazgo")) {
+      return herramienta("registrar_hallazgo", {
+        bssid: postura.bssid, categoria: "postura simulada",
+        detalle: `El fixture reporta ${postura.postura.cifrado} y PMF ${postura.postura.pmf}.`,
+        evidenceId: postura.evidenceId,
+      });
+    }
+    const text = hallazgo ? "Demo local · La simulación guardó un hallazgo vinculado a la postura del fixture."
+      : "Demo local · La simulación terminó. Consulta los resultados de las operaciones en la sesión.";
+    return respuestaSimulada(modelo, [{ type: "text", text }]);
+  };
+}
 
 export async function demo(modelo, contexto, { signal }) {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");

@@ -165,8 +165,9 @@ export function pantalla(comandos, acciones) {
     editor.prefijo = pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno);
     etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}` : "");
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
-    const agentes = nuevo.agentes.map(({ id, estado }, n) => {
-      const texto = `${id} · ${estado}`;
+    const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
+      const reciente = actividad ? ` · ${truncateToWidth(actividad, 28, "…")}` : "";
+      const texto = `${id} · ${estado}${reciente}`;
       return enFila && n === indice ? acento(`[${texto}]`) : texto;
     });
     fila.setText(`Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : "   ·   Tab"}`);

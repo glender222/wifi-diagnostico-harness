@@ -43,6 +43,24 @@ Harwiff descarga las imágenes fijadas la primera vez que hacen falta. Ejecuta e
 
 ## Agente y datos del proyecto
 
+### Sesión sobre el escenario mock
+
+Desde `harwiff >`, prueba este recorrido en un proyecto de laboratorio.
+
+```text
+/alcance set --ssid LAB_TEST_AP --canales 6
+/adaptador usar mock
+/agente Revisar la postura de seguridad del AP del laboratorio
+```
+
+`/agente` arranca una sesión de objetivo único en segundo plano. Desde la fila de agentes, usa **Tab**, las flechas y **Enter** para abrirla. **Esc** vuelve a `harwiff >` mientras se ejecuta. Dentro de la sesión, `/detener` cancela el trabajo activo.
+
+Con Foundry configurado, el modelo elige la secuencia de herramientas de Pi. El modo **Demo local · simulación** usa un guion de respuestas para probar el mismo recorrido con el fixture. Al configurar el BSSID `AA:BB:CC:11:22:33` explícitamente, el simulador empieza por inspeccionar la postura. Con el alcance del ejemplo, empieza por observar el entorno. Las dos rutas guardan evidencia sintética y permiten registrar una hipótesis vinculada. La sesión congela el alcance inicial. Un cambio de adaptador o alcance invalida sus operaciones pendientes, incluso si se restaura la configuración anterior.
+
+Cada sesión tiene ocho solicitudes al modelo y ocho intentos de herramienta. Los resultados, denegaciones y cierres parciales se pueden consultar al volver a abrir la sesión. La ejecución de esta fase usa el host y el escenario sintético.
+
+### Chat e informes guardados
+
 En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e inicia Harwiff con `FOUNDRY_API_KEY` en el entorno. El deployment debe admitir Chat Completions v1 y herramientas. El agente puede consultar informes guardados. Usa `/diagnostico` en el entorno para generar una lectura real. En proyectos previos de ChatGPT y OpenCode, el cliente externo conserva su flujo y `agent harwiff --demo` abre el agente local de prueba. [Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
 
 - `auditoria/` contiene la solicitud previa y el resultado por ejecución. Un inicio sin resultado se muestra como pendiente de cierre.

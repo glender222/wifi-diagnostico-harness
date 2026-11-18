@@ -7,7 +7,7 @@ import { conBloqueoProyecto, entorno } from "./entorno.mjs";
 
 export const CLIENTES = ["demo", "azure-foundry", "chatgpt", "opencode"];
 export const ID_SESION = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const ID_EJECUCION = /^\d{13}-[a-f0-9-]{36}$/;
+export const ID_EJECUCION = /^\d{13}-[a-f0-9-]{36}$/;
 
 export async function leerJson(ruta) {
   return JSON.parse(await readFile(ruta, "utf8"));
@@ -50,6 +50,7 @@ export async function leerControlWifi(proyecto) {
     const id = proyecto.config?.adaptador;
     return {
       projectId: null,
+      revision: 0,
       adapter: typeof id === "string" ? { id, name: null, mode: "sandbox" } : null,
       scope: { allowedBssids: [], allowedSsids: [], allowedChannels: [], maxIterations: 8 },
       preflight: null,
@@ -61,10 +62,11 @@ export async function leerControlWifi(proyecto) {
     const estado = await leerJson(ruta);
     if (estado?.esquema !== "harwiff-control-wifi/v1" || typeof estado.projectId !== "string"
         || !["allowedBssids", "allowedSsids", "allowedChannels"].every((campo) => Array.isArray(estado.scope?.[campo]))
+        || (estado.revision !== undefined && (!Number.isSafeInteger(estado.revision) || estado.revision < 0))
         || (estado.adapter !== null && typeof estado.adapter?.id !== "string")) {
       throw new TypeError();
     }
-    return estado;
+    return { revision: 0, ...estado };
   } catch (error) {
     if (error instanceof SyntaxError || error instanceof TypeError) {
       throw new Error("Revisa control-wifi.json. El estado Wi-Fi del proyecto tiene un formato inválido.");
@@ -77,10 +79,21 @@ async function guardarControlWifi(proyecto, estado) {
   await guardarJson(join(proyecto.raiz, "control-wifi.json"), { ...estado, esquema: "harwiff-control-wifi/v1" });
 }
 
+export function hashAlcance({ projectId, adapter, scope }) {
+  const ordenar = (valores) => [...new Set(valores)].sort();
+  const datos = [projectId, adapter?.id, adapter?.mode, ordenar(scope.allowedBssids),
+    ordenar(scope.allowedSsids), ordenar(scope.allowedChannels), scope.maxIterations];
+  return createHash("sha256").update(JSON.stringify(datos)).digest("hex");
+}
+
+function revisarAlcance(anterior, estado) {
+  return { ...estado, revision: anterior.revision + Number(hashAlcance(anterior) !== hashAlcance(estado)) };
+}
+
 function snapshotWifi(projectId, adapter, scope) {
   return Object.freeze({
     projectId,
-    adapter: Object.freeze({ name: adapter.name, mode: adapter.mode, lockedBySession: null }),
+    adapter: Object.freeze({ id: adapter.id, name: adapter.name, mode: adapter.mode }),
     scope: Object.freeze({
       allowedBssids: Object.freeze([...scope.allowedBssids]),
       allowedSsids: Object.freeze([...scope.allowedSsids]),
@@ -129,7 +142,8 @@ export async function guardarAlcance(proyecto, datos) {
   const scope = await entorno("alcance", datos);
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
-    const { estado } = await validarControlWifi({ ...anterior, projectId: anterior.projectId ?? randomUUID(), scope });
+    const resultado = await validarControlWifi({ ...anterior, projectId: anterior.projectId ?? randomUUID(), scope });
+    const estado = revisarAlcance(anterior, resultado.estado);
     await guardarControlWifi(proyecto, estado);
     return estado;
   });
@@ -138,7 +152,8 @@ export async function guardarAlcance(proyecto, datos) {
 export async function usarAdaptador(proyecto, name, id) {
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
-    const { estado } = await validarControlWifi({ ...anterior, adapter: { id, name } });
+    const resultado = await validarControlWifi({ ...anterior, adapter: { id, name } });
+    const estado = revisarAlcance(anterior, resultado.estado);
     if (!estado.snapshot) throw errorPreflight(estado.preflight);
     await guardarControlWifi(proyecto, estado);
     return estado;

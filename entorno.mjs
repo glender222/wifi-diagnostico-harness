@@ -25,7 +25,7 @@ export async function entorno(operacion, datos, opciones) {
   return JSON.parse(salida);
 }
 
-export async function conBloqueoProyecto(raiz, tarea) {
+export async function conBloqueoProyecto(raiz, tarea, mensajeOcupado = "Otra consola está actualizando el alcance. Vuelve a intentar.") {
   const directorio = await open(raiz, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     await new Promise((ok, fail) => {
@@ -35,8 +35,8 @@ export async function conBloqueoProyecto(raiz, tarea) {
       proceso.once("error", () => fail(new Error("No se pudo reservar el estado Wi-Fi del proyecto.")));
       proceso.once("exit", (codigo) => {
         if (codigo === 0) ok();
-        else fail(new Error(codigo === 2 ? "Otra consola está actualizando el alcance. Vuelve a intentar."
-          : "No se pudo reservar el estado Wi-Fi del proyecto."));
+        else if (codigo === 2) fail(Object.assign(new Error(mensajeOcupado), { code: "LOCK_BUSY" }));
+        else fail(new Error("No se pudo reservar el directorio de Harwiff."));
       });
     });
     return await tarea();

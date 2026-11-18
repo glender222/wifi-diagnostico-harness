@@ -115,7 +115,7 @@ try {
   const snapshot = await buildScopeSnapshot(await localizarProyecto(actual));
   assert.deepEqual(snapshot, {
     projectId: estado.projectId,
-    adapter: { name: "mock", mode: "mock", lockedBySession: null },
+    adapter: { id: "mock", name: "mock", mode: "mock" },
     scope: alcance,
     preflightPassed: true,
   });

@@ -1,0 +1,19 @@
+{
+  "origen": "mock",
+  "aps": [
+    {
+      "bssid": "AA:BB:CC:11:22:33",
+      "ssid": "LAB_TEST_AP",
+      "canal": 6,
+      "senalDbm": -52,
+      "postura": { "cifrado": "WPA3-Personal", "pmf": "requerido", "wps": "deshabilitado" }
+    },
+    {
+      "bssid": "AA:BB:CC:11:22:44",
+      "ssid": "LAB_FUERA",
+      "canal": 11,
+      "senalDbm": -61,
+      "postura": { "cifrado": "WPA2-Personal", "pmf": "opcional", "wps": "deshabilitado" }
+    }
+  ]
+}
