@@ -60,6 +60,8 @@ try {
   const revision = (await leerControlWifi(proyecto)).revision;
   await guardarAlcance(proyecto, { ...scope, allowedSsids: [...scope.allowedSsids, "LAB_TEST_AP"] });
   assert.equal((await leerControlWifi(proyecto)).revision, revision);
+  await assert.rejects(iniciar(), /Configura el proveedor con \/connect/);
+  await assert.rejects(readdir(join(raiz, "agentes")), { code: "ENOENT" });
   const snapshot = await buildScopeSnapshot(proyecto);
   assert.equal(snapshot.adapter.id, "mock");
   assert.ok(Object.isFrozen(snapshot.scope.allowedSsids));
@@ -199,6 +201,7 @@ try {
 
   const claveFixture = "credencial-ficticia-del-proveedor";
   const foundry = await finalizar(await iniciar({
+    proyecto: { ...proyecto, config: { llm: { proveedor: "azure-foundry" } } },
     entornoLlm: { FOUNDRY_HOST: "fixture.openai.azure.com", FOUNDRY_DEPLOYMENT: "fixture", FOUNDRY_API_KEY: claveFixture },
     streamFn(modelo, contexto, opciones) {
       assert.equal(modelo.baseUrl, "https://fixture.openai.azure.com/openai/v1");

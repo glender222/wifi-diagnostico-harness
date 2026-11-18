@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 
-import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
+import { DEPLOYMENT_AZURE, DOMINIO_AZURE, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { crearCredencialesOpenAI } from "./credenciales-openai.mjs";
 import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
 import { detalleAdaptador, panelAdaptadores } from "./panel-adaptadores.mjs";
@@ -149,7 +149,6 @@ async function aplicar(destino) {
   let controlWifi;
   let interfaz;
   let agente;
-  let preparado;
   let sesion;
   let cerrando = false;
   let diagnosticoPendiente;
@@ -177,12 +176,12 @@ async function aplicar(destino) {
   function llmProyecto() {
     const proveedor = proveedorAgente(config);
     const modelo = proveedor === "openai" ? config.llm?.openaiModelId
-      : proveedor === "azure-foundry" ? config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT : MODELO_DEMO.id;
-    return { proveedor: etiquetaProveedor(proveedor), modelo: modelo || "pendiente" };
+      : proveedor === "azure-foundry" ? config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT : undefined;
+    return { proveedor: etiquetaProveedor(proveedor), modelo: proveedor ? modelo || "pendiente" : undefined };
   }
   function actualizar() {
     interfaz?.render({
-      proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
+      proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente === "demo" ? undefined : config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente?.autonoma ? agente.avisos ?? [] : agente ? agente.mensajes : mensajes,
       transcript: agente?.transcript, ...(config && llmProyecto()),
@@ -200,7 +199,6 @@ async function aplicar(destino) {
     actualizar();
   }
   function volver() {
-    if (agente && !agente.autonoma) preparado = agente;
     agente = undefined;
     actualizar();
   }
@@ -307,7 +305,7 @@ async function aplicar(destino) {
       // Consultar el estado local no necesita contactar al proveedor.
     }
     mostrar(`Azure AI Foundry · ${azure}${activo === "azure-foundry" ? " · seleccionado" : ""}`);
-    if (activo === "demo") mostrar("Demo local · seleccionado");
+    if (proyecto && !activo) mostrar("Proyecto sin modelo configurado.");
   }
 
   function contextoVerificacion(entorno) {
@@ -349,7 +347,7 @@ async function aplicar(destino) {
     return interfaz.elegir("Conectar proveedor LLM · Enter elige · Esc cancela", [
       { value: "openai", label: "OpenAI API", description: "Responses API" },
       { value: "azure-foundry", label: "Azure AI Foundry", description: "Dominio y deployment del proyecto" },
-    ], proveedorAgente(config) === "demo" ? "openai" : proveedorAgente(config));
+    ], proveedorAgente(config) ?? "openai");
   }
 
   async function configurarFoundry() {
@@ -363,10 +361,9 @@ async function aplicar(destino) {
     if (entradaDeployment === undefined || cerrando) return;
     const foundry = { host: entradaHost.trim() || hostActual, deployment: entradaDeployment.trim() || deploymentActual };
     modeloFoundry({ ...config, foundry });
-    // Fija el proveedor previo cuando el manifiesto aún depende de la inferencia legacy.
     await actualizarConfig((actual) => ({ ...actual, foundry,
-      llm: { ...actual.llm, proveedor: proveedorAgente(actual) } }));
-    mostrar(`Azure AI Foundry configurado · Deployment: ${foundry.deployment} · Usa /model para elegirlo`);
+      llm: { ...actual.llm, proveedor: "azure-foundry" } }));
+    mostrar("Azure AI Foundry configurado · Deployment: " + foundry.deployment);
   }
 
   async function probarFoundry() {
@@ -392,11 +389,13 @@ async function aplicar(destino) {
   async function menuFoundry() {
     const { modelo } = modeloFoundry(config);
     const opcion = await interfaz.elegir(`Azure AI Foundry · configurado · ${modelo.id}`, [
+      ...(proveedorAgente(config) !== "azure-foundry" ? [{ value: "usar", label: "Usar en este proyecto" }] : []),
       { value: "modelo", label: "Editar conexión de Foundry" },
       { value: "credencial", label: "Consultar origen de la credencial" },
       { value: "probar", label: "Probar conexión", description: "Consume tokens" },
       { value: "desconectar", label: "Desconectar del proyecto" },
     ]);
+    if (opcion === "usar") await elegirModelo("azure-foundry/" + modelo.id);
     if (opcion === "modelo") await configurarFoundry();
     if (opcion === "credencial") mostrar("Azure AI Foundry usa FOUNDRY_API_KEY del entorno.");
     if (opcion === "probar") await probarFoundry();
@@ -404,7 +403,7 @@ async function aplicar(destino) {
       await actualizarConfig((actual) => {
         const { foundry, ...resto } = actual;
         return { ...resto, llm: { ...resto.llm,
-          proveedor: proveedorAgente(actual) === "azure-foundry" ? "demo" : proveedorAgente(actual) } };
+          proveedor: proveedorAgente(actual) === "azure-foundry" ? null : proveedorAgente(actual) } };
       });
       mostrar("Azure AI Foundry desvinculado del proyecto.");
     }
@@ -413,55 +412,57 @@ async function aplicar(destino) {
   async function conectarOpenAI() {
     const entrada = await interfaz.preguntarSecreto("API key de OpenAI · entrada oculta · Esc cancela >");
     if (!entrada || cerrando) return;
-    await listarModelosOpenAI({ entorno: credenciales.conClave(entrada) });
+    const entorno = credenciales.conClave(entrada);
+    const ids = await listarModelosOpenAI({ entorno });
     if (cerrando) return;
     const fuente = await credenciales.guardar(entrada);
     verificaciones.clear();
-    mostrar(`OpenAI API conectado · Credencial: ${fuente} · Usa /model para elegir el modelo`);
+    mostrar("OpenAI API conectado · Credencial: " + fuente);
     if (fuente === "memoria de Harwiff") mostrar("Secret Service no disponible. La clave se elimina al cerrar Harwiff.");
+    if (proveedorAgente(config) !== "openai" || !ids.includes(config.llm?.openaiModelId)) {
+      await elegirModelo("", { conexion: { fuente, entorno }, ids, soloOpenAI: true });
+    }
   }
 
   function valorModeloOpenAI(id) {
     return id === "demo" || /^(openai|azure-foundry)\//.test(id) ? `openai/${id}` : id;
   }
 
-  async function elegirModelo(args) {
-    let conexion;
+  async function elegirModelo(args, { conexion, ids, soloOpenAI = false } = {}) {
     let elegido = args;
     if (!elegido) {
-      conexion = await credenciales.resolver();
+      conexion ??= await credenciales.resolver();
       const opciones = [];
+      let errorOpenAI;
       if (conexion.fuente) {
         try {
-          const ids = await listarModelosOpenAI(conexion);
+          ids ??= await listarModelosOpenAI(conexion);
           for (const id of ids) opciones.push({ value: valorModeloOpenAI(id), label: id,
-            description: `OpenAI · ${estadoModelo(id, conexion.entorno)}` });
-          if (!ids.length) mostrar("La API de OpenAI no devolvió modelos para este proyecto.");
+            description: "OpenAI · " + estadoModelo(id, conexion.entorno) });
+          if (!ids.length) errorOpenAI = new Error("La API de OpenAI no devolvió modelos para este proyecto.");
         } catch (error) {
-          mostrar(`OpenAI · ${error.message}`);
+          errorOpenAI = error;
         }
       }
       let foundry;
-      try { foundry = modeloFoundry(config).modelo.id; } catch { /* Disponible al configurar la conexión. */ }
-      if (foundry) opciones.push({ value: `azure-foundry/${foundry}`, label: foundry, description: "Azure AI Foundry" });
-      opciones.push({ value: "demo", label: MODELO_DEMO.id, description: "Demo local · simulación" });
+      if (!soloOpenAI) {
+        try { foundry = modeloFoundry(config).modelo.id; } catch { /* La conexión aún no está disponible. */ }
+        if (foundry) opciones.push({ value: "azure-foundry/" + foundry, label: foundry, description: "Azure AI Foundry" });
+      }
+      if (!opciones.length) throw errorOpenAI ?? new Error("Conecta un proveedor con /connect.");
+      if (errorOpenAI) mostrar("OpenAI · " + errorOpenAI.message);
       if (!interfaz) {
-        mostrar(opciones.map(({ value, description }) => `${value} · ${description}`).join("\n"));
-        return;
+        mostrar(opciones.map(({ value, description }) => value + " · " + description).join("\n"));
+        return false;
       }
       const proveedor = proveedorAgente(config);
-      const activo = proveedor === "openai" ? valorModeloOpenAI(config.llm?.openaiModelId)
-        : proveedor === "azure-foundry" ? `azure-foundry/${foundry}` : "demo";
+      const activo = proveedor === "openai" && config.llm?.openaiModelId ? valorModeloOpenAI(config.llm.openaiModelId)
+        : proveedor === "azure-foundry" ? "azure-foundry/" + foundry : undefined;
       elegido = await interfaz.elegir("Modelo para sesiones nuevas · Enter guarda · Esc cancela",
         opciones, activo, { filtrar: true });
-      if (!elegido || cerrando) return;
+      if (!elegido || cerrando) return false;
     }
-    if (/\s/.test(elegido)) throw new Error("Usa /model [id | azure-foundry/<deployment> | demo].");
-    if (elegido === "demo") {
-      await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: "demo" } }));
-      mostrar(`Modelo guardado: ${MODELO_DEMO.id} · Demo local`);
-      return;
-    }
+    if (/\s/.test(elegido) || elegido === "demo") throw new Error("Usa /model [id | azure-foundry/<deployment>].");
     if (elegido.startsWith("azure-foundry/")) {
       const id = elegido.slice("azure-foundry/".length);
       await actualizarConfig((actual) => {
@@ -469,15 +470,16 @@ async function aplicar(destino) {
         return { ...actual, llm: { ...actual.llm, proveedor: "azure-foundry" } };
       });
       mostrar(`Modelo guardado: ${id} · Azure AI Foundry`);
-      return;
+      return true;
     }
     const id = elegido.startsWith("openai/") ? elegido.slice("openai/".length) : elegido;
     if (args) {
-      conexion = await credenciales.resolver();
+      conexion ??= await credenciales.resolver();
       await validarModeloOpenAI(id, conexion);
     }
     await guardarModeloOpenAI(id);
     mostrar(`Modelo OpenAI guardado: ${id} · ${estadoModelo(id, conexion.entorno)}`);
+    return true;
   }
 
   async function guardarModeloOpenAI(id, soloSiOpenAI = false) {
@@ -503,12 +505,15 @@ async function aplicar(destino) {
     }
     const conexion = await credenciales.resolver();
     if (!conexion.fuente) return conectarOpenAI();
-    const id = config.llm?.openaiModelId;
-    const opcion = await interfaz.elegir(`OpenAI API · credencial en ${conexion.fuente} · modelo ${id ?? "sin seleccionar"}`, [
+    const activo = proveedorAgente(config) === "openai";
+    const id = activo ? config.llm?.openaiModelId : undefined;
+    const opcion = await interfaz.elegir("OpenAI API · credencial en " + conexion.fuente + " · modelo " + (id ?? "sin seleccionar"), [
+      ...(!id ? [{ value: "modelo", label: "Elegir modelo para este proyecto" }] : []),
       { value: "credencial", label: "Cambiar credencial" },
-      { value: "probar", label: "Probar conexión", description: "Consume tokens" },
+      ...(id ? [{ value: "probar", label: "Probar conexión", description: "Consume tokens" }] : []),
       { value: "desconectar", label: "Desconectar" },
     ]);
+    if (opcion === "modelo") return elegirModelo("", { conexion, soloOpenAI: true });
     if (opcion === "credencial") return conectarOpenAI();
     if (opcion === "probar") return probarOpenAI(id, conexion);
     if (opcion === "desconectar") return desvincularOpenAI();
@@ -591,9 +596,8 @@ async function aplicar(destino) {
     agentes = nuevosAgentes;
     sesion = undefined;
     agente = undefined;
-    preparado = undefined;
     mensajes = [];
-    mostrar(`${creado ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${carpetaTrabajo}`);
+    mostrar((creado ? "Proyecto creado" : "Proyecto abierto") + " · " + carpetaTrabajo);
     if (creado) mostrar("Datos de Harwiff guardados en .harwiff/.");
     if (!tty) {
       const { proveedor, modelo } = llmProyecto();
@@ -604,9 +608,8 @@ async function aplicar(destino) {
       }
     }
     if (actividad.length) mostrar(["Actividad reciente del proyecto", ...actividad].join("\n"));
-    if (config.cliente === "demo" || config.cliente === "azure-foundry") {
-      mostrar("Escribe una consulta para iniciar el agente.");
-    }
+    mostrar(proveedorAgente(config) ? "Escribe una consulta para iniciar el agente."
+      : "Configura el modelo del proyecto con /connect o /model para iniciar el agente.");
   }
 
   async function cargarAgente(raizAgentes, id, { soloResumen = false } = {}) {
@@ -616,7 +619,7 @@ async function aplicar(destino) {
       throw error;
     });
     const autonoma = await cargarSesionAutonoma(dir, datos, { soloResumen });
-    if (autonoma) return autonoma;
+    if (autonoma) return autonoma.modo === "demo" ? { ...autonoma, soloConsulta: true } : autonoma;
     if (!datos || !["demo", "azure-foundry"].includes(datos.modo)) return;
     const turnos = await leerTurnos(dir, { limite: soloResumen ? 1 : Infinity });
     const texto = [];
@@ -636,55 +639,51 @@ async function aplicar(destino) {
     const ultimo = turnos.at(-1);
     const estado = ultimo?.estado === "cancelado" ? "detenida" :
       ultimo && ultimo.estado !== "completo" ? "interrumpida" : "lista";
-    return { ...datos, id, dir, estado, historialPendiente: soloResumen,
+    return { ...datos, id, dir, estado, historialPendiente: soloResumen, soloConsulta: datos.modo === "demo",
       iniciado: datos.iniciado === true || turnos.length > 0, mensajes: texto.slice(-150) };
   }
 
-  async function abrirAgente(args, entrar = true) {
-    const partes = args.split(/\s+/).slice(2);
-    const usaDemo = partes.includes("--demo");
-    const ids = partes.filter((parte) => parte !== "--demo");
-    if (ids.length > 1 || partes.length > ids.length + 1) throw new Error("Usa agent harwiff [id] [--demo].");
-    const reciente = [...agentes.values()].filter((item) => !item.autonoma && (!usaDemo || item.modo === "demo"))
-      .sort((a, b) => b.uso.localeCompare(a.uso))[0];
-    const id = ids[0] || reciente?.id || (usaDemo ? "demo" : "harwiff");
-    if (!ID_SESION.test(id)) throw new Error("ID de agente inválido.");
-    let item = agentes.get(id);
-    if (item?.autonoma) {
-      if (entrar) await enfocar(item.id);
-      if (!tty) for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
-      return item;
-    }
-    if (!item) {
-      const modo = usaDemo || config.cliente === "demo" ? "demo" : config.cliente;
-      if (modo !== "demo" && modo !== "azure-foundry") {
-        throw new Error(`El cliente ${config.cliente} se usa por separado. Dentro de Harwiff puedes usar agent harwiff --demo.`);
+  async function abrirAgente(args) {
+    const ids = args.split(/\s+/).slice(2);
+    if (ids.length > 1 || (ids.length && !ID_SESION.test(ids[0]))) throw new Error("Usa agent harwiff [id] para abrir una sesión.");
+    const reciente = [...agentes.values()].filter((item) => item.iniciado)
+      .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))[0];
+    const item = ids.length ? agentes.get(ids[0]) : reciente;
+    if (!item) throw new Error("Usa /agente <objetivo> para iniciar una sesión.");
+    await enfocar(item.id);
+    if (!tty) for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
+  }
+
+  async function iniciarAgenteProyecto(objetivo, enfocarAlIniciar = false) {
+    if (!objetivo || objetivo.length > 2000) throw new Error("Escribe un objetivo de entre 1 y 2000 caracteres.");
+    config = await leerJson(ruta);
+    let proveedor = proveedorAgente(config);
+    const conexion = proveedor === "azure-foundry" ? undefined : await credenciales.resolver();
+    if (proveedor === "openai" && !conexion.fuente) throw new Error("Falta la credencial de OpenAI. Conecta el proveedor con /connect.");
+    if (!proveedor || (proveedor === "openai" && !config.llm?.openaiModelId)) {
+      if (!conexion?.fuente) {
+        try { modeloFoundry(config); } catch { throw new Error("Conecta un proveedor con /connect."); }
       }
-      const dir = join(agentesDir, id);
-      await mkdir(join(dir, "turnos"), { recursive: true, mode: 0o700 });
-      item = { id, dir, modo, estado: "lista", iniciado: false, mensajes: [] };
-      agentes.set(id, item);
+      if (!interfaz) throw new Error("Elige un modelo para este proyecto con /model <model-id>.");
+      if (!await elegirModelo("", { conexion, soloOpenAI: proveedor === "openai" })) return;
+      proveedor = proveedorAgente(config);
     }
-    if (usaDemo && item.modo !== "demo") throw new Error("Esa sesión usa Foundry. Elige otro ID para la demo.");
-    item.uso = new Date().toISOString();
-    await guardarJson(join(item.dir, "sesion.json"), {
-      modo: item.modo, uso: item.uso, iniciado: item.iniciado,
-    });
-    preparado = item;
-    if (entrar && item.iniciado) {
-      await enfocar(id);
-      if (!tty) {
-        salida(`Agente ${id} · ${item.modo} · ${item.estado}`);
-        for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
-      }
-    } else if (entrar) {
-      mostrar(`Escribe tu primera consulta para ${id} · ${item.modo}.`, null);
+    if (cerrando) return;
+    const entornoLlm = proveedor === "openai" ? conexion.entorno : undefined;
+    const item = await iniciarSesionAgente({ proyecto: proyectoWifi(), objetivo, alCambiar: actualizar, entornoLlm });
+    agentes.set(item.id, item);
+    if (cerrando) item.controlador?.abort();
+    mostrar(["Sesión iniciada", item.id, etiquetaProveedor(item.modo), item.modelId].join(" · "), null);
+    if (enfocarAlIniciar && interfaz && !cerrando) await enfocar(item.id);
+    if (!tty) {
+      await item.trabajo;
+      for (const mensaje of item.mensajes) salida(mensaje);
     }
-    return item;
   }
 
   async function iniciarTurno(texto, item) {
     await cargarHistorialAgente(item);
+    if (item.soloConsulta) throw new Error("Esta sesión está disponible para consulta. Usa /agente para una nueva sesión.");
     if (item.trabajo) throw new Error("El turno anterior sigue trabajando. Usa /detener para cancelarlo.");
     const primerTurno = !item.iniciado;
     const control = new AbortController();
@@ -692,7 +691,6 @@ async function aplicar(destino) {
     item.estado = "trabajando";
     item.iniciado = true;
     agente = item;
-    preparado = undefined;
     mostrar(`Tú  ${texto}`, item);
     const signal = AbortSignal.any([control.signal, AbortSignal.timeout(120_000)]);
     item.trabajo = auditar(proyecto, {
@@ -701,10 +699,9 @@ async function aplicar(destino) {
       if (primerTurno) {
         await guardarJson(join(item.dir, "sesion.json"), { modo: item.modo, uso: item.uso, iniciado: true });
       }
-      const modelo = item.modo === "demo" ? { modelo: MODELO_DEMO } : modeloFoundry(config);
+      const modelo = modeloFoundry(config);
       await responder({
         id, sesion: item.dir, texto, ...modelo, signal,
-        streamFn: item.modo === "demo" ? demo : undefined,
         async leerContexto() {
           let informes;
           await auditar(proyecto, {
@@ -877,12 +874,7 @@ async function aplicar(destino) {
       return;
     }
     if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
-    if (!texto.startsWith("/")) {
-      const item = preparado ?? await abrirAgente("agent harwiff", false);
-      await iniciarTurno(texto, item);
-      if (!tty) await item.trabajo;
-      return;
-    }
+    if (!texto.startsWith("/")) return iniciarAgenteProyecto(texto, true);
     switch (comando) {
       case "/model":
       case "/models":
@@ -898,19 +890,9 @@ async function aplicar(destino) {
         } else throw new Error("Usa /connect, /connect list o /connect test.");
         break;
       }
-      case "/agente": {
-        config = await leerJson(ruta);
-        const entornoLlm = proveedorAgente(config) === "openai" ? (await credenciales.resolver()).entorno : undefined;
-        const item = await iniciarSesionAgente({ proyecto: proyectoWifi(), objetivo: args, alCambiar: actualizar, entornoLlm });
-        agentes.set(item.id, item);
-        if (cerrando) item.controlador?.abort();
-        mostrar(`Sesión iniciada · ${item.id} · ${etiquetaProveedor(item.modo)}${item.modelId ? ` · ${item.modelId}` : ""}`, null);
-        if (!tty) {
-          await item.trabajo;
-          for (const mensaje of item.mensajes) salida(mensaje);
-        }
+      case "/agente":
+        await iniciarAgenteProyecto(args);
         break;
-      }
       case "/adaptador": {
         if (!args && interfaz) {
           controlWifi = await leerControlWifi(proyectoWifi());
@@ -970,7 +952,7 @@ async function aplicar(destino) {
         if (!args) {
           mostrar(`Cliente: ${config.cliente} · OpenSandbox local: puerto ${config.puertoSandbox || "automático"}`);
           const proveedor = proveedorAgente(config);
-          mostrar(`Proveedor de /agente: ${proveedor}${proveedor === "openai" ? ` · Modelo: ${config.llm.openaiModelId || "pendiente"}` : ""}`);
+          mostrar(`Proveedor de /agente: ${proveedor ?? "sin configurar"}${proveedor === "openai" ? ` · Modelo: ${config.llm.openaiModelId || "pendiente"}` : ""}`);
           if (proveedor === "azure-foundry" || config.cliente === "azure-foundry") {
             mostrar(`Dominio: ${config.foundry?.host || "pendiente"} · Deployment: ${config.foundry?.deployment || "pendiente"}`);
           }
@@ -978,7 +960,7 @@ async function aplicar(destino) {
         }
         const [host, deployment, extra] = args.split(/\s+/);
         if (host === "proveedor") {
-          if (extra || !PROVEEDORES_AGENTE.includes(deployment)) throw new Error("Usa /config proveedor <openai|azure-foundry|demo>.");
+          if (extra || !PROVEEDORES_AGENTE.includes(deployment)) throw new Error("Usa /config proveedor <openai|azure-foundry>.");
           await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: deployment } }));
           mostrar(`Proveedor de /agente: ${deployment}`);
           break;

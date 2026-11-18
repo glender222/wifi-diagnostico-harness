@@ -126,7 +126,9 @@ try {
   }
   await assert.rejects(listarModelosOpenAI({ entorno, fetchFn: async () => { throw new Error(clave); } }),
     { code: "openai_connection" });
-  assert.equal(proveedorAgente({ ...config, llm: { proveedor: "demo" } }, { ...entorno, FOUNDRY_API_KEY: "fixture" }), "demo");
+  assert.equal(proveedorAgente({ ...config, llm: { proveedor: "demo" } }), null);
+  assert.equal(proveedorAgente({ ...config, llm: { proveedor: null }, foundry: {} }), null);
+  assert.equal(proveedorAgente({ cliente: "azure-foundry" }), "azure-foundry");
   assert.equal(proveedorAgente({ ...config, llm: { proveedor: "azure-foundry" } }, entorno), "azure-foundry");
 
   await guardarAlcance(proyecto, scope);

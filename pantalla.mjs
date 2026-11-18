@@ -219,7 +219,7 @@ export function pantalla(comandos, acciones) {
     }
     estado = nuevo;
     if (!nuevo.agentes.length) enFila = false;
-    const contexto = nuevo.proyecto ? `${nuevo.proyecto}  ·  ${nuevo.cliente}` : "Sin proyecto";
+    const contexto = nuevo.proyecto ? [nuevo.proyecto, nuevo.cliente].filter(Boolean).join("  ·  ") : "Sin proyecto";
     const llm = !nuevo.agente && nuevo.proveedor ? `  ·  ${nuevo.proveedor}${nuevo.modelo ? ` / ${nuevo.modelo}` : ""}` : "";
     encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}${llm}`);
     controlWifi.setText(resumenControlWifi(nuevo.controlWifi));

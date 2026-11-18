@@ -44,8 +44,7 @@ def iniciar(destino, cliente, solo_datos=False):
         shutil.copyfile(reglas, nuevo / "AGENTS.md")
         config = {"esquema": ESQUEMA, "cliente": cliente}
         if solo_datos:
-            if cliente in ("demo", "azure-foundry"):
-                config["llm"] = {"proveedor": cliente}
+            config["llm"] = {"proveedor": "azure-foundry" if cliente == "azure-foundry" else None}
         else:
             codigo = nuevo / "harness"
             codigo.mkdir()

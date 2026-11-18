@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
-import { ejecutarPi, guardarJson, modeloFoundry, MODELO_DEMO, simuladorMock } from "./bucle.mjs";
+import { ejecutarPi, guardarJson, modeloFoundry, MODELO_DEMO } from "./bucle.mjs";
 import { contextoHistorico, leerHistorial, leerResultadoAuditado, textoVisible } from "./historial-agente.mjs";
 import { conBloqueoProyecto, entorno, depurarInventario } from "./entorno.mjs";
 import { authorize, cargarObjetivosMock, HERRAMIENTAS, parametrosAuditables } from "./policy.mjs";
@@ -31,12 +31,12 @@ const MOTIVOS = {
   session_error: "No se pudo completar la sesión.",
 };
 
-export const PROVEEDORES_AGENTE = ["openai", "azure-foundry", "demo"];
+export const PROVEEDORES_AGENTE = ["openai", "azure-foundry"];
 
 export function etiquetaProveedor(proveedor) {
   if (proveedor === "openai") return "OpenAI";
   if (proveedor === "azure-foundry") return "Azure Foundry";
-  return "Demo local · simulación";
+  return proveedor === "demo" ? "Demo local · simulación" : "Sin modelo configurado";
 }
 
 class DecisionDenegada extends Error {
@@ -199,26 +199,24 @@ export async function cargarSesionAutonoma(dir, datos, { soloResumen = false } =
   return otraConsola ? { ...item, soloConsulta: true, actividad: "activa en otra consola" } : item;
 }
 
-export function proveedorAgente(config, entornoLlm = process.env) {
-  const explicito = config.llm?.proveedor;
+export function proveedorAgente(config) {
+  const explicito = config?.llm?.proveedor;
+  if (explicito === "demo" || explicito === null) return null;
   if (explicito !== undefined) {
     if (!PROVEEDORES_AGENTE.includes(explicito)) throw new Error("Proveedor de agente inválido en el manifiesto.");
     return explicito;
   }
-  if (config.foundry || config.cliente === "azure-foundry"
-      || (entornoLlm.FOUNDRY_HOST && entornoLlm.FOUNDRY_DEPLOYMENT && entornoLlm.FOUNDRY_API_KEY)) {
-    return "azure-foundry";
-  }
-  return "demo";
+  return config?.foundry || config?.cliente === "azure-foundry" ? "azure-foundry" : null;
 }
 
-async function configurarModelo(config, bssidInicial, entorno, fetchFn) {
-  const provider = proveedorAgente(config, entorno);
+async function configurarModelo(config, entorno, fetchFn, streamFn) {
+  const provider = proveedorAgente(config);
   if (provider === "openai") {
-    return { provider, ...await validarModeloOpenAI(config.llm.openaiModelId, { entorno, fetchFn }) };
+    return { provider, ...await validarModeloOpenAI(config.llm.openaiModelId, { entorno, fetchFn }), streamFn };
   }
-  if (provider === "azure-foundry") return { provider, ...modeloFoundry(config, entorno) };
-  return { provider, modelo: MODELO_DEMO, streamFn: simuladorMock(bssidInicial) };
+  if (provider === "azure-foundry") return { provider, ...modeloFoundry(config, entorno), streamFn };
+  if (streamFn) return { provider: "demo", modelo: MODELO_DEMO, streamFn };
+  throw new Error("Configura el proveedor con /connect y elige un modelo con /model.");
 }
 
 async function prepararAlcance(proyecto, esperado) {
@@ -278,8 +276,7 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
   const usuario = mensajeUsuario(objetivo, ocultar);
   const alcance = await prepararAlcance(proyecto);
   const objetivos = await cargarObjetivosMock(alcance.snapshot.scope);
-  const inicial = alcance.snapshot.scope.allowedBssids.find((bssid) => objetivos.has(bssid));
-  const modelo = await configurarModelo(proyecto.config, inicial, entornoLlm, fetchOpenAI);
+  const modelo = await configurarModelo(proyecto.config, entornoLlm, fetchOpenAI, streamFn);
   const id = `agente-${randomUUID()}`;
   const dir = join(proyecto.raiz, "agentes", id);
   await mkdir(join(proyecto.raiz, "agentes"), { recursive: true, mode: 0o700 });
@@ -293,11 +290,10 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
     lastEvent: null, uso: new Date().toISOString(),
   };
   const item = vistaSesion(dir, estado);
-  const modeloPin = { ...modelo, streamFn: streamFn ?? modelo.streamFn };
   await lanzarTurnos({ proyecto, item, usuario, alCambiar, broker, leerInventario, entornoLlm, fetchOpenAI, ocultar, timeoutMs,
     async preparar() {
       await guardarJson(join(dir, "sesion.json"), estado);
-      return { estado, alcance, objetivos, modelo: modeloPin };
+      return { estado, alcance, objetivos, modelo };
     },
   });
   return item;
@@ -342,12 +338,11 @@ export async function enviarMensajeAgente({ proyecto, item, texto, alCambiar = (
         throw error;
       }
       const objetivos = await cargarObjetivosMock(alcance.snapshot.scope);
-      const inicial = alcance.snapshot.scope.allowedBssids.find((bssid) => objetivos.has(bssid));
       const config = { llm: { proveedor: estado.provider, openaiModelId: estado.modelId },
         ...(estado.provider === "azure-foundry" && { foundry: { host: estado.modelHost, deployment: estado.modelId } }) };
-      const modelo = await configurarModelo(config, inicial, entornoLlm, fetchOpenAI);
+      const modelo = await configurarModelo(config, entornoLlm, fetchOpenAI, streamFn);
       estado.modelId ??= modelo.modelo.id;
-      return { estado, alcance, objetivos, modelo: { ...modelo, streamFn: streamFn ?? modelo.streamFn } };
+      return { estado, alcance, objetivos, modelo };
     },
   });
 }

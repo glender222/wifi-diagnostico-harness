@@ -26,7 +26,7 @@ Los proyectos nuevos guardan sus datos y reglas en `.harwiff/` y usan las depend
 
 ## Probar las dos capas
 
-- En **Capa 1** (`harwiff >`), elige el alcance y el adaptador. Los proyectos nuevos empiezan en demo. Para usar un proveedor conectado, abre `/model`, elige con las flechas y pulsa **Enter**. `/diagnostico demo` genera un informe sintético que aparece en `/auditoria`.
+- En **Capa 1** (`harwiff >`), elige el alcance y el adaptador. Los proyectos nuevos empiezan con el modelo pendiente. Usa `/connect` para conectar un proveedor y `/model` para elegir o cambiar el modelo del proyecto con las flechas y **Enter**. `/diagnostico demo` genera un informe sintético que aparece en `/auditoria`.
 - En **Capa 2**, `/agente <objetivo>` inicia una sesión sobre el escenario mock. Usa **Tab**, las flechas y **Enter** para abrir la sesión. **Esc** o `/salir` vuelven a Capa 1. `/detener` cancela el turno.
 - En Capa 1, `/salir` cierra Harwiff. Al reabrir la carpeta se recuperan los ajustes, las sesiones y los últimos seis registros de auditoría. El historial conversacional se carga al entrar en la sesión.
 
@@ -62,7 +62,7 @@ Harwiff descarga las imágenes fijadas la primera vez que hacen falta. Ejecuta e
 
 ### Sesión sobre el escenario mock
 
-Desde `harwiff >`, prueba este recorrido en un proyecto de laboratorio.
+En un proyecto de laboratorio, selecciona un modelo con `/connect` o `/model` y prueba este recorrido desde `harwiff >`.
 
 ```text
 /alcance set --ssid LAB_TEST_AP --canales 6
@@ -74,7 +74,7 @@ Desde `harwiff >`, prueba este recorrido en un proyecto de laboratorio.
 
 **Esc**, `/volver` y `/salir` regresan a `harwiff >` sin cancelar el turno. En la raíz, `/salir` cierra Harwiff. `/detener` cancela el trabajo activo. Usa `/detalle` para ver los parámetros depurados, la decisión y la evidencia de una herramienta.
 
-Con OpenAI o Foundry configurado, el modelo elige la secuencia de herramientas de Pi. El modo **Demo local · simulación** usa un guion de respuestas para probar el mismo recorrido con el fixture. Al configurar el BSSID `AA:BB:CC:11:22:33` explícitamente, el simulador empieza por inspeccionar la postura. Con el alcance del ejemplo, empieza por observar el entorno. Las dos rutas guardan evidencia sintética y permiten registrar una hipótesis vinculada. La sesión congela el alcance inicial. Un cambio de adaptador o alcance invalida sus operaciones pendientes, incluso si se restaura la configuración anterior.
+El modelo de OpenAI o Foundry seleccionado elige la secuencia de herramientas de Pi y responde usando los datos sintéticos del escenario. Si la carpeta tiene una conexión disponible y un modelo pendiente, `/agente` abre el selector y continúa con el objetivo al confirmar. Si falta la conexión, muestra cómo usar `/connect`. Las sesiones antiguas de Demo quedan disponibles para consulta. La sesión congela el alcance inicial. Un cambio de adaptador o alcance invalida sus operaciones pendientes, incluso si se restaura la configuración anterior.
 
 Durante una sesión `mock`, `consultar_adaptadores` puede leer un resumen depurado del inventario físico del host. La consulta comparte los límites y la autorización del turno. El historial conserva el hecho auditado de la consulta, con cero referencias de evidencia sobre redes.
 
@@ -82,7 +82,7 @@ Puedes continuar una sesión finalizada desde la misma vista o después de reabr
 
 ### Usar la API oficial de OpenAI
 
-Con un proyecto abierto en `harwiff >`, escribe `/connect`, elige **OpenAI API**, introduce la clave en la entrada oculta. Después, escribe `/model` para elegir el modelo del proyecto. Harwiff guarda la clave en Secret Service si `secret-tool` y el almacén de la sesión están disponibles. Si el almacén falla, Harwiff conserva la clave en memoria hasta que cierres el proceso. El proyecto guarda únicamente el proveedor y el modelo.
+Con un proyecto abierto en `harwiff >`, escribe `/connect`, elige **OpenAI API**, introduce la clave en la entrada oculta y elige el modelo del proyecto en el selector. Si ya tienes una credencial guardada, puedes elegir el modelo directamente con `/model`. Harwiff guarda la clave en Secret Service si `secret-tool` y el almacén de la sesión están disponibles. Si el almacén falla, Harwiff conserva la clave en memoria hasta que cierres el proceso. El proyecto guarda únicamente el proveedor y el modelo.
 
 `/connect` permite cambiar la credencial, probar la conexión o desconectar. `/model` abre el catálogo con la credencial existente. También puedes escribir `/model gpt-6-luna`, `/model azure-foundry/<deployment>` o `/model demo`. El modelo predeterminado se muestra en la cabecera de Capa 1 y se aplica a las sesiones nuevas. Cada sesión conserva su modelo original al continuar.
 
@@ -120,7 +120,7 @@ La prueba real voluntaria usa `npm run test:openai -- gpt-4.1-mini` o el ID comp
 
 ### Chat e informes guardados
 
-En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e inicia Harwiff con `FOUNDRY_API_KEY` en el entorno. El deployment debe admitir Chat Completions v1 y herramientas. El agente puede consultar informes guardados. Usa `/diagnostico` en el entorno para generar una lectura real. En proyectos previos de ChatGPT y OpenCode, el cliente externo conserva su flujo y `agent harwiff --demo` abre el agente local de prueba. [Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
+En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e inicia Harwiff con `FOUNDRY_API_KEY` en el entorno. El deployment debe admitir Chat Completions v1 y herramientas. Usa `/connect` para configurar el deployment. `agent harwiff <id>` permite abrir una sesión existente. [Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
 
 - `auditoria/` contiene la solicitud previa y el resultado por ejecución. Un inicio sin resultado se muestra como pendiente de cierre. Cada llamada de la sesión mock incluye un ID local de correlación, parámetros normalizados, decisión `ALLOWED` o `DENIED`, motivo y referencias de evidencia. Los campos de texto libre se marcan como omitidos en la auditoría.
 - `informes/` contiene el JSON de cada diagnóstico con la referencia y SHA-256 en su registro. Los informes de sesiones existentes siguen disponibles como evidencia histórica.

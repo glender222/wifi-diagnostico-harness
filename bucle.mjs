@@ -140,37 +140,6 @@ export async function respuestaSimulada(modelo, content) {
   return stream;
 }
 
-export function simuladorMock(bssidInicial) {
-  return async (modelo, contexto, { signal }) => {
-    await esperar(650, undefined, { signal });
-    const resultados = contexto.messages.filter((mensaje) => mensaje.role === "toolResult");
-    const resultado = (nombre) => {
-      const mensaje = resultados.find((item) => item.toolName === nombre && !item.isError);
-      return mensaje ? JSON.parse(mensaje.content[0].text) : undefined;
-    };
-    const observar = resultado("observar_entorno");
-    const postura = resultado("inspeccionar_postura");
-    const hallazgo = resultado("registrar_hallazgo");
-    const herramienta = (name, args = {}) => respuestaSimulada(modelo,
-      [{ type: "toolCall", id: randomUUID(), name, arguments: args }]);
-    if (!resultados.length && bssidInicial) return herramienta("inspeccionar_postura", { bssid: bssidInicial });
-    if (!observar && !resultados.some((item) => item.toolName === "observar_entorno")) return herramienta("observar_entorno");
-    if (observar?.observaciones.length && !resultados.some((item) => item.toolName === "inspeccionar_postura")) {
-      return herramienta("inspeccionar_postura", { bssid: observar.observaciones[0].bssid });
-    }
-    if (postura && !resultados.some((item) => item.toolName === "registrar_hallazgo")) {
-      return herramienta("registrar_hallazgo", {
-        bssid: postura.bssid, categoria: "postura simulada",
-        detalle: `El fixture reporta ${postura.postura.cifrado} y PMF ${postura.postura.pmf}.`,
-        evidenceId: postura.evidenceId,
-      });
-    }
-    const text = hallazgo ? "Demo local · La simulación guardó un hallazgo vinculado a la postura del fixture."
-      : "Demo local · La simulación terminó. Consulta los resultados de las operaciones en la sesión.";
-    return respuestaSimulada(modelo, [{ type: "text", text }]);
-  };
-}
-
 export async function demo(modelo, contexto, { signal }) {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   await esperar(650, undefined, { signal });
