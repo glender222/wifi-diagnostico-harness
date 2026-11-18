@@ -21,6 +21,7 @@ from tempfile import TemporaryDirectory
 
 from wifi import BSSID, analizar_aislado, asociacion_actual, nmcli, recolectar
 from broker_mock import ejecutar_mock
+from adaptador_core import inventario_perfil
 
 IMAGEN = "python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89"
 EXECD = "opensandbox/execd@sha256:6cf7dba2f21f0b536e100563d841ac58a9f31c2b0a081b7ac76796a24d6f47e2"
@@ -343,7 +344,7 @@ def sandbox_administrado(puerto_pedido=0):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operacion", choices=("adaptadores", "alcance", "preflight", "diagnostico", "demo",
-                                              "estado", "bloquear-config", "broker-mock"))
+                                              "estado", "bloquear-config", "broker-mock", "adaptadores-perfil"))
     args = parser.parse_args()
     def interrumpir(_senal, _marco):
         raise KeyboardInterrupt
@@ -351,6 +352,8 @@ def main():
     try:
         if args.operacion == "adaptadores":
             resultado = inventario()
+        elif args.operacion == "adaptadores-perfil":
+            resultado = inventario_perfil()
         elif args.operacion == "estado":
             resultado = {"docker": docker("info", timeout=4)}
         elif args.operacion == "demo":

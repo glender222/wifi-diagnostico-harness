@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from adaptador_core import FuenteError, inventario_perfil
 from entorno import (DiagnosticoBloqueado, adaptadores, diagnostico_fisico, informe_demo,
                      inventario, preflight, preflight_detalle, reserva_adaptador)
 from wifi import asociacion_actual
@@ -53,6 +54,63 @@ class InventarioTest(unittest.TestCase):
                                       "ifname", "wlan1", "--rescan", "no")
         with patch("wifi.nmcli", return_value=salida + "\n" + salida):
             self.assertIsNone(asociacion_actual("wlan1"))
+
+
+def sys_fixture(raiz, radios):
+    sysfs = raiz / "class"
+    for clase in ("ieee80211", "net", "rfkill"):
+        (sysfs / clase).mkdir(parents=True)
+    for dispositivo, phy, interfaces in radios:
+        fisico = raiz / "devices" / dispositivo
+        radio = fisico / "ieee80211" / phy
+        radio.mkdir(parents=True)
+        (radio / "device").symlink_to(fisico)
+        (sysfs / "ieee80211" / phy).symlink_to(radio)
+        if not (fisico / "subsystem").exists():
+            (raiz / "pci").mkdir(exist_ok=True)
+            (fisico / "subsystem").symlink_to(raiz / "pci")
+        for nombre, indice in interfaces:
+            interfaz = sysfs / "net" / nombre
+            interfaz.mkdir()
+            (interfaz / "device").symlink_to(fisico)
+            (interfaz / "phy80211").symlink_to(radio)
+            (interfaz / "ifindex").write_text(str(indice))
+            (interfaz / "iflink").write_text(str(indice))
+            (interfaz / "operstate").write_text("up")
+    return sysfs
+
+
+class PerfilTest(unittest.TestCase):
+    def test_agrupa_dispositivos_phys_e_interfaces_sin_nm(self):
+        with tempfile.TemporaryDirectory() as directorio:
+            sysfs = sys_fixture(Path(directorio), [
+                ("pci0", "phy0", [("wlan0", 2), ("wlan1", 3)]),
+                ("pci0", "phy1", []),
+                ("pci1", "phy2", [("wlan2", 4)]),
+            ])
+            with patch("adaptador_core.consultar", side_effect=FuenteError("source_unavailable")):
+                dto = inventario_perfil(sysfs)
+                self.assertEqual(dto["schema"], "harwiff-adapter-inventory/v1")
+                self.assertEqual(dto["status"], "partial")
+                self.assertEqual(dto["mock"]["id"], "mock")
+                uno, dos = dto["devices"]
+                self.assertNotEqual(uno["deviceId"], dos["deviceId"])
+                self.assertEqual(uno["bus"], "pci")
+                self.assertEqual([len(phy["interfaces"]) for phy in uno["phys"]], [2, 0])
+                interfaz = uno["phys"][0]["interfaces"][0]
+                self.assertEqual((interfaz["ifname"], interfaz["ifindex"], interfaz["nmState"]),
+                                 ("wlan0", 2, "unavailable"))
+                self.assertEqual(interfaz["legacyAdapterId"], uno["legacyAdapterId"])
+                self.assertNotEqual(interfaz["interfaceId"], uno["legacyAdapterId"])
+                self.assertNotIn(directorio, json.dumps(dto))
+                os.rename(sysfs / "net" / "wlan0", sysfs / "net" / "wlan3")
+                os.rename(sysfs / "ieee80211" / "phy2", sysfs / "ieee80211" / "phy4")
+                (sysfs / "ieee80211" / "phy4").unlink()
+                (sysfs / "ieee80211" / "phy2").symlink_to(Path(directorio) / "desconectado")
+                nuevo = inventario_perfil(sysfs)
+                self.assertEqual(len(nuevo["devices"]), 1)
+                self.assertEqual(nuevo["devices"][0]["legacyAdapterId"], uno["legacyAdapterId"])
+                self.assertIn("adapter_disconnected", {aviso["code"] for aviso in nuevo["warnings"]})
 
 
 class PreflightTest(unittest.TestCase):
