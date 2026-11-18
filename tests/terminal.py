@@ -201,6 +201,8 @@ else process.exit(1);
                           for item in (original, nueva)):
                     self.assertLess(time.monotonic(), limite)
                     time.sleep(0.05)
+                escribir(b"/diagnostico demo\r")
+                esperar("Informe guardado")
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
             [primer] = (original / "turnos").iterdir()
@@ -211,7 +213,13 @@ else process.exit(1);
                              ["Sesion original", "Conserva los datos observados", "Distingue evidencia e hipotesis"])
             with terminal(proyecto, env) as (proceso, esperar, escribir):
                 esperar("OpenAI / gpt-5-mini")
-                esperar(f"{original.name} · completed")
+                esperar("Adaptador: mock | Alcance: 1 SSID, 1 canal(es) | Preflight: OK")
+                esperar("Actividad reciente del proyecto")
+                esperar("Configuración · modelo predeterminado")
+                esperar("Diagnóstico")
+                datos = esperar(f"{original.name} · completed")
+                self.assertNotIn(b"Conserva los datos observados", datos)
+                self.assertNotIn(b"sk-fixture-harwiff-terminal", datos)
                 escribir(f"agent harwiff {original.name}\r".encode())
                 esperar(f"agente/{original.name} >")
                 escribir(b"/detalle\r")

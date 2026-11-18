@@ -19,6 +19,8 @@ El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`.
 
 En carpetas de trabajo existentes, Harwiff guarda sus datos dentro de `.harwiff/` y conserva tus archivos. Harwiff abre automáticamente un proyecto existente en la carpeta actual, o puedes pasarlo con `harwiff ruta/al/proyecto`. Para crear un proyecto Foundry usa `/proyecto --foundry mi-proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Escribe `/` para ver el menú de comandos de la vista actual o `/ayuda` para listarlos.
 
+Al reabrir un proyecto, el plano de control muestra la configuración guardada, las sesiones previas y hasta seis registros recientes de auditoría, incluidos los diagnósticos y los cambios de configuración registrados. La conversación de cada sesión se carga al entrar. Los cambios nuevos registran qué ajuste cambió; para ajustes anteriores sin auditoría se muestra su valor actual.
+
 ## Listar y abrir proyectos por ruta
 
 ```bash
@@ -95,7 +97,7 @@ Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso. Si ya lo seleccionast
 
 El catálogo indica qué IDs están listados, comprobados o confirmados como incompatibles. Harwiff recuerda esas comprobaciones durante el proceso actual para esa credencial y proyecto API. La selección de un ID listado no consume tokens.
 
-Responses usa `store: false`. Durante un turno, Pi puede devolver al proveedor el estado cifrado asociado a sus llamadas junto con sus resultados. Harwiff descarta ese estado al cerrar cada turno. Al continuar, incluso en el mismo proceso, el modelo recibe los mensajes visibles y las evidencias verificadas como contexto y empieza con un estado de razonamiento nuevo. Harwiff muestra por separado los resúmenes oficiales que solicite y reciba para modelos con soporte confirmado. [Razonamiento en Responses](https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context)
+Responses usa `store: false`. Durante un turno, Pi puede devolver al proveedor el estado cifrado asociado a sus llamadas junto con sus resultados. Harwiff descarta ese estado al cerrar cada turno. Al continuar, incluso en el mismo proceso, el modelo recibe los mensajes visibles y las evidencias verificadas como contexto y empieza con un estado de razonamiento nuevo. Harwiff solo solicita resúmenes cuando OpenAI documenta esa capacidad para el modelo y muestra por separado los resúmenes oficiales que entregue el proveedor. La documentación de `gpt-6-luna` confirma Responses y function calling. Harwiff conserva ese flujo y señala que el resumen sigue sin confirmar para ese modelo. [Razonamiento en Responses](https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context)
 
 El resultado y la vista de cada turno incluyen el ID solicitado, los IDs devueltos y los tokens informados por Responses. Una medición parcial indica que alguna solicitud carece de cifras. Desde el repositorio, `node tests/openai.mjs` ejecuta la simulación. El fixture de `gpt-4.1-mini` reporta 101 tokens de entrada, 22 de salida y 123 en total, todos simulados.
 

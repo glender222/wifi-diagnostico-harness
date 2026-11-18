@@ -9,6 +9,19 @@ export const CLIENTES = ["demo", "azure-foundry", "chatgpt", "opencode"];
 export const ID_SESION = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const ID_EJECUCION = /^\d{13}-[a-f0-9-]{36}$/;
 
+export function resumenControlWifi(control) {
+  const adaptador = control?.adapter;
+  const alcance = control?.scope;
+  const filtros = [
+    [alcance?.allowedBssids.length, "BSSID"],
+    [alcance?.allowedSsids.length, "SSID"],
+    [alcance?.allowedChannels.length, "canal(es)"],
+  ].filter(([cantidad]) => cantidad).map(([cantidad, tipo]) => `${cantidad} ${tipo}`);
+  const preflight = control?.preflight;
+  const nombre = String(adaptador?.name ?? (adaptador ? "guardado" : "ninguno")).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+  return `Adaptador: ${nombre} | Alcance: ${filtros.join(", ") || "pendiente"} | Preflight: ${preflight ? (preflight.ok ? "OK" : "Bloqueado") : "Pendiente"}`;
+}
+
 export async function leerJson(ruta) {
   return JSON.parse(await readFile(ruta, "utf8"));
 }
@@ -148,7 +161,8 @@ export async function guardarAlcance(proyecto, datos) {
     const anterior = await leerControlWifi(proyecto);
     const resultado = await validarControlWifi({ ...anterior, projectId: anterior.projectId ?? randomUUID(), scope });
     const estado = revisarAlcance(anterior, resultado.estado);
-    await guardarControlWifi(proyecto, estado);
+    const huboCambio = hashAlcance({ ...anterior, scope: estado.scope }) !== hashAlcance(anterior);
+    await guardarCambioConfiguracion(proyecto.raiz, huboCambio ? ["alcance"] : [], () => guardarControlWifi(proyecto, estado));
     return estado;
   });
 }
@@ -159,7 +173,8 @@ export async function usarAdaptador(proyecto, name, id) {
     const resultado = await validarControlWifi({ ...anterior, adapter: { id, name } });
     const estado = revisarAlcance(anterior, resultado.estado);
     if (!estado.snapshot) throw errorPreflight(estado.preflight);
-    await guardarControlWifi(proyecto, estado);
+    const cambio = estado.adapter.id !== anterior.adapter?.id || estado.adapter.mode !== anterior.adapter?.mode;
+    await guardarCambioConfiguracion(proyecto.raiz, cambio ? ["adaptador"] : [], () => guardarControlWifi(proyecto, estado));
     return estado;
   });
 }
@@ -270,6 +285,42 @@ export async function leerAuditoria(proyecto, id) {
 
 export async function idsAuditoria(proyecto) {
   return (await directorios(join(proyecto, "auditoria"))).filter((id) => ID_EJECUCION.test(id));
+}
+
+const AJUSTES = new Map([
+  ["proveedor", "proveedor LLM"], ["modelo", "modelo predeterminado"], ["foundry", "configuración de Foundry"],
+  ["sandbox", "puerto de OpenSandbox"], ["alcance", "alcance"], ["adaptador", "adaptador"],
+]);
+
+export async function guardarCambioConfiguracion(raiz, campos, guardar) {
+  if (!campos.length) return guardar();
+  return auditar(raiz, { origen: "usuario", operacion: "configuracion", campos }, async () => { await guardar(); });
+}
+
+export async function leerActividadProyecto(raiz) {
+  const guardados = await idsAuditoria(raiz).catch((error) => {
+    if (error.code === "EACCES" || error.code === "EPERM") return [];
+    throw error;
+  });
+  const ids = guardados.slice(-24).reverse();
+  const actividad = [];
+  for (let i = 0; i < ids.length && actividad.length < 6; i += 6) {
+    const lote = await Promise.all(ids.slice(i, i + 6).map(async (id) => {
+      const registro = await leerAuditoria(raiz, id).catch(() => undefined);
+      if (registro?.esquema !== "harwiff-auditoria/v1" || registro.id !== id || registro.padre ||
+          typeof registro.operacion !== "string" || !/^[a-z][a-z0-9_]{0,39}$/.test(registro.operacion) ||
+          !["completo", "bloqueado", "error", "cancelado", "pendiente de cierre"].includes(registro.estado)) return;
+      const fecha = new Date(Number(id.slice(0, 13))).toISOString().replace("T", " ").slice(0, 16);
+      const campos = Array.isArray(registro.campos) ? registro.campos.map((campo) => AJUSTES.get(campo)).filter(Boolean) : [];
+      const etiqueta = registro.operacion === "configuracion" ? `Configuración${campos.length ? " · " + campos.join(", ") : ""}`
+        : registro.operacion === "diagnostico" ? "Diagnóstico"
+          : registro.operacion === "sesion_mock" || registro.operacion === "turno" ? "Turno del agente"
+            : registro.operacion;
+      return `${fecha} UTC · ${etiqueta} · ${registro.estado} · /auditoria ${id}`;
+    }));
+    actividad.push(...lote.filter(Boolean));
+  }
+  return actividad.slice(0, 6).reverse();
 }
 
 export async function guardarInforme(proyecto, id, informe) {

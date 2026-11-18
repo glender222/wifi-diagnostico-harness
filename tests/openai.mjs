@@ -54,7 +54,9 @@ function api({ pasos, solicitudes = [], id = modelId, catalogo = listado }) {
     assert.equal(payload.stream, true);
     assert.equal(payload.max_output_tokens, 2048);
     assert.ok(payload.tool_choice === undefined || payload.tool_choice === "auto");
-    assert.deepEqual(payload.tools.map(({ name }) => name), ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo"]);
+    const herramientas = [...(payload.tools ?? []), ...payload.input
+      .filter(({ type }) => type === "additional_tools").flatMap(({ tools }) => tools)];
+    assert.deepEqual(herramientas.map(({ name }) => name), ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo"]);
     assert.doesNotMatch(JSON.stringify(payload), new RegExp(clave));
     return pasos[i++](payload, request);
   };
@@ -171,7 +173,7 @@ try {
     usage: { input_tokens: 9, output_tokens: 5, total_tokens: 14 } };
   const conRazonamiento = await iniciar(api({ id: razonador, catalogo, pasos: [
     (payload) => {
-      assert.equal(payload.reasoning.summary, "auto");
+      assert.deepEqual(payload.reasoning, { summary: "detailed", effort: "low" });
       assert.ok(payload.include.includes("reasoning.encrypted_content"));
       return sse({ type: "response.created", response: inicial },
         { type: "response.output_item.added", output_index: 0, item: parcial },
@@ -238,6 +240,54 @@ try {
   assert.equal(nuevaSesion.estado.status, "completed");
   assert.equal(nuevaSesion.resultado.modelId, modeloNuevo);
   assert.deepEqual(nuevaSesion.herramientas.map(({ tool }) => tool), ["observar_entorno"]);
+
+  const luna = "gpt-6-luna";
+  const proyectoLuna = { ...proyecto, config: { ...config, llm: { proveedor: "openai", openaiModelId: luna } } };
+  const catalogoLuna = () => Response.json({ data: [{ id: luna }] });
+  const simularLuna = (pasos) => api({ id: luna, catalogo: catalogoLuna, pasos });
+  const conLuna = await iniciar(simularLuna([
+    (payload) => {
+      assert.ok(!payload.reasoning?.summary);
+      return respuesta(41, herramienta(41, "observar_entorno"));
+    },
+    (payload) => {
+      assert.ok(!payload.reasoning?.summary);
+      assert.ok(payload.input.some(({ type }) => type === "function_call_output"));
+      return respuesta(42, mensaje(42));
+    },
+  ]), { proyecto: proyectoLuna });
+  const sinResumenLuna = await finalizar(conLuna);
+  assert.equal(sinResumenLuna.estado.reason, "completed");
+  assert.equal(sinResumenLuna.estado.modelId, luna);
+  assert.equal(sinResumenLuna.eventos[0].resumenSolicitado, false);
+  assert.ok(sinResumenLuna.herramientas.some(({ tool }) => tool === "observar_entorno"));
+  assert.match(conLuna.mensajes.join("\n"), /Resumen oficial de OpenAI · no disponible/);
+
+  const resumenEntregado = await iniciar(simularLuna([(payload) => {
+    assert.ok(!payload.reasoning?.summary);
+    const item = mensaje(43, "Respuesta con un resumen entregado por el proveedor.");
+    const reasoning = { ...razonamiento, content: [{ type: "reasoning_text", text: privada }] };
+    return sse({ type: "response.created", response: { id: "resp_luna", model: luna, status: "in_progress" } },
+      { type: "response.output_item.done", output_index: 1, item },
+      { type: "response.completed", response: { id: "resp_luna", status: "completed", model: luna,
+        output: [reasoning, item], usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 } } });
+  }]), { proyecto: proyectoLuna });
+  const conResumenLuna = await finalizar(resumenEntregado);
+  assert.equal(conResumenLuna.estado.reason, "completed");
+  assert.equal(conResumenLuna.eventos.find(({ type }) => type === "summary")?.text, razonamiento.summary[0].text);
+  assert.doesNotMatch(resumenEntregado.mensajes.join("\n"), /soporte sin confirmar/);
+  assert.doesNotMatch(JSON.stringify([conResumenLuna, resumenEntregado.transcript]), /Pensamiento privado|cifrado-fixture/);
+
+  const astra = "gpt-6.2-astra";
+  const proyectoAstra = { ...proyecto, config: { ...config, llm: { proveedor: "openai", openaiModelId: astra } } };
+  const conAstra = await finalizar(await iniciar(api({ id: astra, catalogo: () => Response.json({ data: [{ id: astra }] }),
+    pasos: [(payload) => {
+      assert.deepEqual(payload.reasoning, { effort: "low", summary: "auto" });
+      return respuesta(44, mensaje(44));
+    }],
+  }), { proyecto: proyectoAstra }));
+  assert.equal(conAstra.estado.reason, "completed");
+  assert.equal(conAstra.eventos[0].resumenSolicitado, true);
 
   const cuota = await finalizar(await iniciar(api({ pasos: [
     () => respuesta(1, herramienta(1, "observar_entorno")),
@@ -314,7 +364,7 @@ try {
   assert.match(cliResult.stdout, /Alcance guardado/);
   assert.doesNotMatch(cliResult.stdout + cliResult.stderr, new RegExp(clave));
   assert.deepEqual(await leer(rutaManifiesto), config);
-  console.log("OpenAI simulado · catálogo, Responses, herramientas, errores, cancelación y credenciales verificados.");
+  console.log("OpenAI simulado · catálogo, herramientas, errores, cancelación, credenciales y resúmenes verificados.");
   console.log(`Modelo simulado: ${modelId} → ${modeloDevuelto}. Tokens simulados: 101 entrada, 22 salida, 123 total.`);
 } finally {
   await rm(raiz, { recursive: true, force: true });

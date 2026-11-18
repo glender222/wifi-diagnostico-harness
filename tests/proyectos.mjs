@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { conBloqueoProyecto } from "../entorno.mjs";
-import { buildScopeSnapshot, guardarAlcance, leerAuditoria, leerControlWifi, localizarProyecto } from "../proyecto.mjs";
+import { buildScopeSnapshot, guardarAlcance, idsAuditoria, leerAuditoria, leerControlWifi, localizarProyecto } from "../proyecto.mjs";
 
 const consola = fileURLToPath(new URL("../consola.mjs", import.meta.url));
 const temporal = await mkdtemp(join(tmpdir(), "harwiff-descubrir-"));
@@ -111,6 +111,37 @@ try {
   assert.match(salida, /"preflightPassed": true/);
   assert.match(salida, /Informe guardado/);
 
+  const reabierto = consolaConEntrada(actual);
+  assert.match(reabierto, /Proveedor LLM · Azure Foundry · Modelo predeterminado/);
+  assert.match(reabierto, /Adaptador: mock.*Preflight: OK/);
+  assert.match(reabierto, /Actividad reciente del proyecto/);
+  for (const etiqueta of ["Configuración · alcance", "Configuración · adaptador", "Diagnóstico"]) {
+    assert.equal(reabierto.split(etiqueta).length - 1, 1);
+  }
+  assert.doesNotMatch(reabierto, /Área de pruebas|AA:BB:CC:11:22:33/);
+  const ids = await idsAuditoria(proyecto.raiz);
+  await guardarAlcance(proyecto, { ...alcance, allowedSsids: [...alcance.allowedSsids].reverse() });
+  assert.match(consolaConEntrada(actual, "/adaptador usar mock"), /Adaptador seleccionado: mock/);
+  assert.deepEqual(await idsAuditoria(proyecto.raiz), ids);
+  const registros = await Promise.all(ids.map((id) => leerAuditoria(proyecto.raiz, id)));
+  assert.deepEqual(registros.filter(({ operacion }) => operacion === "configuracion").map(({ campos }) => campos).sort(),
+    [["adaptador"], ["alcance"]]);
+  assert.doesNotMatch(JSON.stringify(registros.filter(({ operacion }) => operacion === "configuracion")), /Área de pruebas|AA:BB:CC/);
+  assert.doesNotMatch(consolaConEntrada(plano), /Actividad reciente del proyecto/);
+  await guardarAlcance(proyecto, alcance);
+
+  // El índice de sesiones se puede abrir aunque un historial aún no sea legible.
+  const agenteGuardado = "agente-fixture";
+  const sesionGuardada = join(proyecto.raiz, "agentes", agenteGuardado);
+  const turnoGuardado = "1700000000000-11111111-1111-1111-1111-111111111111";
+  await mkdir(join(sesionGuardada, "turnos", turnoGuardado), { recursive: true });
+  await writeFile(join(sesionGuardada, "sesion.json"), JSON.stringify({ esquema: "harwiff-agent-session/v1",
+    id: agenteGuardado, status: "completed", provider: "openai", modelId: "gpt-6-luna", turnId: turnoGuardado }));
+  await writeFile(join(sesionGuardada, "turnos", turnoGuardado, "eventos.json"), "{");
+  const indice = consolaConEntrada(actual);
+  assert.match(indice, /Agente agente-fixture · completed/);
+  assert.doesNotMatch(indice, /Error:/);
+
   const estado = await leerControlWifi(proyecto);
   const snapshot = await buildScopeSnapshot(await localizarProyecto(actual));
   assert.deepEqual(snapshot, {
@@ -150,7 +181,7 @@ try {
   assert.equal(auditoria.decision, "denegado");
   assert.match(auditoria.motivo, /al menos un BSSID o SSID/);
   await assert.rejects(readFile(join(legado.raiz, "informes", `${ejecucion}.json`)), { code: "ENOENT" });
-  console.log("Alcance, selección, bloqueo de configuración, migración y snapshot verificados.");
+  console.log("Alcance, adaptador, migración, auditoría reciente y carga diferida de sesiones verificados.");
 } finally {
   await chmod(restringido, 0o700).catch(() => {});
   await rm(temporal, { recursive: true, force: true });

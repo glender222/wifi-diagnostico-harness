@@ -4,8 +4,14 @@ const BASE = "https://api.openai.com/v1";
 const modelosPi = new Map(openaiProvider().getModels()
   .filter(({ provider, api, baseUrl }) => provider === "openai" && api === "openai-responses" && baseUrl === BASE)
   .map((modelo) => [modelo.id, modelo]));
-// Modelos con soporte explícito en la guía oficial de resúmenes de OpenAI.
-const RESUMEN_DOCUMENTADO = /^(?:o4-mini(?:-2025-04-16)?|gpt-6\.2-astra)$/;
+// Los detalles de Models y el indicador reasoning de Pi no declaran esta capacidad.
+// Fuente: https://developers.openai.com/api/docs/guides/reasoning#reasoning-summaries
+const RESUMEN_O4 = Object.freeze({ effort: "low", summary: "detailed" });
+const RESUMEN_DOCUMENTADO = new Map([
+  ["o4-mini", RESUMEN_O4],
+  ["o4-mini-2025-04-16", RESUMEN_O4],
+  ["gpt-6.2-astra", Object.freeze({ effort: "low", summary: "auto" })],
+]);
 const CUOTA = new Set(["insufficient_quota", "billing_hard_limit_reached", "credit_balance_exhausted",
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "organization_usage_limit_exceeded"]);
 
@@ -100,7 +106,7 @@ export async function validarModeloOpenAI(id, opciones) {
   // El catálogo de la cuenta puede incorporar un modelo antes que el catálogo de Pi.
   const modelo = modelosPi.get(id) ?? {
     id, name: id, provider: "openai", api: "openai-responses", baseUrl: BASE,
-    input: ["text"], reasoning: false, contextWindow: 0, maxTokens: 2048,
+    input: ["text"], reasoning: RESUMEN_DOCUMENTADO.has(id), contextWindow: 0, maxTokens: 2048,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
   return { modelo, clave: claveOpenAI(opciones?.entorno ?? process.env) };
@@ -141,8 +147,8 @@ export async function comprobarHerramientasOpenAI(modelId, opciones) {
 }
 
 export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env, modelo) {
-  const admiteResumen = modelo?.reasoning && modelo.api === "openai-responses" &&
-    RESUMEN_DOCUMENTADO.test(modelo.id) && modelo.thinkingLevelMap?.low;
+  const configResumen = modelo?.api === "openai-responses" && modelo.provider === "openai" && modelo.baseUrl === BASE
+    ? RESUMEN_DOCUMENTADO.get(modelo.id) : undefined;
   const resumenes = new Map();
   function guardarResumen(indice, item) {
     if (item?.type !== "reasoning" || !Array.isArray(item.summary) || !item.summary.length) return;
@@ -153,6 +159,7 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env, 
   const cabeceras = cabecerasProyecto(entorno);
   let actual;
   return {
+    solicitaResumen: Boolean(configResumen),
     nuevaSolicitud() {
       resumenes.clear();
       actual = {};
@@ -182,14 +189,10 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env, 
     hooks: {
       onPayload(payload) {
         const limpio = JSON.parse(ocultarClaveOpenAI(JSON.stringify(payload), entorno));
-        if (!modelosPi.has(limpio.model)) {
+        if (configResumen) limpio.reasoning = { ...limpio.reasoning, ...configResumen };
+        else if (limpio.reasoning) delete limpio.reasoning.summary;
+        if (configResumen || !modelosPi.has(limpio.model)) {
           // Los modelos que razonan necesitan poder continuar sin estado remoto.
-          limpio.include = [...new Set([...(limpio.include ?? []), "reasoning.encrypted_content"])];
-        }
-        if (admiteResumen) {
-          const esfuerzo = limpio.reasoning?.effort;
-          limpio.reasoning = { ...limpio.reasoning, effort: !esfuerzo || esfuerzo === "none" ? admiteResumen : esfuerzo,
-            summary: "auto" };
           limpio.include = [...new Set([...(limpio.include ?? []), "reasoning.encrypted_content"])];
         }
         return limpio;
@@ -213,7 +216,8 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env, 
       },
       onProviderStreamEvent(evento) {
         const respuesta = evento.response;
-        if (admiteResumen && Number.isInteger(evento.output_index)) {
+        // Solo se proyectan eventos oficiales de summary, incluso si el proveedor los envía sin pedirlos.
+        if (Number.isInteger(evento.output_index)) {
           if (evento.type === "response.reasoning_summary_text.delta" && typeof evento.delta === "string") {
             const partes = resumenes.get(evento.output_index) ?? new Map();
             const indice = evento.summary_index ?? 0;
@@ -223,8 +227,8 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env, 
             guardarResumen(evento.output_index, evento.item);
           }
         }
-        if (admiteResumen && ["response.completed", "response.incomplete"].includes(evento.type)) {
-          respuesta?.output?.forEach((item, indice) => guardarResumen(indice, item));
+        if (Array.isArray(respuesta?.output) && ["response.completed", "response.incomplete"].includes(evento.type)) {
+          respuesta.output.forEach((item, indice) => guardarResumen(indice, item));
         }
         if (modeloValido(respuesta?.model)) {
           actual.modelo = respuesta.model;

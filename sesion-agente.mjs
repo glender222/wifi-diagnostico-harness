@@ -79,10 +79,15 @@ function vistaSesion(dir, estado, turnos = [], parciales = []) {
     bloques.set(id, { id, text: textoVisible(text), markdown });
   }
   for (const { id: turno, eventos } of turnos) {
+    const tieneResumen = eventos.some(({ type }) => type === "summary") ||
+      (turno === estado.turnId && parciales.some(({ resumen, text }) => resumen && text));
     for (const [indice, evento] of eventos.entries()) {
       const id = `${turno}/${indice}`;
       switch (evento.type) {
         case "start": agregar(id, `${etiquetaProveedor(evento.provider)}${evento.modelId ? ` · ${evento.modelId}` : ""} · Turno`);
+          if (evento.resumenSolicitado === false && !tieneResumen) {
+            agregar(id + "/summary", "Resumen oficial de OpenAI · no disponible (soporte sin confirmar).");
+          }
           if (!eventos.some(({ type }) => type === "user")) agregar(id + "/goal", `Tú  ${evento.goal}`);
           break;
         case "user": {
@@ -146,7 +151,7 @@ function actividad(evento) {
   return "";
 }
 
-export async function cargarSesionAutonoma(dir, datos) {
+export async function cargarSesionAutonoma(dir, datos, { soloResumen = false } = {}) {
   if (datos?.esquema !== ESQUEMA) return undefined;
   let estado = datos;
   let otraConsola = false;
@@ -186,7 +191,8 @@ export async function cargarSesionAutonoma(dir, datos) {
       otraConsola = true;
     });
   }
-  const item = vistaSesion(dir, estado, await leerHistorial(dir));
+  const item = vistaSesion(dir, estado, soloResumen ? [] : await leerHistorial(dir));
+  if (soloResumen) item.historialPendiente = true;
   return otraConsola ? { ...item, soloConsulta: true, actividad: "activa en otra consola" } : item;
 }
 
@@ -696,7 +702,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
       await guardarJson(join(rutaTurno, "inicio.json"), { esquema: "wifi-turno/v2", usuario, turnNumber: estado.turnNumber, budget: estado.budget });
       estado.status = "running";
       await guardarEventos([{ type: "start", goal: usuario.content, provider: estado.provider, modelId: estado.modelId,
-        turnNumber: estado.turnNumber }, ...entradas.map(eventoUsuario)]);
+        turnNumber: estado.turnNumber, resumenSolicitado: seguimiento?.solicitaResumen }, ...entradas.map(eventoUsuario)]);
       buzon.abrir(guardarEventos);
       inicio.resolve();
 

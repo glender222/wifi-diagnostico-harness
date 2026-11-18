@@ -3,6 +3,8 @@ import {
   ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
 
+import { resumenControlWifi } from "./proyecto.mjs";
+
 const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
 const simple = (texto) => texto;
 const fuerte = (texto) => `\x1b[1m${texto}\x1b[22m`;
@@ -14,19 +16,6 @@ const temaMarkdown = {
 const tema = {
   selectedPrefix: acento, selectedText: acento, description: simple, scrollInfo: simple, noMatch: simple,
 };
-
-function resumenControlWifi(control) {
-  const adaptador = control?.adapter;
-  const alcance = control?.scope;
-  const filtros = [
-    [alcance?.allowedBssids.length, "BSSID"],
-    [alcance?.allowedSsids.length, "SSID"],
-    [alcance?.allowedChannels.length, "canal(es)"],
-  ].filter(([cantidad]) => cantidad).map(([cantidad, tipo]) => `${cantidad} ${tipo}`);
-  const preflight = control?.preflight;
-  const nombre = String(adaptador?.name ?? (adaptador ? "guardado" : "ninguno")).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
-  return `Adaptador: ${nombre} | Alcance: ${filtros.join(", ") || "pendiente"} | Preflight: ${preflight ? (preflight.ok ? "OK" : "Bloqueado") : "Pendiente"}`;
-}
 
 class EditorConsola extends Editor {
   prefijo = undefined;

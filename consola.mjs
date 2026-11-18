@@ -10,8 +10,9 @@ import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, ejecutarPi, guardar
 import { crearCredencialesOpenAI } from "./credenciales-openai.mjs";
 import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
 import {
-  ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarInforme, idsAuditoria,
-  informesAgente, inspeccionarControlWifi, leerAuditoria, leerControlWifi, leerJson, localizarProyecto, usarAdaptador,
+  ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarCambioConfiguracion, guardarInforme, idsAuditoria,
+  informesAgente, inspeccionarControlWifi, leerActividadProyecto, leerAuditoria, leerControlWifi, leerJson, localizarProyecto,
+  resumenControlWifi, usarAdaptador,
 } from "./proyecto.mjs";
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { cargarSesionAutonoma, enviarMensajeAgente, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
@@ -151,6 +152,7 @@ async function aplicar(destino) {
   let diagnosticoPendiente;
   let agentes = new Map();
   const envios = new WeakMap();
+  const cargasHistorial = new WeakMap();
   let agentesDir;
   let mensajes = [
     `Carpeta actual: ${seguro(process.cwd())}`,
@@ -162,20 +164,30 @@ async function aplicar(destino) {
   const proyectoWifi = () => ({ raiz: proyecto, config });
   async function actualizarConfig(cambiar) {
     config = await conBloqueoProyecto(proyecto, async () => {
-      const nueva = cambiar(await leerJson(ruta));
-      await guardarJson(ruta, nueva);
+      const anterior = await leerJson(ruta);
+      const nueva = cambiar(anterior);
+      const campos = [];
+      if (anterior.llm?.proveedor !== nueva.llm?.proveedor) campos.push("proveedor");
+      if (anterior.llm?.openaiModelId !== nueva.llm?.openaiModelId) campos.push("modelo");
+      if (anterior.foundry?.host !== nueva.foundry?.host ||
+          anterior.foundry?.deployment !== nueva.foundry?.deployment) campos.push("foundry");
+      if ((anterior.puertoSandbox ?? 0) !== (nueva.puertoSandbox ?? 0)) campos.push("sandbox");
+      await guardarCambioConfiguracion(proyecto, campos, () => guardarJson(ruta, nueva));
       return nueva;
     });
   }
-  function actualizar() {
-    const proveedor = config && proveedorAgente(config);
+  function llmProyecto() {
+    const proveedor = proveedorAgente(config);
     const modelo = proveedor === "openai" ? config.llm?.openaiModelId
-      : proveedor === "azure-foundry" ? config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT : undefined;
+      : proveedor === "azure-foundry" ? config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT : MODELO_DEMO.id;
+    return { proveedor: etiquetaProveedor(proveedor), modelo: modelo || "pendiente" };
+  }
+  function actualizar() {
     interfaz?.render({
       proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente?.autonoma ? agente.avisos ?? [] : agente ? agente.mensajes : mensajes,
-      transcript: agente?.transcript, proveedor: proveedor && etiquetaProveedor(proveedor), modelo,
+      transcript: agente?.transcript, ...(config && llmProyecto()),
       autonoma: agente?.autonoma, soloConsulta: agente?.soloConsulta, comandos: disponibles(proyecto, agente),
       controlWifi,
       promptEntorno: PROMPT_ENTORNO,
@@ -202,9 +214,25 @@ async function aplicar(destino) {
     interfaz?.cerrar();
     lector?.close();
   }
-  function enfocar(id) {
-    agente = agentes.get(id);
+  async function enfocar(id) {
+    const item = agentes.get(id);
+    if (!item) return;
+    agente = item;
     actualizar();
+    await cargarHistorialAgente(item);
+  }
+
+  function cargarHistorialAgente(item) {
+    if (!item.historialPendiente) return;
+    if (!cargasHistorial.has(item)) {
+      const carga = cargarAgente(agentesDir, item.id).then((completo) => {
+        if (!completo) throw new Error("La sesión ya no está disponible.");
+        Object.assign(item, completo, { historialPendiente: false });
+        actualizar();
+      }).finally(() => cargasHistorial.delete(item));
+      cargasHistorial.set(item, carga);
+    }
+    return cargasHistorial.get(item);
   }
 
   try {
@@ -219,7 +247,11 @@ async function aplicar(destino) {
     }
     if (tty && !cerrando) {
       const { pantalla } = await import("./pantalla.mjs");
-      interfaz = pantalla(comandos, { salir: cerrar, volver, entrar: enfocar, ocultar,
+      interfaz = pantalla(comandos, { salir: cerrar, volver, ocultar,
+        entrar(id) {
+          const item = agentes.get(id);
+          void enfocar(id).catch((error) => mostrar(`Error: ${error.message}`, item));
+        },
         enviar(id, texto) {
           const item = agentes.get(id);
           if (item?.autonoma) void enviarConversacion(item, texto).catch((error) => mostrar(`Error: ${error.message}`, item));
@@ -466,13 +498,15 @@ async function aplicar(destino) {
       ubicacion = await localizarProyecto(fisica);
     }
     const { raiz, archivo, config: nuevaConfig } = ubicacion;
-    const nuevoControl = await leerControlWifi(ubicacion);
+    const [nuevoControl, actividad] = await Promise.all([
+      leerControlWifi(ubicacion), leerActividadProyecto(raiz),
+    ]);
 
     const nuevaCarpetaAgentes = join(raiz, "agentes");
     const nuevosAgentes = new Map();
     for (const id of await directorios(nuevaCarpetaAgentes)) {
       if (!ID_SESION.test(id)) continue;
-      const item = await cargarAgente(nuevaCarpetaAgentes, id);
+      const item = await cargarAgente(nuevaCarpetaAgentes, id, { soloResumen: true });
       if (item) nuevosAgentes.set(id, item);
     }
     if (cerrando) return;
@@ -489,23 +523,32 @@ async function aplicar(destino) {
     mensajes = [];
     mostrar(`${crear ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${carpetaTrabajo}`);
     if (crear && proyecto !== carpetaTrabajo) mostrar("Datos de Harwiff guardados en .harwiff/.");
+    if (!tty) {
+      const { proveedor, modelo } = llmProyecto();
+      mostrar(`Proveedor LLM · ${proveedor} · Modelo predeterminado ${modelo}`);
+      mostrar(resumenControlWifi(controlWifi));
+      for (const item of agentes.values()) {
+        if (item.iniciado) mostrar(`Agente ${item.id} · ${item.estado}`);
+      }
+    }
+    if (actividad.length) mostrar(["Actividad reciente del proyecto", ...actividad].join("\n"));
     if (config.cliente === "demo" || config.cliente === "azure-foundry") {
       mostrar("Escribe una consulta para iniciar el agente.");
     }
   }
 
-  async function cargarAgente(raizAgentes, id) {
+  async function cargarAgente(raizAgentes, id, { soloResumen = false } = {}) {
     const dir = join(raizAgentes, id);
     const datos = await leerJson(join(dir, "sesion.json")).catch((error) => {
       if (error.code === "ENOENT") return undefined;
       throw error;
     });
-    const autonoma = await cargarSesionAutonoma(dir, datos);
+    const autonoma = await cargarSesionAutonoma(dir, datos, { soloResumen });
     if (autonoma) return autonoma;
     if (!datos || !["demo", "azure-foundry"].includes(datos.modo)) return;
-    const turnos = await leerTurnos(dir);
+    const turnos = await leerTurnos(dir, { limite: soloResumen ? 1 : Infinity });
     const texto = [];
-    for (const turno of turnos) {
+    for (const turno of soloResumen ? [] : turnos) {
       if (turno.estado !== "completo") {
         const usuario = turno.usuario ?? turno.mensajes?.find((m) => m.role === "user");
         if (usuario) texto.push(`Consulta pendiente: ${seguro(usuario.content)}`);
@@ -521,7 +564,8 @@ async function aplicar(destino) {
     const ultimo = turnos.at(-1);
     const estado = ultimo?.estado === "cancelado" ? "detenida" :
       ultimo && ultimo.estado !== "completo" ? "interrumpida" : "lista";
-    return { ...datos, id, dir, estado, iniciado: datos.iniciado === true || turnos.length > 0, mensajes: texto.slice(-150) };
+    return { ...datos, id, dir, estado, historialPendiente: soloResumen,
+      iniciado: datos.iniciado === true || turnos.length > 0, mensajes: texto.slice(-150) };
   }
 
   async function abrirAgente(args, entrar = true) {
@@ -535,7 +579,7 @@ async function aplicar(destino) {
     if (!ID_SESION.test(id)) throw new Error("ID de agente inválido.");
     let item = agentes.get(id);
     if (item?.autonoma) {
-      if (entrar) enfocar(item.id);
+      if (entrar) await enfocar(item.id);
       if (!tty) for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
       return item;
     }
@@ -556,7 +600,7 @@ async function aplicar(destino) {
     });
     preparado = item;
     if (entrar && item.iniciado) {
-      enfocar(id);
+      await enfocar(id);
       if (!tty) {
         salida(`Agente ${id} · ${item.modo} · ${item.estado}`);
         for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
@@ -567,7 +611,8 @@ async function aplicar(destino) {
     return item;
   }
 
-  function iniciarTurno(texto, item) {
+  async function iniciarTurno(texto, item) {
+    await cargarHistorialAgente(item);
     if (item.trabajo) throw new Error("El turno anterior sigue trabajando. Usa /detener para cancelarlo.");
     const primerTurno = !item.iniciado;
     const control = new AbortController();
@@ -622,6 +667,8 @@ async function aplicar(destino) {
     const previo = envios.get(item) ?? Promise.resolve();
     const envio = previo.then(async () => {
       if (cerrando) return;
+      await cargarHistorialAgente(item);
+      if (cerrando) return;
       const resolverEntornoLlm = item.modo === "openai" ? async () => {
         const { entorno } = await credenciales.resolver();
         if (cerrando) throw new Error("Harwiff está cerrando.");
@@ -671,13 +718,16 @@ async function aplicar(destino) {
           for (const mensaje of item.mensajes.slice(previos)) salida(mensaje);
         }
       } else {
-        iniciarTurno(texto, item);
+        await iniciarTurno(texto, item);
         if (!tty) await item.trabajo;
       }
       return;
     }
     if (agente?.autonoma && (texto === "/detalle" || texto.startsWith("/detalle "))) {
-      const opciones = agente.operaciones.filter(({ auditId }) => auditId);
+      const item = agente;
+      await cargarHistorialAgente(item);
+      if (agente !== item) return;
+      const opciones = item.operaciones.filter(({ auditId }) => auditId);
       if (!opciones.length) throw new Error("Todavía no hay operaciones con auditoría en esta sesión.");
       const id = texto.slice("/detalle".length).trim() || (interfaz && await interfaz.elegir("Detalles de operaciones",
         opciones.map(({ tool, auditId, autorizacion }) => ({ value: auditId, label: tool,
@@ -748,7 +798,7 @@ async function aplicar(destino) {
     if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
     if (!texto.startsWith("/")) {
       const item = preparado ?? await abrirAgente("agent harwiff", false);
-      iniciarTurno(texto, item);
+      await iniciarTurno(texto, item);
       if (!tty) await item.trabajo;
       return;
     }

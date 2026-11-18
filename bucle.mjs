@@ -16,7 +16,7 @@ async function leerJson(ruta) {
   return JSON.parse(await readFile(ruta, "utf8"));
 }
 
-export async function leerTurnos(sesion) {
+export async function leerTurnos(sesion, { limite = Infinity } = {}) {
   const ruta = join(sesion, "turnos");
   let carpetas;
   try {
@@ -26,7 +26,7 @@ export async function leerTurnos(sesion) {
     throw error;
   }
   const turnos = [];
-  for (const entrada of carpetas.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entrada of carpetas.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).slice(-limite)) {
     const carpeta = join(ruta, entrada.name);
     try {
       turnos.push(await leerJson(join(carpeta, "resultado.json")));
