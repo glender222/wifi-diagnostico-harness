@@ -15,7 +15,7 @@ const raiz = await mkdtemp(join(tmpdir(), "harwiff-agente-"));
 const proyecto = { raiz, config: { cliente: "demo" } };
 const permitido = "AA:BB:CC:11:22:33";
 const ajeno = "AA:BB:CC:11:22:44";
-const scope = { allowedBssids: [], allowedSsids: ["LAB_TEST_AP"], allowedChannels: [6], maxIterations: 8 };
+const scope = { allowedBssids: [], allowedSsids: ["LAB_TEST_AP", "ssid-privado-no-mock"], allowedChannels: [6], maxIterations: 8 };
 const alternativa = { ...scope, allowedSsids: ["LAB_FUERA"], allowedChannels: [11] };
 const llamada = (name, args = {}) => ({ type: "toolCall", id: randomUUID(), name, arguments: args });
 const fin = { type: "text", text: "La sesión de prueba concluyó." };
@@ -58,7 +58,7 @@ try {
   await guardarAlcance(proyecto, scope);
   await usarAdaptador(proyecto, "mock");
   const revision = (await leerControlWifi(proyecto)).revision;
-  await guardarAlcance(proyecto, { ...scope, allowedSsids: ["LAB_TEST_AP", "LAB_TEST_AP"] });
+  await guardarAlcance(proyecto, { ...scope, allowedSsids: [...scope.allowedSsids, "LAB_TEST_AP"] });
   assert.equal((await leerControlWifi(proyecto)).revision, revision);
   const snapshot = await buildScopeSnapshot(proyecto);
   assert.equal(snapshot.adapter.id, "mock");
@@ -77,7 +77,8 @@ try {
   assert.deepEqual((await ejecutarBroker({ ...inicial, snapshot: distintosCanales,
     scopeId: hashAlcance(distintosCanales) })).observaciones, []);
   const evidenceId = `${Date.now()}-${randomUUID()}`;
-  const argsHallazgo = { bssid: permitido, categoria: "postura", detalle: "Observación del fixture", evidenceId };
+  const argsHallazgo = { bssid: permitido, categoria: "categoria-privada-fixture",
+    detalle: "detalle-privado-fixture", evidenceId };
   assert.deepEqual(await ejecutarBroker({ ...inicial, action: "registrar_hallazgo", params: argsHallazgo,
     evidence: { id: evidenceId, sessionId: `agente-${randomUUID()}`, scopeId, bssids: [permitido] } }),
   { ok: false, code: "evidence_denied" });
@@ -94,16 +95,37 @@ try {
     consultas.push(entrada.action);
     return ejecutarBroker(entrada, signal);
   };
+  const llamadaFuera = llamada("inspeccionar_postura", { bssid: ajeno.toLowerCase() });
+  const llamadaInvalida = {
+    ...llamada("observar_entorno", { token: "token-privado-fixture", scope: { allowedBssids: [ajeno] } }),
+    id: "id-privado-fixture",
+  };
   const conDenegacion = await iniciar({ broker, streamFn: guion(
-    [llamada("inspeccionar_postura", { bssid: ajeno }), llamada("herramienta_inexistente"),
-      llamada("observar_entorno", { dato: "dato-privado-fixture" })],
+    (ctx) => {
+      const sistema = ctx.messages.find((mensaje) => mensaje.role === "system").content;
+      const prefijo = "ScopeSnapshot validado: ";
+      const snapshotVisible = JSON.parse(sistema.split("\n").find((linea) => linea.startsWith(prefijo)).slice(prefijo.length));
+      assert.deepEqual(snapshotVisible, {
+        adaptador: { id: "mock", nombre: "mock", modo: "mock" },
+        objetivosAutorizados: [{ bssid: permitido, ssid: "LAB_TEST_AP", canal: 6 }],
+        canalesPermitidos: [6],
+        capacidades: ["informe-sintetico"],
+        herramientas: ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo"],
+        limites: { solicitudesModelo: 8, intentosHerramienta: 8, tiempoSesionMs: 120_000, tiempoBrokerMs: 5_000 },
+      });
+      assert.ok(!sistema.includes(ajeno) && !sistema.includes("ssid-privado-no-mock") && !sistema.includes(snapshot.projectId));
+      return [llamadaFuera, llamada("herramienta_inexistente"), llamadaInvalida];
+    },
     (ctx) => {
       assert.equal(resultadoDe(ctx, "inspeccionar_postura").code, "target_denied");
       assert.equal(resultadoDe(ctx, "herramienta_inexistente").code, "unknown_tool");
       assert.equal(resultadoDe(ctx, "observar_entorno").code, "invalid_arguments");
+      const ids = ctx.messages.filter((m) => m.role === "toolResult").map((m) => m.toolCallId);
+      assert.equal(ids[0], llamadaFuera.id);
+      assert.equal(ids.at(-1), llamadaInvalida.id);
       return [llamada("observar_entorno")];
     },
-    [llamada("inspeccionar_postura", { bssid: permitido })],
+    [llamada("inspeccionar_postura", { bssid: permitido.toLowerCase() })],
     (ctx) => [llamada("registrar_hallazgo", { ...argsHallazgo, evidenceId: resultadoDe(ctx, "inspeccionar_postura").evidenceId })],
     [{ type: "thinking", thinking: "contenido-privado-fixture" }, fin],
   ) });
@@ -112,20 +134,43 @@ try {
   assert.equal(primera.datos.parentId, null);
   assert.equal(primera.datos.adapterId, "mock");
   assert.equal(primera.datos.scopeId, scopeId);
+  assert.equal((await leerControlWifi(proyecto)).revision, revision);
+  assert.equal(hashAlcance(await buildScopeSnapshot(proyecto)), scopeId);
   assert.equal(primera.datos.iteration, 5);
   assert.equal(primera.datos.toolAttempts, 6);
   assert.deepEqual(consultas, ["observar_entorno", "inspeccionar_postura", "registrar_hallazgo"]);
   assert.deepEqual(primera.resultados.slice(0, 3).map((evento) => evento.result.code),
     ["target_denied", "unknown_tool", "invalid_arguments"]);
-  for (const denegada of primera.resultados.slice(0, 3)) {
-    assert.equal((await leerAuditoria(raiz, denegada.auditId)).estado, "bloqueado");
+  const auditorias = [];
+  for (const evento of primera.resultados) {
+    const solicitud = primera.eventos.find(({ type, llamadaId }) => type === "tool_call" && llamadaId === evento.llamadaId);
+    assert.equal(solicitud.tool, evento.tool);
+    const auditoria = await leerAuditoria(raiz, evento.auditId);
+    assert.equal(auditoria.llamadaId, evento.llamadaId);
+    auditorias.push(auditoria);
   }
+  assert.equal(new Set(auditorias.map(({ llamadaId }) => llamadaId)).size, 6);
+  for (const [indice, denegada] of auditorias.slice(0, 3).entries()) {
+    assert.equal(denegada.estado, "bloqueado");
+    assert.deepEqual(denegada.autorizacion, { decision: "DENIED", motivo: primera.resultados[indice].result.code });
+    assert.deepEqual(denegada.referenciasEvidencia, []);
+  }
+  assert.deepEqual(auditorias[0].parametrosNormalizados, { bssid: ajeno });
+  assert.deepEqual(auditorias[2].parametrosNormalizados, {});
+  const [, posturaAuditada, hallazgoAuditado] = auditorias.slice(3);
+  assert.deepEqual(posturaAuditada.parametrosNormalizados, { bssid: permitido });
+  assert.deepEqual(hallazgoAuditado.autorizacion, { decision: "ALLOWED", motivo: "authorized" });
+  assert.deepEqual(hallazgoAuditado.parametrosNormalizados, {
+    bssid: permitido, evidenceId: posturaAuditada.id, categoria: { omitido: true }, detalle: { omitido: true },
+  });
+  assert.deepEqual(hallazgoAuditado.referenciasEvidencia, [posturaAuditada.evidencia, hallazgoAuditado.evidencia]);
+  assert.doesNotMatch(JSON.stringify(auditorias), /(?:id|token|detalle|categoria|contenido)-privado-fixture/);
   assert.equal((await readdir(join(primera.turno, "evidencias"))).length, 2);
   const hallazgo = await leer(join(primera.turno, "hallazgos", `${primera.resultados.at(-1).auditId}.json`));
   assert.equal(hallazgo.resultado.estado, "hipotesis");
   assert.equal(hallazgo.resultado.evidenceId, primera.resultados.at(-2).auditId);
   for (const archivo of ["eventos.json", "resultado.json"]) {
-    assert.doesNotMatch(await readFile(join(primera.turno, archivo), "utf8"), /(?:dato|contenido)-privado-fixture/);
+    assert.doesNotMatch(await readFile(join(primera.turno, archivo), "utf8"), /(?:id|token|contenido)-privado-fixture/);
   }
 
   consultas.length = 0;
@@ -139,13 +184,27 @@ try {
   assert.deepEqual(consultas, ["inspeccionar_postura", "observar_entorno"]);
   assert.equal(ordenAlternativo.resultados.at(-1).result.code, "evidence_denied");
 
+  consultas.length = 0;
+  const original = llamada("inspeccionar_postura", { bssid: permitido });
+  const repetida = await finalizar(await iniciar({ broker, streamFn: guion(
+    [original, { ...llamada("observar_entorno"), id: original.id }, llamada("observar_entorno")],
+    [fin],
+  ) }));
+  assert.deepEqual(consultas, ["inspeccionar_postura", "observar_entorno"]);
+  assert.deepEqual(repetida.resultados.map(({ result }) => result.code ?? "authorized"),
+    ["authorized", "duplicate_tool_call", "authorized"]);
+  assert.equal(new Set(repetida.resultados.map(({ llamadaId }) => llamadaId)).size, 3);
+  assert.equal(repetida.resultados[0].result.bssid, permitido);
+  assert.equal(repetida.resultados[2].result.observaciones[0].bssid, permitido);
+
   const claveFixture = "credencial-ficticia-del-proveedor";
   const foundry = await finalizar(await iniciar({
     entornoLlm: { FOUNDRY_HOST: "fixture.openai.azure.com", FOUNDRY_DEPLOYMENT: "fixture", FOUNDRY_API_KEY: claveFixture },
-    streamFn(modelo, _contexto, opciones) {
+    streamFn(modelo, contexto, opciones) {
       assert.equal(modelo.baseUrl, "https://fixture.openai.azure.com/openai/v1");
       assert.equal(opciones.apiKey, claveFixture);
       assert.equal(opciones.maxRetries, 0);
+      assert.ok(!JSON.stringify(contexto.messages).includes(claveFixture));
       return respuestaSimulada(modelo, [fin]);
     },
   }));
@@ -197,7 +256,10 @@ try {
   assert.equal(descartada.datos.status, "error");
   assert.equal(descartada.datos.reason, "scope_changed");
   assert.equal(descartada.resultados[0].result.code, "scope_changed");
-  assert.equal((await leerAuditoria(raiz, descartada.resultados[0].auditId)).estado, "bloqueado");
+  const auditoriaRevocada = await leerAuditoria(raiz, descartada.resultados[0].auditId);
+  assert.equal(auditoriaRevocada.estado, "bloqueado");
+  assert.deepEqual(auditoriaRevocada.autorizacion, { decision: "DENIED", motivo: "scope_changed" });
+  assert.deepEqual(auditoriaRevocada.referenciasEvidencia, []);
   await assert.rejects(readdir(join(descartada.turno, "evidencias")), { code: "ENOENT" });
 
   const operando = Promise.withResolvers();
@@ -209,8 +271,34 @@ try {
   cancelada.controlador.abort();
   const cancelacion = await finalizar(cancelada);
   assert.equal(cancelacion.datos.status, "cancelled");
-  assert.equal((await leerAuditoria(raiz, cancelacion.resultados[0].auditId)).estado, "cancelado");
+  const auditoriaCancelada = await leerAuditoria(raiz, cancelacion.resultados[0].auditId);
+  assert.equal(auditoriaCancelada.estado, "cancelado");
+  assert.deepEqual(auditoriaCancelada.autorizacion, { decision: "ALLOWED", motivo: "cancelled" });
   await assert.rejects(readdir(join(cancelacion.turno, "evidencias")), { code: "ENOENT" });
+
+  const canceladaAntes = await finalizar(await iniciar({
+    streamFn: guion([llamada("observar_entorno")]),
+    broker: () => assert.fail("Se invocó el broker tras la cancelación"),
+    alCambiar(item) {
+      if (item.actividad === "observar_entorno") item.controlador?.abort();
+    },
+  }));
+  assert.equal(canceladaAntes.datos.status, "cancelled");
+  const auditoriaAntes = await leerAuditoria(raiz, canceladaAntes.resultados[0].auditId);
+  assert.equal(auditoriaAntes.llamadaId, canceladaAntes.resultados[0].llamadaId);
+  assert.deepEqual(auditoriaAntes.autorizacion, { decision: "DENIED", motivo: "cancelled" });
+  assert.deepEqual(auditoriaAntes.referenciasEvidencia, []);
+
+  const fallaBroker = await finalizar(await iniciar({
+    streamFn: guion([llamada("observar_entorno")]),
+    broker() {
+      throw Object.assign(new Error("error-privado-fixture"), { publico: "detalle-privado-fixture" });
+    },
+  }));
+  const auditoriaFallida = await leerAuditoria(raiz, fallaBroker.resultados[0].auditId);
+  assert.equal(auditoriaFallida.estado, "error");
+  assert.deepEqual(auditoriaFallida.autorizacion, { decision: "ALLOWED", motivo: "broker_error" });
+  assert.doesNotMatch(JSON.stringify(auditoriaFallida), /privado-fixture/);
 
   const datosInterrumpidos = { ...primera.datos, status: "running", reason: null };
   await guardarJson(join(conDenegacion.dir, "sesion.json"), datosInterrumpidos);

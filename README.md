@@ -63,7 +63,7 @@ Cada sesión tiene ocho solicitudes al modelo y ocho intentos de herramienta. Lo
 
 En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e inicia Harwiff con `FOUNDRY_API_KEY` en el entorno. El deployment debe admitir Chat Completions v1 y herramientas. El agente puede consultar informes guardados. Usa `/diagnostico` en el entorno para generar una lectura real. En proyectos previos de ChatGPT y OpenCode, el cliente externo conserva su flujo y `agent harwiff --demo` abre el agente local de prueba. [Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)
 
-- `auditoria/` contiene la solicitud previa y el resultado por ejecución. Un inicio sin resultado se muestra como pendiente de cierre.
+- `auditoria/` contiene la solicitud previa y el resultado por ejecución. Un inicio sin resultado se muestra como pendiente de cierre. Cada llamada de la sesión mock incluye un ID local de correlación, parámetros normalizados, decisión `ALLOWED` o `DENIED`, motivo y referencias de evidencia. Los campos de texto libre se marcan como omitidos en la auditoría.
 - `informes/` contiene el JSON de cada diagnóstico con la referencia y SHA-256 en su registro. Los informes de sesiones existentes siguen disponibles como evidencia histórica.
 - `agentes/` contiene sesiones del agente con su historial y estado. `sesiones/` conserva las notas e informes de las sesiones de trabajo existentes.
 

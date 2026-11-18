@@ -129,13 +129,17 @@ function errorPreflight(preflight) {
   return Object.assign(new Error(preflight.errors.join(" ")), { preflight });
 }
 
-export async function buildScopeSnapshot(project) {
+export async function validarScopeSnapshot(project) {
   const actual = await leerControlWifi(project);
   const { estado } = await validarControlWifi(actual);
-  if (estado.snapshot) return estado.snapshot;
+  if (estado.snapshot) return { snapshot: estado.snapshot, capabilities: estado.preflight.capabilities };
   throw errorPreflight(estado.preflight ?? {
     ok: false, errors: ["Selecciona un adaptador con /adaptador usar."], capabilities: [],
   });
+}
+
+export async function buildScopeSnapshot(project) {
+  return (await validarScopeSnapshot(project)).snapshot;
 }
 
 export async function guardarAlcance(proyecto, datos) {
@@ -222,7 +226,7 @@ export async function directorios(ruta) {
   }
 }
 
-export async function auditar(proyecto, datos, trabajo, signal) {
+export async function auditar(proyecto, datos, trabajo, signal, detallesResultado) {
   const id = `${Date.now()}-${randomUUID()}`;
   const raiz = join(proyecto, "auditoria", id);
   await mkdir(raiz, { recursive: true, mode: 0o700 });
@@ -240,12 +244,14 @@ export async function auditar(proyecto, datos, trabajo, signal) {
     await guardarJson(join(raiz, "resultado.json"), {
       estado, decision: estado === "bloqueado" ? "denegado" : "autorizado",
       fin: new Date().toISOString(), motivo: error.publico || (estado === "cancelado" ? "Turno cancelado" : "Error de ejecución"),
+      ...detallesResultado?.({ id, estado, error }),
     });
     throw error;
   }
   await guardarJson(join(raiz, "resultado.json"), {
     estado: "completo", decision: "autorizado", fin: new Date().toISOString(),
     evidencia: resultado?.evidencia,
+    ...detallesResultado?.({ id, estado: "completo", resultado }),
   });
   return id;
 }
