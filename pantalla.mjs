@@ -1,6 +1,6 @@
 import {
   CombinedAutocompleteProvider, Container, Editor, matchesKey, ProcessTerminal,
-  ScrollView, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
+  ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
 
 const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
@@ -36,6 +36,7 @@ export function pantalla(comandos, acciones) {
   const viewport = new ScrollView(historial, { follow: "end", primary: true, scrollbar: "auto" });
   const fila = new Text("", 1);
   const etiqueta = new Text("", 1);
+  const panel = new Container();
   const editor = new EditorConsola(ui, { borderColor: acento, selectList: tema }, { paddingX: 1 });
   const completar = new CombinedAutocompleteProvider(
     Object.entries(comandos).map(([name, description]) => ({ name: name.slice(1), description })), process.cwd(),
@@ -63,9 +64,11 @@ export function pantalla(comandos, acciones) {
   ui.setLayoutRoot(new VStack([
     encabezado, { component: viewport, grow: 1, basis: 0 },
     { component: etiqueta, visible: () => Boolean(estado?.agente && !pregunta) },
-    editor,
-    { component: fila, visible: () => Boolean(estado?.agentes.length) },
+    { component: editor, visible: () => !selector },
+    { component: panel, visible: () => Boolean(selector) },
+    { component: fila, visible: () => Boolean(!selector && estado?.agentes.length) },
   ]));
+  let selector;
   let esperando;
   let cerrado = false;
   let enFila = false;
@@ -79,6 +82,8 @@ export function pantalla(comandos, acciones) {
     const resolver = esperando;
     esperando = undefined;
     pregunta = undefined;
+    selector = undefined;
+    panel.clear();
     resolver?.(texto);
     render(estado);
   }
@@ -96,6 +101,7 @@ export function pantalla(comandos, acciones) {
       acciones.salir();
       return { consume: true };
     }
+    if (selector) return undefined;
     if (pregunta && matchesKey(dato, "escape")) {
       editor.setText("");
       resolverEntrada(undefined);
@@ -154,7 +160,7 @@ export function pantalla(comandos, acciones) {
       viewport.scrollToEnd();
       mensajesVisibles = nuevo.mensajes;
     }
-    ui.setFocus(enFila ? null : editor);
+    ui.setFocus(selector ?? (enFila ? null : editor));
     ui.requestRender();
   }
 
@@ -169,6 +175,21 @@ export function pantalla(comandos, acciones) {
       pregunta = texto;
       render(estado);
       return new Promise((resuelve) => { esperando = resuelve; });
+    },
+    elegir(titulo, opciones, activa) {
+      if (cerrado) return Promise.resolve(undefined);
+      return new Promise((resuelve) => {
+        esperando = resuelve;
+        enFila = false;
+        selector = new SelectList(opciones, Math.max(2, Math.min(8, ui.terminal.rows - 8)), tema);
+        const indice = opciones.findIndex((opcion) => opcion.value === activa);
+        if (indice >= 0) selector.setSelectedIndex(indice);
+        selector.onSelect = ({ value }) => resolverEntrada(value);
+        selector.onCancel = () => resolverEntrada(undefined);
+        panel.addChild(new Text(titulo, 1));
+        panel.addChild(selector);
+        render(estado);
+      });
     },
     cerrar() {
       if (cerrado) return;

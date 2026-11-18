@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, join, parse, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
+import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
-import { ID_SESION, auditar, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson, localizarProyecto } from "./proyecto.mjs";
+import { ID_SESION, auditar, descubrirProyectos, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson, localizarProyecto } from "./proyecto.mjs";
 
-const VERSION = "0.2.5";
+const VERSION = "0.2.6";
 const NOMBRE_ENTORNO = "harwiff";
 const PROMPT_ENTORNO = `${NOMBRE_ENTORNO} >`;
-const clientes = ["demo", "azure-foundry", "chatgpt", "opencode"];
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const python = process.env.WIFI_PYTHON || "python3";
 const fuente = (archivo) => fileURLToPath(new URL(archivo, import.meta.url));
@@ -20,6 +20,7 @@ const seguro = (texto) => String(texto).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
 const comandos = {
   "/ayuda": "Comandos del entorno",
   "/proyecto": "Crear o abrir un proyecto",
+  "/proyectos": "Listar y abrir proyectos de una ruta",
   "/adaptador": "Ver o elegir adaptador por número",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
   "/auditoria": "Listar ejecuciones o ver una por ID",
@@ -37,7 +38,7 @@ const comandos = {
 function disponibles(proyecto, agente) {
   const nombres = agente ? ["/ayuda", "/config", "/detener", "/volver", "/salir"]
     : proyecto ? Object.keys(comandos).filter((comando) => comando !== "/detener" && comando !== "/volver")
-      : ["/ayuda", "/proyecto", "/salir"];
+      : ["/ayuda", "/proyecto", "/proyectos", "/salir"];
   return Object.fromEntries(nombres.map((comando) => [comando, comandos[comando]]));
 }
 
@@ -58,6 +59,23 @@ function resolverCarpeta(valor) {
   if (valor === "~") return homedir();
   if (valor.startsWith("~/")) return resolve(homedir(), valor.slice(2));
   return resolve(valor);
+}
+
+const USO_LISTADO = "Uso: harwiff proyectos [--json] [--profundidad 0..5] [ruta]";
+
+async function listarProyectos(args, json = false) {
+  const options = { profundidad: { type: "string", default: "1" } };
+  if (json) options.json = { type: "boolean" };
+  const { values, positionals } = parseArgs({ args, options, allowPositionals: true });
+  if (positionals.length > 1 || !/^[0-5]$/.test(values.profundidad)) throw new Error(USO_LISTADO);
+  const ruta = resolverCarpeta(positionals[0] ?? ".");
+  return { resultado: await descubrirProyectos(ruta, Number(values.profundidad)), json: values.json };
+}
+
+function textoProyectos({ ruta, proyectos }) {
+  return proyectos.length
+    ? proyectos.map(({ nombre, cliente, ruta }) => `${nombre} · ${cliente} · ${ruta}`).join("\n")
+    : `No hay proyectos Harwiff en ${ruta}.`;
 }
 
 function esRaiz(carpeta) {
@@ -139,8 +157,8 @@ async function aplicar(destino) {
     process.on("SIGINT", cerrar);
     try {
       const existente = !esRaiz(carpetaInicial) && await localizarProyecto(carpetaInicial);
-      if (existente) await seleccionarProyecto(carpetaInicial);
-      else if (!tty) salida("Harwiff · Sin proyecto. Usa /proyecto <carpeta>.");
+      if (existente) await seleccionarProyecto(carpetaInicial, { soloAbrir: true, enlaceExplicito: true });
+      else if (!tty) salida("Harwiff · Sin proyecto. Usa /proyecto o /proyectos.");
     } catch (error) {
       mostrar(`Error: ${error.message}`);
     }
@@ -170,26 +188,27 @@ async function aplicar(destino) {
     await Promise.allSettled([...agentes.values()].map((item) => item.trabajo));
   }
 
-  async function seleccionarProyecto(carpeta, cliente = "demo") {
+  async function seleccionarProyecto(carpeta, { cliente = "demo", soloAbrir = false, enlaceExplicito = false } = {}) {
     if ([...agentes.values()].some((item) => item.trabajo)) {
       throw new Error("Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
     }
-    const existente = await stat(carpeta).catch((error) => {
+    const existente = await (soloAbrir && !enlaceExplicito ? lstat : stat)(carpeta).catch((error) => {
       if (error.code === "ENOENT") return undefined;
       throw error;
     });
+    if (soloAbrir && !existente?.isDirectory()) throw new Error("El proyecto ya no está disponible.");
     if (existente && !existente.isDirectory()) throw new Error("Elige una carpeta de trabajo.");
     const fisica = existente ? await realpath(carpeta) : carpeta;
     if (esRaiz(fisica)) throw new Error("Elige una carpeta de trabajo, por ejemplo /proyecto ~/wifi-prueba.");
     let ubicacion = await localizarProyecto(fisica);
     const crear = !ubicacion;
+    if (crear && soloAbrir) throw new Error("El proyecto ya no está disponible.");
     if (crear) {
       const raiz = existente ? join(fisica, ".harwiff") : fisica;
       await ejecutar("app.py", ["iniciar", raiz, "--cliente", cliente]);
       ubicacion = await localizarProyecto(fisica);
     }
     const { raiz, archivo, config: nuevaConfig } = ubicacion;
-    if (!clientes.includes(nuevaConfig.cliente)) throw new Error("El proyecto tiene un cliente desconocido.");
 
     const nuevaCarpetaAgentes = join(raiz, "agentes");
     const nuevosAgentes = new Map();
@@ -377,7 +396,26 @@ async function aplicar(destino) {
         if (!carpeta) throw new Error("Escribe una ruta, por ejemplo /proyecto ~/wifi-prueba.");
       }
       if (!carpeta) throw new Error("Usa /proyecto [--foundry] <carpeta>.");
-      await seleccionarProyecto(resolverCarpeta(carpeta), foundry ? "azure-foundry" : "demo");
+      await seleccionarProyecto(resolverCarpeta(carpeta), { cliente: foundry ? "azure-foundry" : "demo" });
+      return;
+    }
+    if (comando === "/proyectos") {
+      const bandera = /^--profundidad(?:=|\s+)(\S+)(?:\s+(.*))?$/.exec(args);
+      const lista = bandera ? ["--profundidad", bandera[1], ...(bandera[2] ? [bandera[2]] : [])] : args ? [args] : [];
+      const { resultado } = await listarProyectos(lista);
+      for (const aviso of resultado.avisos) mostrar(`Aviso: ${aviso.ruta} · ${aviso.motivo}`);
+      if (!interfaz || !resultado.proyectos.length) {
+        mostrar(textoProyectos(resultado));
+        return;
+      }
+      const opciones = resultado.proyectos.map(({ nombre, cliente, ruta }) => ({
+        value: ruta,
+        label: seguro(ruta === carpetaTrabajo ? `${nombre} (activo)` : nombre),
+        description: seguro(`${cliente} · ${ruta}`),
+      }));
+      const seleccion = await interfaz.elegir(`Proyectos en ${seguro(resultado.ruta)} · ↑ ↓ Enter · Esc cancela`,
+        opciones, carpetaTrabajo);
+      if (seleccion && !cerrando) await seleccionarProyecto(seleccion, { soloAbrir: true });
       return;
     }
     if (!proyecto) {
@@ -530,8 +568,18 @@ async function aplicar(destino) {
 
 try {
   const [destino, ...extra] = process.argv.slice(2);
-  if (destino === "--version" && !extra.length) console.log(`Harwiff ${VERSION}`);
-  else if (["--help", "-h"].includes(destino) && !extra.length) console.log("Uso: harwiff [carpeta-del-proyecto]");
+  if (destino === "proyectos") {
+    if (extra.length === 1 && ["--help", "-h"].includes(extra[0])) console.log(USO_LISTADO);
+    else {
+      const { resultado, json } = await listarProyectos(extra, true);
+      if (json) console.log(JSON.stringify(resultado, null, 2));
+      else {
+        console.log(seguro(textoProyectos(resultado)));
+        for (const aviso of resultado.avisos) console.error(seguro(`Aviso: ${aviso.ruta} · ${aviso.motivo}`));
+      }
+    }
+  } else if (destino === "--version" && !extra.length) console.log(`Harwiff ${VERSION}`);
+  else if (["--help", "-h"].includes(destino) && !extra.length) console.log(`Uso: harwiff [carpeta-del-proyecto]\n${USO_LISTADO}`);
   else if (extra.length || destino?.startsWith("-")) throw new Error("Uso: harwiff [carpeta-del-proyecto]");
   else await aplicar(destino);
 } catch (error) {

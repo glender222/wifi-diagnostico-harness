@@ -19,6 +19,7 @@ jobs:
           version: 0.12.5
       - run: npm ci --ignore-scripts
       - run: node tests/runtime.mjs
+      - run: node tests/proyectos.mjs
       - run: python3 -B tests/adaptadores.py
       - run: python3 -B tests/terminal.py
       - run: scripts/build-release.sh

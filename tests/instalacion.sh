@@ -15,6 +15,8 @@ printf '%s\n' "/proyecto $proyecto" '/diagnostico demo' 'agent harwiff' 'Consult
   | "$ejecutable" "$proyecto" > "$temporal/salida"
 grep -q 'Demo · Leí los informes guardados' "$temporal/salida"
 grep -q 'leer_informes · completo' "$temporal/salida"
+"$ejecutable" proyectos --json "$temporal" | grep -q '"nombre": "proyecto nuevo"'
+printf '%s\n' "/proyectos $temporal" '/salir' | "$ejecutable" | grep 'proyecto nuevo · demo'
 printf '%s\n' 'agent harwiff' '/volver' '/salir' | "$ejecutable" "$proyecto" | grep 'Tú  Consulta informes'
 destino_previo="$(readlink "$HARWIFF_DATA_DIR/actual")"
 mkdir "$temporal/danado"

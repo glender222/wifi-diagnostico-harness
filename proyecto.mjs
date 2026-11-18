@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { guardarJson } from "./bucle.mjs";
 
+export const CLIENTES = ["demo", "azure-foundry", "chatgpt", "opencode"];
 export const ID_SESION = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const ID_EJECUCION = /^\d{13}-[a-f0-9-]{36}$/;
 
@@ -11,20 +12,75 @@ export async function leerJson(ruta) {
   return JSON.parse(await readFile(ruta, "utf8"));
 }
 
+async function infoRuta(ruta) {
+  return lstat(ruta).catch((error) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+}
+
 export async function localizarProyecto(carpeta) {
   const interno = join(carpeta, ".harwiff");
-  for (const raiz of [interno, carpeta]) {
+  const bases = (await infoRuta(interno))?.isDirectory() ? [interno, carpeta] : [carpeta];
+  for (const raiz of bases) {
     const archivo = join(raiz, "harness.json");
-    const config = await leerJson(archivo).catch((error) => {
-      if (error.code === "ENOENT") return undefined;
-      if (error instanceof SyntaxError && raiz === carpeta) return undefined;
+    if (!(await infoRuta(archivo))?.isFile()) continue;
+    let config;
+    try {
+      config = await leerJson(archivo);
+    } catch (error) {
+      if (error.code === "ENOENT" || (error instanceof SyntaxError && raiz === carpeta)) continue;
       if (error instanceof SyntaxError) throw new Error(`Revisa el manifiesto de Harwiff en ${archivo}.`);
       throw error;
-    });
-    if (config?.esquema === "wifi-proyecto/v1") return { raiz, archivo, config };
-    if (config && raiz === interno) throw new Error(`El manifiesto de Harwiff en ${archivo} tiene un formato desconocido.`);
+    }
+    if (config?.esquema === "wifi-proyecto/v1") {
+      if (!CLIENTES.includes(config.cliente)) throw new Error(`Cliente desconocido en ${archivo}.`);
+      return { raiz, archivo, config };
+    }
+    if (raiz === interno) throw new Error(`El manifiesto de Harwiff en ${archivo} tiene un formato desconocido.`);
   }
   return undefined;
+}
+
+const INFRAESTRUCTURA = new Set(["node_modules", "__pycache__"]);
+const DATOS_PLANOS = new Set(["agentes", "auditoria", "harness", "informes", "sesiones"]);
+
+export async function descubrirProyectos(ruta, profundidad) {
+  let entradas;
+  try {
+    if (!(await lstat(ruta)).isDirectory()) throw new Error("Elige una carpeta real.");
+    entradas = await readdir(ruta, { withFileTypes: true });
+  } catch {
+    throw new Error(`No se puede leer la carpeta ${ruta}.`);
+  }
+  const proyectos = [];
+  const avisos = [];
+
+  async function revisar(carpeta, nivel, contenido) {
+    let proyecto;
+    try {
+      proyecto = await localizarProyecto(carpeta);
+      if (proyecto) proyectos.push({ nombre: basename(carpeta), ruta: carpeta, cliente: proyecto.config.cliente });
+    } catch (error) {
+      avisos.push({ ruta: carpeta, motivo: error.message });
+    }
+    if (nivel === profundidad) return;
+    for (const entrada of contenido) {
+      if (!entrada.isDirectory() || entrada.name.startsWith(".") || INFRAESTRUCTURA.has(entrada.name)
+          || (proyecto?.raiz === carpeta && DATOS_PLANOS.has(entrada.name))) continue;
+      const hija = join(carpeta, entrada.name);
+      try {
+        if (!(await lstat(hija)).isDirectory()) continue;
+        await revisar(hija, nivel + 1, await readdir(hija, { withFileTypes: true }));
+      } catch {
+        avisos.push({ ruta: hija, motivo: "No se puede leer la carpeta." });
+      }
+    }
+  }
+
+  await revisar(ruta, 0, entradas);
+  const porRuta = (a, b) => a.ruta < b.ruta ? -1 : a.ruta > b.ruta ? 1 : 0;
+  return { ruta, proyectos: proyectos.sort(porRuta), avisos: avisos.sort(porRuta) };
 }
 
 export async function directorios(ruta) {

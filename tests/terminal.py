@@ -210,5 +210,60 @@ class TerminalTest(unittest.TestCase):
             self.assertEqual(proceso.wait(timeout=5), 0)
 
 
+    def test_selector_desde_entorno_y_cancelacion(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            for nombre in ("a uno", "b dos"):
+                carpeta = base / nombre / ".harwiff"
+                carpeta.mkdir(parents=True)
+                (carpeta / "harness.json").write_text('{"esquema":"wifi-proyecto/v1","cliente":"demo"}')
+            with terminal(raiz) as (proceso, esperar, escribir):
+                esperar("Sin proyecto")
+                escribir(b"/proyectos\r")
+                esperar("Proyectos en")
+                esperar("b dos")
+                escribir(b"\x1b[B\r")
+                esperar("Proyecto abierto")
+                esperar("b dos")
+                escribir(b"/proyectos\r")
+                esperar("b dos (activo)")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                escribir(b"/proyectos\r")
+                esperar("b dos (activo)")
+                escribir(b"\x1b[A")
+                esperar("a uno")
+                (base / "a uno/.harwiff/harness.json").unlink()
+                escribir(b"\r")
+                esperar("El proyecto ya no está disponible")
+                self.assertFalse((base / "a uno/.harwiff/harness.json").exists())
+                escribir(b"/proyectos\r")
+                esperar("b dos (activo)")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_selector_protege_cambio_con_agente_activo(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            primera = base / "a"
+            for carpeta in (primera, base / "b"):
+                carpeta.mkdir()
+                (carpeta / "harness.json").write_text('{"esquema":"wifi-proyecto/v1","cliente":"demo"}')
+            with terminal(primera) as (proceso, esperar, escribir):
+                esperar("Proyecto abierto")
+                escribir(b"Consulta de prueba\r")
+                esperar("trabajando")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                escribir(b"/proyectos ..\r")
+                esperar("a (activo)")
+                escribir(b"\x1b[B\r")
+                esperar("Espera a que termine el agente")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,7 @@ Harwiff es un entorno de diagnóstico Wi-Fi por proyecto. Guarda las lecturas de
 ## Instalar en Linux x86-64
 
 ```bash
-curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.5/install.sh | bash
+curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.6/install.sh | bash
 ```
 
 El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo y NetworkManager. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
@@ -18,6 +18,18 @@ El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`.
 4. Sal con `/salir` o **Ctrl+D** con el editor vacío. Al volver, `agent harwiff` recupera la sesión más reciente. Las consultas interrumpidas se muestran para reenviarlas manualmente.
 
 En carpetas de trabajo existentes, Harwiff guarda sus datos dentro de `.harwiff/` y conserva tus archivos. Harwiff abre automáticamente un proyecto existente en la carpeta actual, o puedes pasarlo con `harwiff ruta/al/proyecto`. Para crear un proyecto Foundry usa `/proyecto --foundry mi-proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Escribe `/` para ver el menú de comandos de la vista actual o `/ayuda` para listarlos.
+
+## Listar y abrir proyectos por ruta
+
+```bash
+harwiff proyectos .
+harwiff proyectos --json "$HOME/Proyectos"
+harwiff proyectos --profundidad 2 "$HOME/Proyectos"
+```
+
+Desde `harwiff >`, escribe `/proyectos` o `/proyectos ~/Proyectos`. Usa las flechas para elegir, Enter para abrir y Esc para volver. El selector indica el proyecto activo. Para una ruta con espacios, escríbela directamente después de `/proyectos`.
+
+Los dos listados revisan por defecto la propia carpeta y sus hijas inmediatas. `--profundidad 0` revisa solo la carpeta indicada y `--profundidad` admite hasta cinco niveles. Reconocen los proyectos con `.harwiff/harness.json` y los manifiestos anteriores en la raíz. Desde Bash, `--json` devuelve `ruta`, `proyectos` y `avisos`. Si tu carpeta se llama literalmente `proyectos`, ábrela con `harwiff ./proyectos`.
 
 ## Diagnóstico real
 
