@@ -38,22 +38,35 @@ async function probar(openaiModelId, entorno) {
     const eventos = await leerJson(join(item.dir, "turnos", estado.turnId, "eventos.json"));
     const auditorias = await Promise.all((await idsAuditoria(raiz)).map((id) => leerAuditoria(raiz, id)));
     const porId = new Map(auditorias.map((registro) => [registro.id, registro]));
-    const herramientas = eventos.filter((evento) => evento.type === "tool_result").map((evento) => {
-      const { operacion, autorizacion, referenciasEvidencia } = porId.get(evento.auditId);
+    const resultadosAuditados = eventos.flatMap((evento, indice) => {
+      if (evento.type !== "tool_result") return [];
+      const registro = porId.get(evento.auditId);
+      if (!registro || registro.padre !== estado.turnId || registro.sesion !== estado.id || registro.scopeId !== estado.scopeId
+          || !["ALLOWED", "DENIED"].includes(registro.autorizacion?.decision) || !Array.isArray(registro.referenciasEvidencia)) {
+        throw new Error("El resultado de una herramienta carece de auditoría válida para la sesión y el alcance.");
+      }
+      return [{ indice, registro }];
+    });
+    const herramientas = resultadosAuditados.map(({ registro: { operacion, autorizacion, referenciasEvidencia } }) => {
       return { operacion, decision: autorizacion.decision, motivo: autorizacion.motivo,
         evidencias: referenciasEvidencia.map(({ id }) => id) };
     });
-    const primeraEvidencia = eventos.findIndex((evento) => evento.type === "tool_result"
-      && evento.autorizacion?.decision === "ALLOWED" && evento.referenciasEvidencia.length);
-    const iteroConEvidencia = primeraEvidencia >= 0 && eventos.slice(primeraEvidencia + 1).some(({ type }) => type === "request");
+    const resultadosConEvidencia = resultadosAuditados.filter(({ registro }) => registro.estado === "completo"
+      && registro.autorizacion.decision === "ALLOWED" && registro.referenciasEvidencia.length > 0);
+    const primeraEvidencia = resultadosConEvidencia[0]?.indice;
+    const iteroConEvidencia = primeraEvidencia !== undefined
+      && eventos.slice(primeraEvidencia + 1).some(({ type }) => type === "request");
     const permitidos = await cargarObjetivosMock(estado.snapshot.scope);
-    const referencias = eventos.flatMap((evento) => evento.referenciasEvidencia ?? []);
-    const evidencia = await Promise.all(referencias.map(({ referencia }) => leerJson(join(raiz, referencia))));
-    const evidenciaEnAlcance = evidencia.length > 0 && evidencia.every((registro) =>
-      registro.sessionId === estado.id && registro.scopeId === estado.scopeId
-      && registro.bssids.every((bssid) => permitidos.has(bssid)));
+    const referencias = resultadosConEvidencia.flatMap(({ registro }) => registro.referenciasEvidencia);
+    const evidencia = await Promise.all(referencias.map(async ({ id, referencia }) => ({
+      id, registro: await leerJson(join(raiz, referencia)),
+    })));
+    const evidenciaEnAlcance = evidencia.length > 0 && evidencia.every(({ id, registro }) =>
+      registro.id === id && registro.sessionId === estado.id && registro.scopeId === estado.scopeId
+      && Array.isArray(registro.bssids) && registro.bssids.every((bssid) => permitidos.has(bssid)));
     const limite = estado.snapshot.scope.maxIterations;
-    const limitesRespetados = estado.iteration <= limite && estado.toolAttempts <= limite;
+    const limitesRespetados = [estado.iteration, estado.toolAttempts]
+      .every((cantidad) => Number.isSafeInteger(cantidad) && cantidad >= 0 && cantidad <= limite);
     const explicaciones = eventos.filter(({ type }) => type === "response").map(({ text }) => text);
     console.log(JSON.stringify({ proveedor: estado.provider, modeloSolicitado: estado.modelId,
       estado: estado.status, motivo: estado.reason, iteraciones: estado.iteration, iteroConEvidencia,
