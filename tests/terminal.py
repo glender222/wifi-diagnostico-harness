@@ -19,10 +19,13 @@ FUENTE = Path(__file__).resolve().parent.parent / "consola.mjs"
 
 
 @contextmanager
-def terminal(carpeta, env=None):
+def terminal(carpeta, env=None, destino=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 110, 0, 0))
-    proceso = subprocess.Popen(["node", str(FUENTE)], cwd=carpeta, stdin=slave, stdout=slave, stderr=slave, env=env)
+    comando = ["node", str(FUENTE)]
+    if destino is not None:
+        comando.append(str(destino))
+    proceso = subprocess.Popen(comando, cwd=carpeta, stdin=slave, stdout=slave, stderr=slave, env=env)
     os.close(slave)
     captura = bytearray()
 
@@ -60,6 +63,12 @@ def terminal(carpeta, env=None):
 
 
 class TerminalTest(unittest.TestCase):
+    @staticmethod
+    def descartar_inicio(esperar, escribir):
+        esperar("Inicializar proyecto en")
+        escribir(b"\x1b")
+        return esperar("harwiff >")
+
     def test_connect_openai_oculta_clave_recupera_y_desvincula(self):
         with tempfile.TemporaryDirectory() as raiz:
             base = Path(raiz)
@@ -103,11 +112,15 @@ else process.exit(1);
                 escribir(b"\x1b[200~" + secreto + b"\x1b[201~")
                 self.assertNotIn(secreto, esperar("•"))
                 escribir(b"\r")
-                self.assertNotIn(secreto, esperar("Modelos de tu proyecto OpenAI"))
-                escribir(b"\x1b[B\r")
-                self.assertNotIn(secreto, esperar("OpenAI API conectado · Modelo: gpt-5-mini · Credencial: Secret Service"))
+                self.assertNotIn(secreto, esperar("OpenAI API conectado · Credencial: Secret Service"))
                 self.assertEqual(almacen.read_text(), "presente")
-                datos = (proyecto / "harness.json").read_bytes()
+                self.assertEqual(json.loads((proyecto / ".harwiff/harness.json").read_text())["llm"],
+                                 {"proveedor": "demo"})
+                escribir(b"/model\r")
+                esperar("Modelo para sesiones nuevas")
+                escribir(b"\x1b[A\r")
+                esperar("Modelo OpenAI guardado: gpt-5-mini")
+                datos = (proyecto / ".harwiff/harness.json").read_bytes()
                 self.assertNotIn(secreto, datos)
                 self.assertEqual(json.loads(datos)["llm"], {"proveedor": "openai", "openaiModelId": "gpt-5-mini"})
                 escribir(b"/connect test\r")
@@ -120,23 +133,23 @@ else process.exit(1);
                 esperar("Proyecto abierto")
                 escribir(b"/connect list\r")
                 esperar("credencial en Secret Service · modelo gpt-5-mini · seleccionado")
-                escribir(b"/connect\r")
-                self.assertNotIn(b"entrada oculta", esperar("Cambiar modelo"))
-                escribir(b"\r")
-                esperar("Modelos de tu proyecto OpenAI")
+                escribir(b"/model\r")
+                self.assertNotIn(b"entrada oculta", esperar("Modelo para sesiones nuevas"))
                 escribir(b"gpt-4")
                 esperar("Filtrar por ID")
                 escribir(b"\r")
                 esperar("Modelo OpenAI guardado: gpt-4.1-mini")
-                self.assertEqual(json.loads((proyecto / "harness.json").read_text())["llm"]["openaiModelId"], "gpt-4.1-mini")
+                self.assertEqual(json.loads((proyecto / ".harwiff/harness.json").read_text())["llm"]["openaiModelId"], "gpt-4.1-mini")
                 escribir(b"/connect\r")
+                esperar("Conectar proveedor LLM")
+                escribir(b"\r")
                 esperar("modelo gpt-4.1-mini")
                 escribir(b"\x1b")
                 esperar("harwiff >")
                 self.assertTrue(almacen.exists())
                 escribir(b"/agente Revisar el fixture autorizado\r")
                 esperar("Sesión iniciada")
-                [agente] = (proyecto / "agentes").iterdir()
+                [agente] = (proyecto / ".harwiff/agentes").iterdir()
                 escribir(b"\t")
                 esperar(f"[{agente.name}")
                 escribir(b"\r")
@@ -165,13 +178,11 @@ else process.exit(1);
             proyecto = Path(raiz) / "prueba"
             with terminal(raiz, env) as (proceso, esperar, escribir):
                 self.configurar_sesion_mock(esperar, escribir)
-                escribir(b"/config proveedor openai\r")
-                esperar("Proveedor de /agente: openai")
-                escribir(b"/config modelo gpt-4.1-mini\r")
+                escribir(b"/model gpt-4.1-mini\r")
                 esperar("Modelo OpenAI guardado: gpt-4.1-mini")
                 escribir(b"/agente Sesion original\r")
                 esperar("Sesión iniciada")
-                [original] = (proyecto / "agentes").iterdir()
+                [original] = (proyecto / ".harwiff/agentes").iterdir()
                 escribir(b"\t")
                 esperar(f"[{original.name}")
                 escribir(b"\r")
@@ -183,17 +194,15 @@ else process.exit(1);
                 escribir(b"/salir\r")
                 esperar("harwiff >")
                 self.assertIsNone(proceso.poll())
-                escribir(b"/connect\r")
-                esperar("Cambiar modelo")
-                escribir(b"\r")
-                esperar("Modelos de tu proyecto OpenAI")
+                escribir(b"/model\r")
+                esperar("Modelo para sesiones nuevas")
                 escribir(b"gpt-5")
                 esperar("Filtrar por ID")
                 escribir(b"\r")
                 esperar("Modelo OpenAI guardado: gpt-5-mini")
                 escribir(b"/agente Sesion con otro modelo\r")
                 esperar("· OpenAI · gpt-5-mini")
-                [nueva] = [carpeta for carpeta in (proyecto / "agentes").iterdir() if carpeta != original]
+                [nueva] = [carpeta for carpeta in (proyecto / ".harwiff/agentes").iterdir() if carpeta != original]
                 self.assertEqual(json.loads((original / "sesion.json").read_text())["modelId"], "gpt-4.1-mini")
                 self.assertEqual(json.loads((nueva / "sesion.json").read_text())["modelId"], "gpt-5-mini")
                 limite = time.monotonic() + 8
@@ -244,25 +253,29 @@ else process.exit(1);
         env.update(FOUNDRY_HOST="fixture.openai.azure.com", FOUNDRY_DEPLOYMENT="modelo-fixture",
                    FOUNDRY_API_KEY="clave-foundry-fixture")
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz, env) as (proceso, esperar, escribir):
-            esperar("harwiff >")
+            self.descartar_inicio(esperar, escribir)
             escribir(b"/proyecto prueba\r")
             esperar("Proyecto creado")
             escribir(b"/connect\r")
             esperar("Azure AI Foundry")
+            escribir(b"\x1b[B\r")
+            esperar("Editar conexión de Foundry")
             escribir(b"\r")
             esperar("Dominio Azure")
             escribir(b"\r")
             esperar("Deployment [modelo-fixture]")
             escribir(b"\r")
             esperar("Azure AI Foundry configurado")
-            datos = (Path(raiz) / "prueba" / "harness.json").read_text()
+            escribir(b"/model azure-foundry/modelo-fixture\r")
+            esperar("Modelo guardado: modelo-fixture")
+            datos = (Path(raiz) / "prueba" / ".harwiff/harness.json").read_text()
             self.assertNotIn("clave-foundry-fixture", datos)
             self.assertEqual(json.loads(datos)["llm"], {"proveedor": "azure-foundry"})
             escribir(b"/salir\r")
             self.assertEqual(proceso.wait(timeout=5), 0)
 
     def configurar_sesion_mock(self, esperar, escribir):
-        esperar("harwiff >")
+        self.descartar_inicio(esperar, escribir)
         escribir(b"/proyecto prueba\r")
         esperar("Proyecto creado")
         escribir(b"/agente Revisar fixture\r")
@@ -284,7 +297,7 @@ else process.exit(1);
                 self.configurar_sesion_mock(esperar, escribir)
                 escribir(b"/agente Revisar fixture\r")
                 esperar("Sesión iniciada")
-                [sesion] = (proyecto / "agentes").iterdir()
+                [sesion] = (proyecto / ".harwiff/agentes").iterdir()
                 escribir(b"\t")
                 esperar(f"[{sesion.name}")
                 escribir(b"\r")
@@ -312,7 +325,7 @@ else process.exit(1);
             self.configurar_sesion_mock(esperar, escribir)
             escribir(b"/agente Revisar fixture\r")
             esperar("Sesión iniciada")
-            [sesion] = (Path(raiz) / "prueba" / "agentes").iterdir()
+            [sesion] = (Path(raiz) / "prueba" / ".harwiff/agentes").iterdir()
             escribir(b"\t")
             esperar(f"[{sesion.name}")
             escribir(b"\r")
@@ -329,6 +342,7 @@ else process.exit(1);
     def test_cabecera_del_plano_de_control(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
             esperar("Adaptador: ninguno | Alcance: pendiente | Preflight: Pendiente")
+            self.descartar_inicio(esperar, escribir)
             escribir(b"/proyecto prueba\r")
             esperar("Proyecto creado")
             escribir(b'/alcance set --ssid "Red de laboratorio"\r')
@@ -341,26 +355,71 @@ else process.exit(1);
     def test_inicio_proyecto_guiado_y_salida(self):
         with tempfile.TemporaryDirectory() as raiz:
             proyecto = Path(raiz) / "prueba con espacios"
-            with terminal(raiz) as (proceso, esperar, escribir):
-                esperar("harwiff >")
-                esperar("Sin proyecto")
-                self.assertEqual(list(Path(raiz).iterdir()), [])
-                escribir(b"/proyecto\r")
-                esperar("Carpeta [")
-                escribir(b"prueba con espacios\r")
+            proyecto.mkdir()
+            with terminal(raiz, destino=proyecto) as (proceso, esperar, escribir):
+                esperar(f"Inicializar proyecto en {proyecto}")
+                self.assertEqual(list(proyecto.iterdir()), [])
+                escribir(b"\x1b[A\r")
                 esperar("Proyecto creado")
-                self.assertTrue((proyecto / "harness.json").is_file())
+                datos = proyecto / ".harwiff"
+                self.assertTrue((datos / "harness.json").is_file())
+                self.assertTrue((datos / "AGENTS.md").is_file())
+                self.assertTrue((datos / "sesiones").is_dir())
+                self.assertFalse((datos / "app.py").exists())
+                self.assertFalse((datos / "harness").exists())
+                self.assertFalse((proyecto / "harness.json").exists())
                 escribir(b"\x04")
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
             with terminal(proyecto) as (proceso, esperar, escribir):
-                esperar("Proyecto abierto")
+                salida = esperar("Proyecto abierto")
+                self.assertNotIn(b"Inicializar proyecto en", salida)
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_ahora_no_y_reintento_con_init(self):
+        with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
+            esperar("Ahora no")
+            escribir(b"\r")
+            esperar("harwiff >")
+            self.assertEqual(list(Path(raiz).iterdir()), [])
+            escribir(b"/init\r")
+            esperar("Proyecto creado")
+            archivo = Path(raiz) / ".harwiff/harness.json"
+            datos = archivo.read_bytes()
+            self.assertEqual(json.loads(datos)["llm"], {"proveedor": "demo"})
+            escribir(b"/init\r")
+            esperar("Proyecto ya inicializado")
+            self.assertEqual(archivo.read_bytes(), datos)
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_subcarpeta_es_proyecto_independiente(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            padre = Path(raiz)
+            hijo = padre / "subcarpeta"
+            hijo.mkdir()
+            heredado = padre / "harness.json"
+            contenido = '{"esquema":"wifi-proyecto/v1","cliente":"demo"}'
+            heredado.write_text(contenido)
+            with terminal(hijo) as (proceso, esperar, escribir):
+                esperar(f"Inicializar proyecto en {hijo}")
+                escribir(b"\x1b[A\r")
+                esperar("Proyecto creado")
+                self.assertTrue((hijo / ".harwiff/harness.json").is_file())
+                self.assertFalse((padre / ".harwiff").exists())
+                self.assertEqual(heredado.read_text(), contenido)
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+            with terminal(hijo, destino=padre) as (proceso, esperar, escribir):
+                salida = esperar("Proyecto abierto")
+                self.assertNotIn(b"Inicializar proyecto en", salida)
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
     def test_escape_cancela_y_salir_cierra_desde_pregunta(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("harwiff >")
+            self.descartar_inicio(esperar, escribir)
             escribir(b"/proyecto\r")
             esperar("Carpeta [")
             escribir(b"\x1b")
@@ -374,7 +433,7 @@ else process.exit(1);
 
     def test_apartado_agente_aparece_al_enviar_consulta(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            inicial = esperar("harwiff >")
+            inicial = self.descartar_inicio(esperar, escribir)
             self.assertNotIn("─".encode(), inicial)
             self.assertNotIn(b"Agentes", inicial)
             escribir(b"/proyecto prueba\r")
@@ -403,7 +462,7 @@ else process.exit(1);
 
     def test_consulta_directa_desde_wifi(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("harwiff >")
+            self.descartar_inicio(esperar, escribir)
             escribir(b"/proyecto prueba\r")
             esperar("Proyecto creado")
             escribir(b"Consulta directa\r")
@@ -417,7 +476,7 @@ else process.exit(1);
 
     def test_comandos_rapidos_no_usan_el_prefijo_del_menu_anterior(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("harwiff >")
+            self.descartar_inicio(esperar, escribir)
             escribir(b"/")
             inicial = esperar("Crear o abrir un proyecto")
             self.assertNotIn(b"/diagnostico", inicial)
@@ -460,7 +519,7 @@ else process.exit(1);
             (carpeta / "app.py").write_text("# archivo del usuario\n")
             (carpeta / "harness.json").write_text('{"app":"otro proyecto"}')
             with terminal(raiz) as (proceso, esperar, escribir):
-                esperar("Sin proyecto")
+                self.descartar_inicio(esperar, escribir)
                 self.assertFalse((carpeta / ".harwiff").exists())
                 escribir(b"/proyecto\r")
                 esperar("Carpeta [.]")
@@ -501,7 +560,7 @@ else process.exit(1);
                 carpeta.mkdir(parents=True)
                 (carpeta / "harness.json").write_text('{"esquema":"wifi-proyecto/v1","cliente":"demo"}')
             with terminal(raiz) as (proceso, esperar, escribir):
-                esperar("Sin proyecto")
+                self.descartar_inicio(esperar, escribir)
                 escribir(b"/proyectos\r")
                 esperar("Proyectos en")
                 esperar("b dos")

@@ -11,9 +11,19 @@ proyecto="$temporal/proyecto nuevo"
 printf '%s\n' '/salir' | "$ejecutable" "$proyecto" > "$temporal/arranque"
 grep -q 'Sin proyecto' "$temporal/arranque"
 test ! -e "$proyecto"
-printf '%s\n' "/proyecto $proyecto" '/diagnostico demo' '/alcance set --ssid "Red de laboratorio"' \
+mkdir -- "$proyecto"
+(cd "$proyecto" && printf '%s\n' '/salir' | "$ejecutable" > "$temporal/sin-proyecto")
+test ! -e "$proyecto/.harwiff"
+printf '%s\n' '/init' '/nueva registro Prueba de notas' '/guardar Nota de instalación' '/contexto' \
+  '/diagnostico demo' '/alcance set --ssid "Red de laboratorio"' \
   '/adaptador usar mock' '/alcance ver' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
   | "$ejecutable" "$proyecto" > "$temporal/salida"
+test -f "$proyecto/.harwiff/harness.json"
+test ! -e "$proyecto/.harwiff/app.py"
+test ! -e "$proyecto/.harwiff/harness"
+test ! -e "$proyecto/harness.json"
+grep -q 'Nota de instalación' "$proyecto/.harwiff/sesiones/registro/REGISTRO.md"
+grep -q 'Contexto de la sesión registro' "$temporal/salida"
 grep -q 'Adaptador seleccionado: mock' "$temporal/salida"
 grep -q '"preflightPassed": true' "$temporal/salida"
 grep -q 'Demo · Leí los informes guardados' "$temporal/salida"
@@ -26,6 +36,10 @@ grep -q 'Sesión completada.' "$temporal/agente"
 "$ejecutable" proyectos --json "$temporal" | grep -q '"nombre": "proyecto nuevo"'
 printf '%s\n' "/proyectos $temporal" '/salir' | "$ejecutable" | grep 'proyecto nuevo · demo'
 printf '%s\n' 'agent harwiff' '/volver' '/salir' | "$ejecutable" "$proyecto" | grep 'Tú  Consulta informes'
+(cd "$proyecto" && printf '%s\n' '/salir' | "$ejecutable" > "$temporal/reapertura")
+grep -q 'Actividad reciente del proyecto' "$temporal/reapertura"
+grep -q 'Adaptador: mock' "$temporal/reapertura"
+grep -Eq 'Agente agente-.* · completed' "$temporal/reapertura"
 destino_previo="$(readlink "$HARWIFF_DATA_DIR/actual")"
 mkdir "$temporal/danado"
 curl -fsSL "$artefactos/install.sh" -o "$temporal/installer"

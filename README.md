@@ -10,16 +10,27 @@ curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/downl
 
 El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo, NetworkManager e iproute2. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
 
-## Probar
+## Abrir un proyecto
 
-1. Ejecuta `harwiff`. En `harwiff >`, escribe `/proyecto` y pulsa **Enter** para usar la carpeta actual, o escribe otra ruta. `/proyecto .` usa la carpeta actual directamente. Los proyectos nuevos usan demo por defecto.
-2. En `harwiff >`, escribe `/diagnostico demo` para generar un informe sintético. `/auditoria` muestra su ID y `/auditoria <id>` muestra el detalle y la evidencia.
-3. En un proyecto demo o Foundry, escribe una consulta en `harwiff >` y pulsa **Enter**. La vista y la fila de agentes aparecen al enviar la primera consulta. `agent harwiff <id>` permite elegir una sesión. **Esc** vuelve al entorno mientras el agente trabaja. Con el editor vacío, **Tab**, las flechas y **Enter** permiten cambiar de sesión. Dentro del agente, `/config` muestra su configuración y `/detener` cancela el turno.
-4. Sal con `/salir` o **Ctrl+D** con el editor vacío. Al volver, `agent harwiff` recupera la sesión más reciente. Las consultas interrumpidas se muestran para reenviarlas manualmente.
+La instalación de Harwiff se reutiliza en todas tus carpetas. Crea o elige una carpeta de trabajo y ejecuta el comando desde allí.
 
-En carpetas de trabajo existentes, Harwiff guarda sus datos dentro de `.harwiff/` y conserva tus archivos. Harwiff abre automáticamente un proyecto existente en la carpeta actual, o puedes pasarlo con `harwiff ruta/al/proyecto`. Para crear un proyecto Foundry usa `/proyecto --foundry mi-proyecto`. Para crear o retomar una sesión de trabajo y guardar notas manuales usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Escribe `/` para ver el menú de comandos de la vista actual o `/ayuda` para listarlos.
+```bash
+mkdir -p ~/laboratorio-wifi
+cd ~/laboratorio-wifi
+harwiff
+```
 
-Al reabrir un proyecto, el plano de control muestra la configuración guardada, las sesiones previas y hasta seis registros recientes de auditoría, incluidos los diagnósticos y los cambios de configuración registrados. La conversación de cada sesión se carga al entrar. Los cambios nuevos registran qué ajuste cambió; para ajustes anteriores sin auditoría se muestra su valor actual.
+En la primera apertura, Harwiff muestra la ruta completa y ofrece **Inicializar aquí**. **Ahora no** y **Esc** dejan esa carpeta intacta. Puedes inicializarla más tarde con `/init` desde `harwiff >`. En una entrada por tubería, envía `/init` explícitamente. Para otra carpeta, usa `harwiff <ruta>` o `/proyecto <ruta>` desde Harwiff.
+
+Los proyectos nuevos guardan sus datos y reglas en `.harwiff/` y usan las dependencias de la instalación. Al volver, Harwiff abre la carpeta indicada o la carpeta actual directamente. Una subcarpeta es un proyecto independiente. Los proyectos con un `harness.json` de Harwiff en la raíz siguen abriendo con sus datos en el mismo sitio.
+
+## Probar las dos capas
+
+- En **Capa 1** (`harwiff >`), elige el alcance y el adaptador. Los proyectos nuevos empiezan en demo. Para usar un proveedor conectado, abre `/model`, elige con las flechas y pulsa **Enter**. `/diagnostico demo` genera un informe sintético que aparece en `/auditoria`.
+- En **Capa 2**, `/agente <objetivo>` inicia una sesión sobre el escenario mock. Usa **Tab**, las flechas y **Enter** para abrir la sesión. **Esc** o `/salir` vuelven a Capa 1. `/detener` cancela el turno.
+- En Capa 1, `/salir` cierra Harwiff. Al reabrir la carpeta se recuperan los ajustes, las sesiones y los últimos seis registros de auditoría. El historial conversacional se carga al entrar en la sesión.
+
+Para gestionar las notas manuales de una sesión de trabajo, usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Escribe `/` para ver los comandos de la vista actual.
 
 ## Listar y abrir proyectos por ruta
 
@@ -65,15 +76,15 @@ Puedes continuar una sesión finalizada desde la misma vista o después de reabr
 
 ### Usar la API oficial de OpenAI
 
-Con un proyecto abierto en `harwiff >`, escribe `/connect`, elige **OpenAI API**, introduce la clave en la entrada oculta y selecciona uno de los modelos disponibles. Harwiff guarda la clave en Secret Service si `secret-tool` y el almacén de la sesión están disponibles. Si el almacén falla, Harwiff conserva la clave en memoria hasta que cierres el proceso. El proyecto guarda únicamente el proveedor y el modelo.
+Con un proyecto abierto en `harwiff >`, escribe `/connect`, elige **OpenAI API**, introduce la clave en la entrada oculta. Después, escribe `/model` para elegir el modelo del proyecto. Harwiff guarda la clave en Secret Service si `secret-tool` y el almacén de la sesión están disponibles. Si el almacén falla, Harwiff conserva la clave en memoria hasta que cierres el proceso. El proyecto guarda únicamente el proveedor y el modelo.
 
-Al volver a abrir `/connect`, puedes cambiar el modelo con la credencial existente, consultar el catálogo, cambiar la credencial, probar o desconectar. El modelo predeterminado se muestra en la cabecera de Capa 1 y se aplica a las sesiones nuevas. Cada sesión conserva su modelo original al continuar.
+`/connect` permite cambiar la credencial, probar la conexión o desconectar. `/model` abre el catálogo con la credencial existente. También puedes escribir `/model gpt-6-luna`, `/model azure-foundry/<deployment>` o `/model demo`. El modelo predeterminado se muestra en la cabecera de Capa 1 y se aplica a las sesiones nuevas. Cada sesión conserva su modelo original al continuar.
 
 `/connect list` muestra la configuración y el origen local de la credencial. Harwiff usa primero una clave recién conectada en el proceso, después `OPENAI_API_KEY` si está definida y, por último, Secret Service. `/disconnect openai` desvincula la clave de Harwiff y del almacén de ese usuario. La variable externa sigue disponible. El selector también permite configurar Azure AI Foundry con el dominio, el deployment y `FOUNDRY_API_KEY`.
 
 `/connect test` comprueba autenticación, acceso al modelo y function calling en Responses. Hace una solicitud de generación facturable y muestra sus tokens por separado. El agente elige sus propias herramientas durante `/agente`. [Function calling de OpenAI](https://developers.openai.com/api/docs/guides/function-calling)
 
-Para servidores y automatización, inicia Harwiff con `OPENAI_API_KEY` en el entorno y usa `/config`. En Bash puedes leer la clave sin mostrarla ni incluirla en el historial de comandos.
+Para servidores y automatización, inicia Harwiff con `OPENAI_API_KEY` en el entorno y usa `/model <id>`. En Bash puedes leer la clave sin mostrarla ni incluirla en el historial de comandos.
 
 ```bash
 read -rsp 'Clave de OpenAI: ' OPENAI_API_KEY
@@ -82,18 +93,16 @@ printf '\n'
 npm start
 ```
 
-Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso. Si ya lo seleccionaste mediante `/connect`, empieza por definir el alcance.
+Este ejemplo usa `gpt-6-luna` si la cuenta tiene acceso. Si ya lo seleccionaste mediante `/model`, empieza por definir el alcance.
 
 ```text
-/config proveedor openai
-/config modelos
-/config modelo gpt-4.1-mini
+/model gpt-6-luna
 /alcance set --ssid LAB_TEST_AP --canales 6
 /adaptador usar mock
 /agente Revisa la postura de seguridad del AP de laboratorio y resume la evidencia del fixture
 ```
 
-`/connect` y `/config modelos` muestran todos los IDs que OpenAI devuelve para el proyecto, con los más recientes al principio cuando la API informa su fecha. Harwiff comprueba el acceso al guardar el ID y al iniciar la sesión. Para usar `/agente`, el modelo elegido debe admitir Responses y function calling. Puedes comprobarlo con `/connect test`. `/config proveedor demo` y `/config proveedor azure-foundry` eligen las otras opciones de `/agente`. [Disponibilidad de modelos en OpenAI](https://developers.openai.com/api/docs/guides/rate-limits#model-availability)
+`/model` muestra todos los IDs que OpenAI devuelve para el proyecto, con los más recientes al principio cuando la API informa su fecha. Harwiff comprueba el acceso al guardar el ID y al iniciar la sesión. Para usar `/agente`, el modelo elegido debe admitir Responses y function calling. Puedes comprobarlo con `/connect test`. Los comandos `/config proveedor`, `/config modelos` y `/config modelo` siguen disponibles para flujos existentes. [Disponibilidad de modelos en OpenAI](https://developers.openai.com/api/docs/guides/rate-limits#model-availability)
 
 El catálogo indica qué IDs están listados, comprobados o confirmados como incompatibles. Harwiff recuerda esas comprobaciones durante el proceso actual para esa credencial y proyecto API. La selección de un ID listado no consume tokens.
 

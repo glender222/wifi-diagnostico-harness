@@ -24,6 +24,7 @@ const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 const seguro = (texto) => ocultarClaveOpenAI(String(texto)).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const comandos = {
   "/ayuda": "Comandos del entorno",
+  "/init": "Inicializar Harwiff en la carpeta actual",
   "/proyecto": "Crear o abrir un proyecto",
   "/proyectos": "Listar y abrir proyectos de una ruta",
   "/adaptador": "Listar adaptadores o usar uno por nombre",
@@ -31,7 +32,8 @@ const comandos = {
   "/alcance": "Definir o ver el alcance autorizado",
   "/agente": "Iniciar una sesión sobre el escenario mock",
   "/auditoria": "Listar ejecuciones o ver una por ID",
-  "/config": "Ver configuración, elegir proveedor o comprobar modelos",
+  "/config": "Ver la configuración del proyecto",
+  "/model": "Elegir el modelo para sesiones nuevas",
   "/connect": "Conectar un proveedor o consultar su estado",
   "/disconnect": "Desvincular una credencial OpenAI de Harwiff",
   "/sesiones": "Listar sesiones de trabajo del proyecto",
@@ -47,8 +49,8 @@ const comandos = {
 
 function disponibles(proyecto, agente) {
   const nombres = agente ? ["/ayuda", "/config", "/detener", "/volver", "/salir", ...(agente.autonoma ? ["/detalle"] : [])]
-    : proyecto ? Object.keys(comandos).filter((comando) => !["/detener", "/volver", "/detalle"].includes(comando))
-      : ["/ayuda", "/proyecto", "/proyectos", "/connect", "/disconnect", "/salir"];
+    : proyecto ? Object.keys(comandos).filter((comando) => !["/init", "/detener", "/volver", "/detalle"].includes(comando))
+      : ["/ayuda", "/init", "/proyecto", "/proyectos", "/connect", "/disconnect", "/salir"];
   return Object.fromEntries(nombres.map((comando) =>
     [comando, agente && comando === "/salir" ? "Volver al entorno sin cancelar" : comandos[comando]]));
 }
@@ -154,12 +156,7 @@ async function aplicar(destino) {
   const envios = new WeakMap();
   const cargasHistorial = new WeakMap();
   let agentesDir;
-  let mensajes = [
-    `Carpeta actual: ${seguro(process.cwd())}`,
-    esRaiz(carpetaInicial)
-      ? "Usa /proyecto ~/wifi-prueba para crear un proyecto en tu carpeta personal."
-      : "Usa /proyecto y pulsa Enter para usar la carpeta de trabajo, o escribe otra ruta.",
-  ];
+  let mensajes = [`Carpeta de trabajo: ${seguro(carpetaInicial)}`];
   const app = (...args) => ejecutar("app.py", ["--proyecto", proyecto, ...args]);
   const proyectoWifi = () => ({ raiz: proyecto, config });
   async function actualizarConfig(cambiar) {
@@ -238,10 +235,9 @@ async function aplicar(destino) {
   try {
     process.on("SIGTERM", cerrar);
     process.on("SIGINT", cerrar);
+    let carpetaParaInicializar;
     try {
-      const existente = !esRaiz(carpetaInicial) && await localizarProyecto(carpetaInicial);
-      if (existente) await seleccionarProyecto(carpetaInicial, { soloAbrir: true, enlaceExplicito: true });
-      else if (!tty) salida("Harwiff · Sin proyecto. Usa /proyecto o /proyectos.");
+      carpetaParaInicializar = await abrirProyectoInicial();
     } catch (error) {
       mostrar(`Error: ${error.message}`);
     }
@@ -258,6 +254,19 @@ async function aplicar(destino) {
         },
       });
       actualizar();
+      if (carpetaParaInicializar) {
+        const decision = await interfaz.elegir(`Inicializar proyecto en ${seguro(carpetaParaInicializar)}`, [
+          { value: "inicializar", label: "Inicializar aquí" },
+          { value: "cancelar", label: "Ahora no" },
+        ], "cancelar");
+        if (decision === "inicializar" && !cerrando) {
+          try {
+            await seleccionarProyecto(carpetaParaInicializar, { crearCarpeta: false });
+          } catch (error) {
+            mostrar(`Error: ${error.message}`);
+          }
+        }
+      }
     }
     while (!cerrando) {
       const entrada = interfaz ? await interfaz.leer() : (await lineas.next()).value;
@@ -339,7 +348,6 @@ async function aplicar(destino) {
     return interfaz.elegir("Conectar proveedor LLM · Enter elige · Esc cancela", [
       { value: "openai", label: "OpenAI API", description: "Responses API" },
       { value: "azure-foundry", label: "Azure AI Foundry", description: "Dominio y deployment del proyecto" },
-      { value: "demo", label: "Demo local", description: "Simulación" },
     ], proveedorAgente(config) === "demo" ? "openai" : proveedorAgente(config));
   }
 
@@ -354,8 +362,10 @@ async function aplicar(destino) {
     if (entradaDeployment === undefined || cerrando) return;
     const foundry = { host: entradaHost.trim() || hostActual, deployment: entradaDeployment.trim() || deploymentActual };
     modeloFoundry({ ...config, foundry });
-    await actualizarConfig((actual) => ({ ...actual, foundry, llm: { ...actual.llm, proveedor: "azure-foundry" } }));
-    mostrar(`Azure AI Foundry configurado · Deployment: ${foundry.deployment}`);
+    // Fija el proveedor previo cuando el manifiesto aún depende de la inferencia legacy.
+    await actualizarConfig((actual) => ({ ...actual, foundry,
+      llm: { ...actual.llm, proveedor: proveedorAgente(actual) } }));
+    mostrar(`Azure AI Foundry configurado · Deployment: ${foundry.deployment} · Usa /model para elegirlo`);
   }
 
   async function probarFoundry() {
@@ -381,48 +391,92 @@ async function aplicar(destino) {
   async function menuFoundry() {
     const { modelo } = modeloFoundry(config);
     const opcion = await interfaz.elegir(`Azure AI Foundry · configurado · ${modelo.id}`, [
-      { value: "modelo", label: "Cambiar deployment" },
-      { value: "listar", label: "Consultar deployment" },
+      { value: "modelo", label: "Editar conexión de Foundry" },
       { value: "credencial", label: "Consultar origen de la credencial" },
       { value: "probar", label: "Probar conexión", description: "Consume tokens" },
       { value: "desconectar", label: "Desconectar del proyecto" },
-      { value: "proveedor", label: "Cambiar proveedor" },
     ]);
     if (opcion === "modelo") await configurarFoundry();
-    if (opcion === "listar") mostrar(`Azure AI Foundry · deployment ${modelo.id}`);
     if (opcion === "credencial") mostrar("Azure AI Foundry usa FOUNDRY_API_KEY del entorno.");
     if (opcion === "probar") await probarFoundry();
     if (opcion === "desconectar") {
-      await actualizarConfig(({ foundry, ...actual }) => ({ ...actual, llm: { ...actual.llm, proveedor: "demo" } }));
+      await actualizarConfig((actual) => {
+        const { foundry, ...resto } = actual;
+        return { ...resto, llm: { ...resto.llm,
+          proveedor: proveedorAgente(actual) === "azure-foundry" ? "demo" : proveedorAgente(actual) } };
+      });
       mostrar("Azure AI Foundry desvinculado del proyecto.");
     }
-    return opcion;
   }
 
-  async function elegirModeloOpenAI(entorno, { consulta = false } = {}) {
-    const modelos = await listarModelosOpenAI({ entorno });
+  async function conectarOpenAI() {
+    const entrada = await interfaz.preguntarSecreto("API key de OpenAI · entrada oculta · Esc cancela >");
+    if (!entrada || cerrando) return;
+    await listarModelosOpenAI({ entorno: credenciales.conClave(entrada) });
     if (cerrando) return;
-    if (!modelos.length) throw new Error("La API de OpenAI no devolvió modelos para este proyecto.");
-    const id = await interfaz.elegir(consulta ? "Modelos de tu proyecto OpenAI · consulta"
-      : "Modelos de tu proyecto OpenAI · Enter guarda · Esc cancela",
-    modelos.map((value) => ({ value, label: value, description: estadoModelo(value, entorno) })),
-    config.llm?.openaiModelId, { filtrar: true });
-    if (consulta && id) mostrar(`${id} · ${estadoModelo(id, entorno)}`);
-    return consulta ? undefined : id;
+    const fuente = await credenciales.guardar(entrada);
+    verificaciones.clear();
+    mostrar(`OpenAI API conectado · Credencial: ${fuente} · Usa /model para elegir el modelo`);
+    if (fuente === "memoria de Harwiff") mostrar("Secret Service no disponible. La clave se elimina al cerrar Harwiff.");
   }
 
-  async function conectarOpenAI(existente, cambiarClave = false) {
-    const entrada = cambiarClave || !existente.fuente
-      ? await interfaz.preguntarSecreto("API key de OpenAI · entrada oculta · Esc cancela >") : "";
-    if (entrada === undefined || cerrando || (cambiarClave && !entrada)) return;
-    const entorno = entrada ? credenciales.conClave(entrada) : existente.entorno;
-    const id = await elegirModeloOpenAI(entorno);
-    if (!id || cerrando) return;
-    const fuente = entrada ? await credenciales.guardar(entrada) : existente.fuente;
-    if (entrada) verificaciones.clear();
+  function valorModeloOpenAI(id) {
+    return id === "demo" || /^(openai|azure-foundry)\//.test(id) ? `openai/${id}` : id;
+  }
+
+  async function elegirModelo(args) {
+    let conexion;
+    let elegido = args;
+    if (!elegido) {
+      conexion = await credenciales.resolver();
+      const opciones = [];
+      if (conexion.fuente) {
+        try {
+          const ids = await listarModelosOpenAI(conexion);
+          for (const id of ids) opciones.push({ value: valorModeloOpenAI(id), label: id,
+            description: `OpenAI · ${estadoModelo(id, conexion.entorno)}` });
+          if (!ids.length) mostrar("La API de OpenAI no devolvió modelos para este proyecto.");
+        } catch (error) {
+          mostrar(`OpenAI · ${error.message}`);
+        }
+      }
+      let foundry;
+      try { foundry = modeloFoundry(config).modelo.id; } catch { /* Disponible al configurar la conexión. */ }
+      if (foundry) opciones.push({ value: `azure-foundry/${foundry}`, label: foundry, description: "Azure AI Foundry" });
+      opciones.push({ value: "demo", label: MODELO_DEMO.id, description: "Demo local · simulación" });
+      if (!interfaz) {
+        mostrar(opciones.map(({ value, description }) => `${value} · ${description}`).join("\n"));
+        return;
+      }
+      const proveedor = proveedorAgente(config);
+      const activo = proveedor === "openai" ? valorModeloOpenAI(config.llm?.openaiModelId)
+        : proveedor === "azure-foundry" ? `azure-foundry/${foundry}` : "demo";
+      elegido = await interfaz.elegir("Modelo para sesiones nuevas · Enter guarda · Esc cancela",
+        opciones, activo, { filtrar: true });
+      if (!elegido || cerrando) return;
+    }
+    if (/\s/.test(elegido)) throw new Error("Usa /model [id | azure-foundry/<deployment> | demo].");
+    if (elegido === "demo") {
+      await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: "demo" } }));
+      mostrar(`Modelo guardado: ${MODELO_DEMO.id} · Demo local`);
+      return;
+    }
+    if (elegido.startsWith("azure-foundry/")) {
+      const id = elegido.slice("azure-foundry/".length);
+      await actualizarConfig((actual) => {
+        if (modeloFoundry(actual).modelo.id !== id) throw new Error("El deployment seleccionado no está configurado. Usa /connect.");
+        return { ...actual, llm: { ...actual.llm, proveedor: "azure-foundry" } };
+      });
+      mostrar(`Modelo guardado: ${id} · Azure AI Foundry`);
+      return;
+    }
+    const id = elegido.startsWith("openai/") ? elegido.slice("openai/".length) : elegido;
+    if (args) {
+      conexion = await credenciales.resolver();
+      await validarModeloOpenAI(id, conexion);
+    }
     await guardarModeloOpenAI(id);
-    mostrar(`OpenAI API conectado · Modelo: ${id} · Credencial: ${fuente}`);
-    if (fuente === "memoria de Harwiff") mostrar("Secret Service no disponible. La clave se elimina al cerrar Harwiff.");
+    mostrar(`Modelo OpenAI guardado: ${id} · ${estadoModelo(id, conexion.entorno)}`);
   }
 
   async function guardarModeloOpenAI(id, soloSiOpenAI = false) {
@@ -435,67 +489,84 @@ async function aplicar(destino) {
   }
 
   async function conectarProveedor() {
-    if (!interfaz) throw new Error("Usa /connect en una terminal interactiva. Para scripts usa OPENAI_API_KEY y /config.");
-    const actual = config.llm?.proveedor;
-    if (actual === "openai") {
-      const conexion = await credenciales.resolver();
-      const id = config.llm.openaiModelId;
-      const estado = conexion.fuente ? `credencial en ${conexion.fuente}` : "sin credencial";
-      const opcion = await interfaz.elegir(`OpenAI API · ${estado} · modelo ${id ?? "sin seleccionar"}`, [
-        { value: "modelo", label: "Cambiar modelo", description: id && conexion.fuente ? estadoModelo(id, conexion.entorno) : undefined },
-        { value: "listar", label: "Consultar modelos" },
-        { value: "credencial", label: "Cambiar credencial" },
-        { value: "probar", label: "Probar conexión", description: "Consume tokens" },
-        { value: "desconectar", label: "Desconectar" },
-        { value: "proveedor", label: "Cambiar proveedor" },
-      ]);
-      if (opcion === "modelo") {
-        if (!conexion.fuente) await conectarOpenAI(conexion);
-        else {
-          const elegido = await elegirModeloOpenAI(conexion.entorno);
-          if (elegido && !cerrando) {
-            await guardarModeloOpenAI(elegido, true);
-            mostrar(`Modelo OpenAI guardado: ${elegido} · ${estadoModelo(elegido, conexion.entorno)}`);
-          }
-        }
-      }
-      if (opcion === "listar") await elegirModeloOpenAI(conexion.entorno, { consulta: true });
-      if (opcion === "credencial") await conectarOpenAI(conexion, true);
-      if (opcion === "probar") await probarOpenAI(id, conexion);
-      if (opcion === "desconectar") await desvincularOpenAI();
-      if (opcion !== "proveedor") return;
-    } else if (actual === "azure-foundry") {
-      const configurado = process.env.FOUNDRY_API_KEY?.trim() && (config.foundry?.host ?? process.env.FOUNDRY_HOST)
-        && (config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT);
-      if (configurado && await menuFoundry() !== "proveedor") return;
-    }
+    if (!interfaz) throw new Error("Usa /connect en una terminal interactiva. Para scripts usa OPENAI_API_KEY y /model.");
     const elegido = await elegirProveedor();
     if (!elegido || cerrando) return;
-    if (elegido === "azure-foundry") return configurarFoundry();
-    if (elegido === "openai") return conectarOpenAI(await credenciales.resolver());
-    await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: elegido } }));
-    mostrar("Proveedor de /agente: demo");
+    if (elegido === "azure-foundry") {
+      try {
+        modeloFoundry(config);
+      } catch {
+        return configurarFoundry();
+      }
+      return menuFoundry();
+    }
+    const conexion = await credenciales.resolver();
+    if (!conexion.fuente) return conectarOpenAI();
+    const id = config.llm?.openaiModelId;
+    const opcion = await interfaz.elegir(`OpenAI API · credencial en ${conexion.fuente} · modelo ${id ?? "sin seleccionar"}`, [
+      { value: "credencial", label: "Cambiar credencial" },
+      { value: "probar", label: "Probar conexión", description: "Consume tokens" },
+      { value: "desconectar", label: "Desconectar" },
+    ]);
+    if (opcion === "credencial") return conectarOpenAI();
+    if (opcion === "probar") return probarOpenAI(id, conexion);
+    if (opcion === "desconectar") return desvincularOpenAI();
   }
 
-  async function seleccionarProyecto(carpeta, { cliente = "demo", soloAbrir = false, enlaceExplicito = false } = {}) {
+  async function abrirProyectoInicial() {
+    if (esRaiz(carpetaInicial)) {
+      mostrar("Sin proyecto. Usa /proyecto <ruta> para elegir una carpeta de trabajo.");
+      return;
+    }
+    const info = await stat(carpetaInicial).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    if (!info) {
+      mostrar("Sin proyecto. Usa /proyecto <ruta> para crear una carpeta de trabajo.");
+      return;
+    }
+    if (!info.isDirectory()) throw new Error("Elige una carpeta de trabajo.");
+    const fisica = await realpath(carpetaInicial);
+    if (esRaiz(fisica)) {
+      mostrar("Sin proyecto. Usa /proyecto <ruta> para elegir una carpeta de trabajo.");
+      return;
+    }
+    if (await localizarProyecto(fisica)) {
+      await seleccionarProyecto(fisica, { soloAbrir: true });
+      return;
+    }
+    mostrar("Sin proyecto. Usa /init para inicializar esta carpeta.");
+    return fisica;
+  }
+
+  async function seleccionarProyecto(carpeta, { cliente = "demo", soloAbrir = false, crearCarpeta = true } = {}) {
     if ([...agentes.values()].some((item) => item.trabajo || envios.has(item))) {
       throw new Error("Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
     }
-    const existente = await (soloAbrir && !enlaceExplicito ? lstat : stat)(carpeta).catch((error) => {
+    const existente = await (soloAbrir ? lstat : stat)(carpeta).catch((error) => {
       if (error.code === "ENOENT") return undefined;
       throw error;
     });
     if (soloAbrir && !existente?.isDirectory()) throw new Error("El proyecto ya no está disponible.");
+    if (!existente && !crearCarpeta) throw new Error("La carpeta de trabajo ya no está disponible. Usa /proyecto <ruta>.");
     if (existente && !existente.isDirectory()) throw new Error("Elige una carpeta de trabajo.");
     const fisica = existente ? await realpath(carpeta) : carpeta;
     if (esRaiz(fisica)) throw new Error("Elige una carpeta de trabajo, por ejemplo /proyecto ~/wifi-prueba.");
     let ubicacion = await localizarProyecto(fisica);
-    const crear = !ubicacion;
-    if (crear && soloAbrir) throw new Error("El proyecto ya no está disponible.");
-    if (crear) {
-      const raiz = existente ? join(fisica, ".harwiff") : fisica;
-      await ejecutar("app.py", ["iniciar", raiz, "--cliente", cliente]);
-      ubicacion = await localizarProyecto(fisica);
+    let creado = false;
+    if (!ubicacion) {
+      if (soloAbrir) throw new Error("El proyecto ya no está disponible.");
+      const raiz = join(fisica, ".harwiff");
+      try {
+        await ejecutar("app.py", ["iniciar", raiz, "--cliente", cliente, "--solo-datos"]);
+        creado = true;
+      } catch (error) {
+        // Otra consola puede completar la misma inicialización primero.
+        ubicacion = await localizarProyecto(fisica);
+        if (!ubicacion) throw error;
+      }
+      ubicacion ??= await localizarProyecto(fisica);
+      if (!ubicacion) throw new Error("El proyecto inicializado ya no está disponible.");
     }
     const { raiz, archivo, config: nuevaConfig } = ubicacion;
     const [nuevoControl, actividad] = await Promise.all([
@@ -521,8 +592,8 @@ async function aplicar(destino) {
     agente = undefined;
     preparado = undefined;
     mensajes = [];
-    mostrar(`${crear ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${carpetaTrabajo}`);
-    if (crear && proyecto !== carpetaTrabajo) mostrar("Datos de Harwiff guardados en .harwiff/.");
+    mostrar(`${creado ? "Proyecto creado" : "Proyecto abierto"} · ${config.cliente} · ${carpetaTrabajo}`);
+    if (creado) mostrar("Datos de Harwiff guardados en .harwiff/.");
     if (!tty) {
       const { proveedor, modelo } = llmProyecto();
       mostrar(`Proveedor LLM · ${proveedor} · Modelo predeterminado ${modelo}`);
@@ -751,6 +822,15 @@ async function aplicar(destino) {
     if (texto === "ls") texto = "/sesiones";
     const [comando] = texto.split(/\s+/);
     const args = texto.slice(comando.length).trim();
+    if (comando === "/init") {
+      if (args) throw new Error("Usa /init para esta carpeta o /proyecto <ruta> para otra.");
+      if (proyecto) {
+        mostrar(`Proyecto ya inicializado · ${carpetaTrabajo}`);
+        return;
+      }
+      await seleccionarProyecto(carpetaInicial, { crearCarpeta: false });
+      return;
+    }
     if (comando === "/proyecto") {
       const foundry = args === "--foundry" || args.startsWith("--foundry ");
       let carpeta = foundry ? args.slice("--foundry".length).trim() : args;
@@ -792,7 +872,7 @@ async function aplicar(destino) {
       return desvincularOpenAI();
     }
     if (!proyecto) {
-      mostrar("Abre o crea un proyecto con /proyecto.");
+      mostrar("Usa /init para esta carpeta o /proyecto <ruta> para otra.");
       return;
     }
     if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
@@ -803,6 +883,11 @@ async function aplicar(destino) {
       return;
     }
     switch (comando) {
+      case "/model":
+      case "/models":
+        config = await leerJson(ruta);
+        await elegirModelo(args);
+        break;
       case "/connect": {
         config = await leerJson(ruta);
         if (!args) await conectarProveedor();

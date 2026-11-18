@@ -18,9 +18,9 @@ const CUOTA = new Set(["insufficient_quota", "billing_hard_limit_reached", "cred
 export const MENSAJES_OPENAI = {
   openai_key_missing: "Conecta OpenAI con /connect o define OPENAI_API_KEY en el entorno de Harwiff.",
   openai_key_invalid: "OpenAI rechazó la autenticación. Revisa la clave y sus permisos.",
-  openai_model_missing: "Selecciona un modelo con /config modelos y /config modelo <model-id>.",
-  openai_model_incompatible: "El ID de modelo no es válido. Consulta /config modelos.",
-  openai_model_access: "OpenAI no autoriza el acceso al modelo o a este recurso. Revisa el proyecto y /config modelos.",
+  openai_model_missing: "Selecciona un modelo con /model antes de iniciar la sesión.",
+  openai_model_incompatible: "El ID de modelo no es válido. Consulta /model.",
+  openai_model_access: "OpenAI no autoriza el acceso al modelo o a este recurso. Revisa el proyecto y /model.",
   openai_quota: "OpenAI indica que se agotó la cuota, el crédito o el límite de gasto del proyecto.",
   openai_rate_limit: "Se alcanzó el límite de solicitudes o tokens por minuto de OpenAI. Espera antes de reintentar.",
   openai_connection: "No se pudo completar la conexión con la API oficial de OpenAI.",

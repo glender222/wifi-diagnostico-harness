@@ -27,7 +27,7 @@ def leer(ruta):
     return ruta.read_text(encoding="utf-8")
 
 
-def iniciar(destino, cliente):
+def iniciar(destino, cliente, solo_datos=False):
     destino = destino.expanduser().absolute()
     if destino.is_symlink() or (destino.exists() and
                                (not destino.is_dir() or any(destino.iterdir()))):
@@ -39,25 +39,32 @@ def iniciar(destino, cliente):
 
     with TemporaryDirectory(prefix=".wifi-init-", dir=destino.parent) as temporal:
         nuevo = Path(temporal) / "proyecto"
-        codigo = nuevo / "harness"
-        codigo.mkdir(parents=True)
+        nuevo.mkdir(mode=0o700 if solo_datos else 0o777)
         (nuevo / "sesiones").mkdir()
-        shutil.copyfile(__file__, nuevo / "app.py")
         shutil.copyfile(reglas, nuevo / "AGENTS.md")
-        archivos = ["wifi.py", "diagnostico.py", "requirements-opensandbox.txt"]
-        if cliente == "azure-foundry":
-            archivos.append("foundry.py")
-        for archivo in archivos:
-            shutil.copyfile(FUENTE / archivo, codigo / archivo)
-        escribir(nuevo / "harness.json", json.dumps(
-            {"esquema": ESQUEMA, "cliente": cliente}, indent=2
-        ) + "\n")
+        config = {"esquema": ESQUEMA, "cliente": cliente}
+        if solo_datos:
+            if cliente in ("demo", "azure-foundry"):
+                config["llm"] = {"proveedor": cliente}
+        else:
+            codigo = nuevo / "harness"
+            codigo.mkdir()
+            shutil.copyfile(__file__, nuevo / "app.py")
+            archivos = ["wifi.py", "diagnostico.py", "requirements-opensandbox.txt"]
+            if cliente == "azure-foundry":
+                archivos.append("foundry.py")
+            for archivo in archivos:
+                shutil.copyfile(FUENTE / archivo, codigo / archivo)
+        escribir(nuevo / "harness.json", json.dumps(config, indent=2) + "\n")
         escribir(nuevo / ".gitignore", "__pycache__/\n.venv/\n.env\n")
         nuevo.rename(destino)
 
     print(f"Proyecto creado en {destino}")
     print(f"Cliente del proyecto: {cliente}")
-    print("Dentro de la carpeta: python3 app.py nueva mi-sesion --objetivo 'Revisar conectividad'.")
+    if solo_datos:
+        print("Abre Harwiff desde la carpeta del proyecto.")
+    else:
+        print("Dentro de la carpeta: python3 app.py nueva mi-sesion --objetivo 'Revisar conectividad'.")
 
 
 def leer_config():
@@ -163,6 +170,7 @@ def main():
     inicio = comandos.add_parser("iniciar", help="Crea una carpeta de proyecto.")
     inicio.add_argument("carpeta", type=Path)
     inicio.add_argument("--cliente", choices=CLIENTES, default="chatgpt")
+    inicio.add_argument("--solo-datos", action="store_true", help="Guarda el proyecto para el Harwiff instalado.")
     comandos.add_parser("sesiones", help="Lista las sesiones del proyecto.")
     nueva = comandos.add_parser("nueva", help="Crea una sesión con su propio registro.")
     nueva.add_argument("id")
@@ -186,7 +194,7 @@ def main():
 
     try:
         if args.accion == "iniciar":
-            iniciar(args.carpeta, args.cliente)
+            iniciar(args.carpeta, args.cliente, solo_datos=args.solo_datos)
             return 0
         cliente = leer_config()["cliente"]
         if args.accion == "sesiones":
