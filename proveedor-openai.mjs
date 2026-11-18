@@ -4,6 +4,8 @@ const BASE = "https://api.openai.com/v1";
 const modelosPi = new Map(openaiProvider().getModels()
   .filter(({ provider, api, baseUrl }) => provider === "openai" && api === "openai-responses" && baseUrl === BASE)
   .map((modelo) => [modelo.id, modelo]));
+// Modelos con soporte explícito en la guía oficial de resúmenes de OpenAI.
+const RESUMEN_DOCUMENTADO = /^(?:o4-mini(?:-2025-04-16)?|gpt-6\.2-astra)$/;
 const CUOTA = new Set(["insufficient_quota", "billing_hard_limit_reached", "credit_balance_exhausted",
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "organization_usage_limit_exceeded"]);
 
@@ -18,6 +20,7 @@ export const MENSAJES_OPENAI = {
   openai_connection: "No se pudo completar la conexión con la API oficial de OpenAI.",
   openai_service: "El servicio de OpenAI interrumpió la operación. Intenta de nuevo más tarde.",
   openai_request: "OpenAI rechazó la solicitud. Revisa el modelo y su compatibilidad con Responses.",
+  openai_tools_unsupported: "El modelo no admite Responses API con llamadas a herramientas.",
   openai_probe_tool: "OpenAI respondió, pero la llamada de comprobación de herramientas quedó incompleta.",
 };
 
@@ -34,6 +37,10 @@ function codigoOpenAI(status, error) {
   }
   if (status === 429 || code === "rate_limit_exceeded" || code === "slow_down" || error?.type === "rate_limit_error") {
     return "openai_rate_limit";
+  }
+  if (["unsupported_model", "model_not_supported", "unsupported_tool"].includes(code) ||
+      (["unsupported_value", "unsupported_parameter"].includes(code) && ["tools", "tool_choice"].includes(error?.param))) {
+    return "openai_tools_unsupported";
   }
   if (status === 408) return "openai_connection";
   return status >= 500 || status === undefined ? "openai_service" : "openai_request";
@@ -133,14 +140,28 @@ export async function comprobarHerramientasOpenAI(modelId, opciones) {
     tokens: tokensReportados(respuesta.usage) };
 }
 
-export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) {
+export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env, modelo) {
+  const admiteResumen = modelo?.reasoning && modelo.api === "openai-responses" &&
+    RESUMEN_DOCUMENTADO.test(modelo.id) && modelo.thinkingLevelMap?.low;
+  const resumenes = new Map();
+  function guardarResumen(indice, item) {
+    if (item?.type !== "reasoning" || !Array.isArray(item.summary) || !item.summary.length) return;
+    resumenes.set(indice, new Map(item.summary.map((parte, n) => [n,
+      parte?.type === "summary_text" && typeof parte.text === "string" ? parte.text : ""])));
+  }
   const solicitudes = [];
   const cabeceras = cabecerasProyecto(entorno);
   let actual;
   return {
     nuevaSolicitud() {
+      resumenes.clear();
       actual = {};
       solicitudes.push(actual);
+    },
+    resumenOficial() {
+      return [...resumenes.entries()].sort(([a], [b]) => a - b)
+        .flatMap(([, partes]) => [...partes.entries()].sort(([a], [b]) => a - b).map(([, texto]) => texto))
+        .filter(Boolean).join("\n\n");
     },
     errorActual() {
       // Si hubo HTTP exitoso pero el stream cayó antes de terminar, faltó el cierre de Responses.
@@ -165,6 +186,12 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) 
           // Los modelos que razonan necesitan poder continuar sin estado remoto.
           limpio.include = [...new Set([...(limpio.include ?? []), "reasoning.encrypted_content"])];
         }
+        if (admiteResumen) {
+          const esfuerzo = limpio.reasoning?.effort;
+          limpio.reasoning = { ...limpio.reasoning, effort: !esfuerzo || esfuerzo === "none" ? admiteResumen : esfuerzo,
+            summary: "auto" };
+          limpio.include = [...new Set([...(limpio.include ?? []), "reasoning.encrypted_content"])];
+        }
         return limpio;
       },
       async fetch(input, init) {
@@ -186,6 +213,19 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) 
       },
       onProviderStreamEvent(evento) {
         const respuesta = evento.response;
+        if (admiteResumen && Number.isInteger(evento.output_index)) {
+          if (evento.type === "response.reasoning_summary_text.delta" && typeof evento.delta === "string") {
+            const partes = resumenes.get(evento.output_index) ?? new Map();
+            const indice = evento.summary_index ?? 0;
+            partes.set(indice, (partes.get(indice) ?? "") + evento.delta);
+            resumenes.set(evento.output_index, partes);
+          } else if (evento.type === "response.output_item.done") {
+            guardarResumen(evento.output_index, evento.item);
+          }
+        }
+        if (admiteResumen && ["response.completed", "response.incomplete"].includes(evento.type)) {
+          respuesta?.output?.forEach((item, indice) => guardarResumen(indice, item));
+        }
         if (modeloValido(respuesta?.model)) {
           actual.modelo = respuesta.model;
         }

@@ -53,15 +53,19 @@ Desde `harwiff >`, prueba este recorrido en un proyecto de laboratorio.
 /agente Revisar la postura de seguridad del AP del laboratorio
 ```
 
-`/agente` arranca una sesión de objetivo único en segundo plano. Desde la fila de agentes, usa **Tab**, las flechas y **Enter** para abrirla. **Esc** vuelve a `harwiff >` mientras se ejecuta. Dentro de la sesión, `/detener` cancela el trabajo activo.
+`/agente` abre una conversación en segundo plano. Desde la fila de agentes, usa **Tab**, las flechas y **Enter** para entrar. Puedes escribir mientras el agente genera texto o ejecuta una herramienta. Pi incorpora los mensajes en orden en la siguiente solicitud permitida. **Incorporado** significa que Harwiff admitió la solicitud localmente. Una interrupción de red posterior puede impedir que el proveedor la reciba. Los mensajes pendientes al cancelar, revocar, agotar el presupuesto o superar el timeout quedan como **no enviados**.
 
-Con Foundry configurado, el modelo elige la secuencia de herramientas de Pi. El modo **Demo local · simulación** usa un guion de respuestas para probar el mismo recorrido con el fixture. Al configurar el BSSID `AA:BB:CC:11:22:33` explícitamente, el simulador empieza por inspeccionar la postura. Con el alcance del ejemplo, empieza por observar el entorno. Las dos rutas guardan evidencia sintética y permiten registrar una hipótesis vinculada. La sesión congela el alcance inicial. Un cambio de adaptador o alcance invalida sus operaciones pendientes, incluso si se restaura la configuración anterior.
+**Esc**, `/volver` y `/salir` regresan a `harwiff >` sin cancelar el turno. En la raíz, `/salir` cierra Harwiff. `/detener` cancela el trabajo activo. Usa `/detalle` para ver los parámetros depurados, la decisión y la evidencia de una herramienta.
 
-Cada sesión tiene ocho solicitudes al modelo y ocho intentos de herramienta. Los resultados, denegaciones y cierres parciales se pueden consultar al volver a abrir la sesión. La ejecución de esta fase usa el host y el escenario sintético.
+Con OpenAI o Foundry configurado, el modelo elige la secuencia de herramientas de Pi. El modo **Demo local · simulación** usa un guion de respuestas para probar el mismo recorrido con el fixture. Al configurar el BSSID `AA:BB:CC:11:22:33` explícitamente, el simulador empieza por inspeccionar la postura. Con el alcance del ejemplo, empieza por observar el entorno. Las dos rutas guardan evidencia sintética y permiten registrar una hipótesis vinculada. La sesión congela el alcance inicial. Un cambio de adaptador o alcance invalida sus operaciones pendientes, incluso si se restaura la configuración anterior.
+
+Puedes continuar una sesión finalizada desde la misma vista o después de reabrir el proyecto. Cada turno tiene su propia auditoría y hasta ocho solicitudes al modelo, ocho intentos de herramienta y 120 segundos. Reutilizar una evidencia histórica exige validarla contra la auditoría y el alcance vigente. Las sesiones canceladas, interrumpidas o revocadas quedan disponibles para consulta. La ejecución usa el escenario sintético.
 
 ### Usar la API oficial de OpenAI
 
 Con un proyecto abierto en `harwiff >`, escribe `/connect`, elige **OpenAI API**, introduce la clave en la entrada oculta y selecciona uno de los modelos disponibles. Harwiff guarda la clave en Secret Service si `secret-tool` y el almacén de la sesión están disponibles. Si el almacén falla, Harwiff conserva la clave en memoria hasta que cierres el proceso. El proyecto guarda únicamente el proveedor y el modelo.
+
+Al volver a abrir `/connect`, puedes cambiar el modelo con la credencial existente, consultar el catálogo, cambiar la credencial, probar o desconectar. El modelo predeterminado se muestra en la cabecera de Capa 1 y se aplica a las sesiones nuevas. Cada sesión conserva su modelo original al continuar.
 
 `/connect list` muestra la configuración y el origen local de la credencial. Harwiff usa primero una clave recién conectada en el proceso, después `OPENAI_API_KEY` si está definida y, por último, Secret Service. `/disconnect openai` desvincula la clave de Harwiff y del almacén de ese usuario. La variable externa sigue disponible. El selector también permite configurar Azure AI Foundry con el dominio, el deployment y `FOUNDRY_API_KEY`.
 
@@ -89,9 +93,13 @@ Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso. Si ya lo seleccionast
 
 `/connect` y `/config modelos` muestran todos los IDs que OpenAI devuelve para el proyecto, con los más recientes al principio cuando la API informa su fecha. Harwiff comprueba el acceso al guardar el ID y al iniciar la sesión. Para usar `/agente`, el modelo elegido debe admitir Responses y function calling. Puedes comprobarlo con `/connect test`. `/config proveedor demo` y `/config proveedor azure-foundry` eligen las otras opciones de `/agente`. [Disponibilidad de modelos en OpenAI](https://developers.openai.com/api/docs/guides/rate-limits#model-availability)
 
-El resultado y la vista de la sesión incluyen el ID solicitado, los IDs devueltos y los tokens informados por Responses. Una medición parcial indica que alguna solicitud carece de cifras. Desde el repositorio, `node tests/openai.mjs` ejecuta la simulación. El fixture de `gpt-4.1-mini` reporta 101 tokens de entrada, 22 de salida y 123 en total, todos simulados.
+El catálogo indica qué IDs están listados, comprobados o confirmados como incompatibles. Harwiff recuerda esas comprobaciones durante el proceso actual para esa credencial y proyecto API. La selección de un ID listado no consume tokens.
 
-La prueba real voluntaria usa `npm run test:openai -- gpt-4.1-mini` o el ID compatible elegido. Con una clave en el entorno o en Secret Service, hace una comprobación facturable de conectividad y luego una sesión agéntica en un proyecto temporal. Reporta por separado ambos consumos, registra la secuencia y comprueba que el modelo recibió evidencia en una iteración posterior. Sin credencial, la prueba se omite. [Streaming de Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
+Responses usa `store: false`. Durante un turno, Pi puede devolver al proveedor el estado cifrado asociado a sus llamadas junto con sus resultados. Harwiff descarta ese estado al cerrar cada turno. Al continuar, incluso en el mismo proceso, el modelo recibe los mensajes visibles y las evidencias verificadas como contexto y empieza con un estado de razonamiento nuevo. Harwiff muestra por separado los resúmenes oficiales que solicite y reciba para modelos con soporte confirmado. [Razonamiento en Responses](https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context)
+
+El resultado y la vista de cada turno incluyen el ID solicitado, los IDs devueltos y los tokens informados por Responses. Una medición parcial indica que alguna solicitud carece de cifras. Desde el repositorio, `node tests/openai.mjs` ejecuta la simulación. El fixture de `gpt-4.1-mini` reporta 101 tokens de entrada, 22 de salida y 123 en total, todos simulados.
+
+La prueba real voluntaria usa `npm run test:openai -- gpt-4.1-mini` o el ID compatible elegido. Con una clave en el entorno o en Secret Service, hace una comprobación facturable de conectividad y luego dos turnos agénticos en un proyecto temporal, con reapertura de la sesión entre ambos. Reporta los consumos por separado, registra la secuencia inicial y verifica la ejecución de una herramienta tras recuperar el contexto. Sin credencial, la prueba se omite. [Streaming de Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
 
 ### Chat e informes guardados
 

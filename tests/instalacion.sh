@@ -21,7 +21,7 @@ grep -q 'leer_informes · completo' "$temporal/salida"
 printf '%s\n' '/alcance set --ssid LAB_TEST_AP --canales 6' '/agente Revisar el fixture' '/salir' \
   | env -u FOUNDRY_HOST -u FOUNDRY_DEPLOYMENT -u FOUNDRY_API_KEY "$ejecutable" "$proyecto" > "$temporal/agente"
 grep -q 'Demo local · simulación' "$temporal/agente"
-grep -q 'registrar_hallazgo · {"ok":true' "$temporal/agente"
+grep -q 'registrar_hallazgo · .*ALLOWED.*Hallazgo' "$temporal/agente"
 grep -q 'Sesión completada.' "$temporal/agente"
 "$ejecutable" proyectos --json "$temporal" | grep -q '"nombre": "proyecto nuevo"'
 printf '%s\n' "/proyectos $temporal" '/salir' | "$ejecutable" | grep 'proyecto nuevo · demo'

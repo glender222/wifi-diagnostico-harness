@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, join, parse, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 
-import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
+import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { crearCredencialesOpenAI } from "./credenciales-openai.mjs";
 import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
 import {
@@ -13,7 +14,7 @@ import {
   informesAgente, inspeccionarControlWifi, leerAuditoria, leerControlWifi, leerJson, localizarProyecto, usarAdaptador,
 } from "./proyecto.mjs";
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
-import { cargarSesionAutonoma, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
+import { cargarSesionAutonoma, enviarMensajeAgente, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
 
 const VERSION = "0.2.6";
 const NOMBRE_ENTORNO = "harwiff";
@@ -38,15 +39,17 @@ const comandos = {
   "/guardar": "Guardar una nota en la sesión de trabajo",
   "/contexto": "Ver notas e informes de la sesión de trabajo",
   "/volver": "Volver del agente al entorno",
+  "/detalle": "Consultar parámetros, resultado y auditoría de una operación",
   "/detener": "Cancelar el turno del agente activo",
   "/salir": "Cerrar Harwiff",
 };
 
 function disponibles(proyecto, agente) {
-  const nombres = agente ? ["/ayuda", "/config", "/detener", "/volver", "/salir"]
-    : proyecto ? Object.keys(comandos).filter((comando) => comando !== "/detener" && comando !== "/volver")
+  const nombres = agente ? ["/ayuda", "/config", "/detener", "/volver", "/salir", ...(agente.autonoma ? ["/detalle"] : [])]
+    : proyecto ? Object.keys(comandos).filter((comando) => !["/detener", "/volver", "/detalle"].includes(comando))
       : ["/ayuda", "/proyecto", "/proyectos", "/connect", "/disconnect", "/salir"];
-  return Object.fromEntries(nombres.map((comando) => [comando, comandos[comando]]));
+  return Object.fromEntries(nombres.map((comando) =>
+    [comando, agente && comando === "/salir" ? "Volver al entorno sin cancelar" : comandos[comando]]));
 }
 
 function resolverCarpeta(valor) {
@@ -123,7 +126,15 @@ function errorBloqueado(motivo) {
 
 async function aplicar(destino) {
   const credenciales = crearCredencialesOpenAI();
-  const salida = (texto) => console.log(seguro(credenciales.ocultar(String(texto))));
+  const verificaciones = new Map();
+  const ocultar = (texto) => {
+    let limpio = credenciales.ocultar(texto);
+    for (const clave of [process.env.FOUNDRY_API_KEY, process.env.OPENSANDBOX_API_KEY]) {
+      if (clave?.trim()) limpio = limpio.replaceAll(clave.trim(), "[credencial omitida]");
+    }
+    return limpio.replace(/\bsk-[a-zA-Z0-9_-]{8,}/g, "[credencial omitida]");
+  };
+  const salida = (texto) => console.log(seguro(ocultar(String(texto))));
   const lector = tty ? undefined : createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const lineas = lector?.[Symbol.asyncIterator]();
   const carpetaInicial = destino ? resolverCarpeta(destino) : process.cwd();
@@ -139,6 +150,7 @@ async function aplicar(destino) {
   let cerrando = false;
   let diagnosticoPendiente;
   let agentes = new Map();
+  const envios = new WeakMap();
   let agentesDir;
   let mensajes = [
     `Carpeta actual: ${seguro(process.cwd())}`,
@@ -156,18 +168,24 @@ async function aplicar(destino) {
     });
   }
   function actualizar() {
+    const proveedor = config && proveedorAgente(config);
+    const modelo = proveedor === "openai" ? config.llm?.openaiModelId
+      : proveedor === "azure-foundry" ? config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT : undefined;
     interfaz?.render({
       proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
-      mensajes: agente ? agente.mensajes : mensajes, comandos: disponibles(proyecto, agente),
+      mensajes: agente?.autonoma ? agente.avisos ?? [] : agente ? agente.mensajes : mensajes,
+      transcript: agente?.transcript, proveedor: proveedor && etiquetaProveedor(proveedor), modelo,
+      autonoma: agente?.autonoma, soloConsulta: agente?.soloConsulta, comandos: disponibles(proyecto, agente),
       controlWifi,
       promptEntorno: PROMPT_ENTORNO,
     });
   }
   function mostrar(texto, destino = agente) {
-    const limpio = seguro(credenciales.ocultar(String(texto)));
+    const limpio = seguro(ocultar(String(texto)));
     if (!tty) salida(limpio);
-    if (destino) destino.mensajes = [...destino.mensajes.slice(-149), limpio];
+    if (destino?.autonoma) destino.avisos = [...(destino.avisos ?? []).slice(-29), limpio];
+    else if (destino) destino.mensajes = [...destino.mensajes.slice(-149), limpio];
     else mensajes = [...mensajes.slice(-149), limpio];
     actualizar();
   }
@@ -201,13 +219,18 @@ async function aplicar(destino) {
     }
     if (tty && !cerrando) {
       const { pantalla } = await import("./pantalla.mjs");
-      interfaz = pantalla(comandos, { salir: cerrar, volver, entrar: enfocar, ocultar: credenciales.ocultar });
+      interfaz = pantalla(comandos, { salir: cerrar, volver, entrar: enfocar, ocultar,
+        enviar(id, texto) {
+          const item = agentes.get(id);
+          if (item?.autonoma) void enviarConversacion(item, texto).catch((error) => mostrar(`Error: ${error.message}`, item));
+        },
+      });
       actualizar();
     }
     while (!cerrando) {
       const entrada = interfaz ? await interfaz.leer() : (await lineas.next()).value;
       if (entrada === undefined || cerrando) break;
-      const texto = credenciales.ocultar(entrada.trim());
+      const texto = ocultar(entrada.trim());
       if (!texto) continue;
       if (tty && (texto.startsWith("/") || texto === "ls" || /^agent\s+harwiff(?:\s|$)/.test(texto))) {
         mostrar(`${agente ? "Tú" : NOMBRE_ENTORNO}  ${texto}`);
@@ -222,7 +245,10 @@ async function aplicar(destino) {
     cerrar();
     process.off("SIGTERM", cerrar);
     process.off("SIGINT", cerrar);
-    await Promise.allSettled([...agentes.values()].map((item) => item.trabajo));
+    await Promise.allSettled([...agentes.values()].map(async (item) => {
+      await envios.get(item);
+      await item.trabajo;
+    }));
   }
 
   async function listarConexiones() {
@@ -242,51 +268,185 @@ async function aplicar(destino) {
     if (activo === "demo") mostrar("Demo local · seleccionado");
   }
 
-  async function conectarProveedor() {
-    if (!interfaz) throw new Error("Usa /connect en una terminal interactiva. Para scripts usa OPENAI_API_KEY y /config.");
-    const elegido = await interfaz.elegir("Conectar proveedor LLM · Enter elige · Esc cancela", [
+  function contextoVerificacion(entorno) {
+    return createHash("sha256").update(JSON.stringify([entorno.OPENAI_API_KEY,
+      entorno.OPENAI_ORG_ID, entorno.OPENAI_PROJECT_ID])).digest("hex");
+  }
+
+  function estadoModelo(id, entorno) {
+    return verificaciones.get(contextoVerificacion(entorno))?.get(id) ?? "listado · pendiente de verificar";
+  }
+
+  async function probarOpenAI(id, conexion = undefined) {
+    const { entorno } = conexion ?? await credenciales.resolver();
+    const huella = contextoVerificacion(entorno);
+    const estados = verificaciones.get(huella) ?? new Map();
+    verificaciones.set(huella, estados);
+    try {
+      const resultado = await comprobarHerramientasOpenAI(id, { entorno });
+      estados.set(id, "verificado · Responses y function calling");
+      mostrar(`OpenAI Responses y function calling verificados · ${resultado.modeloDevuelto ?? resultado.modelId} · ${resultado.herramienta}`);
+      const { tokens } = resultado;
+      mostrar(tokens ? `Tokens de conectividad · entrada ${tokens.entrada}, salida ${tokens.salida}, total ${tokens.total}`
+        : "OpenAI no informó tokens para la prueba de conectividad.");
+    } catch (error) {
+      if (error.code === "openai_tools_unsupported") estados.set(id, "incompatible");
+      throw error;
+    }
+  }
+
+  async function desvincularOpenAI() {
+    verificaciones.clear();
+    const estado = await credenciales.desvincular();
+    mostrar(estado === "no_disponible" ? "Memoria desvinculada. No se pudo comprobar la eliminación en Secret Service."
+      : "Credencial de OpenAI desvinculada de Harwiff.");
+    if (process.env.OPENAI_API_KEY?.trim()) mostrar("OPENAI_API_KEY externa sigue disponible.");
+  }
+
+  async function elegirProveedor() {
+    return interfaz.elegir("Conectar proveedor LLM · Enter elige · Esc cancela", [
       { value: "openai", label: "OpenAI API", description: "Responses API" },
       { value: "azure-foundry", label: "Azure AI Foundry", description: "Dominio y deployment del proyecto" },
-    ], proveedorAgente(config));
-    if (!elegido || cerrando) return;
-    if (elegido === "azure-foundry") {
-      const existente = config.foundry ?? {};
-      const hostActual = existente.host ?? process.env.FOUNDRY_HOST ?? "";
-      const deploymentActual = existente.deployment ?? process.env.FOUNDRY_DEPLOYMENT ?? "";
-      const entradaHost = await interfaz.preguntar(hostActual ? `Dominio Azure [${seguro(hostActual)}] > ` : "Dominio Azure > ");
-      if (entradaHost === undefined || cerrando) return;
-      const entradaDeployment = await interfaz.preguntar(deploymentActual
-        ? `Deployment [${seguro(deploymentActual)}] > ` : "Deployment > ");
-      if (entradaDeployment === undefined || cerrando) return;
-      const foundry = { host: entradaHost.trim() || hostActual, deployment: entradaDeployment.trim() || deploymentActual };
-      modeloFoundry({ ...config, foundry });
-      await actualizarConfig((actual) => ({ ...actual, foundry, llm: { ...actual.llm, proveedor: elegido } }));
-      mostrar(`Azure AI Foundry configurado · Deployment: ${foundry.deployment}`);
-      return;
-    }
+      { value: "demo", label: "Demo local", description: "Simulación" },
+    ], proveedorAgente(config) === "demo" ? "openai" : proveedorAgente(config));
+  }
 
-    const existente = await credenciales.resolver();
-    if (cerrando) return;
-    const entrada = await interfaz.preguntarSecreto(existente.fuente
-      ? "API key de OpenAI · Enter conserva la credencial disponible · Esc cancela >"
-      : "API key de OpenAI · entrada oculta · Esc cancela >");
-    if (entrada === undefined || cerrando) return;
-    const entorno = entrada ? credenciales.conClave(entrada) : existente.entorno;
+  async function configurarFoundry() {
+    const existente = config.foundry ?? {};
+    const hostActual = existente.host ?? process.env.FOUNDRY_HOST ?? "";
+    const deploymentActual = existente.deployment ?? process.env.FOUNDRY_DEPLOYMENT ?? "";
+    const entradaHost = await interfaz.preguntar(hostActual ? `Dominio Azure [${seguro(hostActual)}] > ` : "Dominio Azure > ");
+    if (entradaHost === undefined || cerrando) return;
+    const entradaDeployment = await interfaz.preguntar(deploymentActual
+      ? `Deployment [${seguro(deploymentActual)}] > ` : "Deployment > ");
+    if (entradaDeployment === undefined || cerrando) return;
+    const foundry = { host: entradaHost.trim() || hostActual, deployment: entradaDeployment.trim() || deploymentActual };
+    modeloFoundry({ ...config, foundry });
+    await actualizarConfig((actual) => ({ ...actual, foundry, llm: { ...actual.llm, proveedor: "azure-foundry" } }));
+    mostrar(`Azure AI Foundry configurado · Deployment: ${foundry.deployment}`);
+  }
+
+  async function probarFoundry() {
+    const modelo = modeloFoundry(config);
+    const name = "comprobar_conexion";
+    let llamada = false;
+    await ejecutarPi({ ...modelo,
+      prompts: [{ role: "user", content: "Invoca comprobar_conexion sin argumentos.", timestamp: Date.now() }],
+      herramientas: [{ name, label: name, description: "Comprueba el protocolo de herramientas.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: async () => {
+          llamada = true;
+          return { content: [{ type: "text", text: "OK" }], details: {} };
+        },
+      }],
+      signal: AbortSignal.timeout(30_000), emitir: () => {},
+      hooks: { maxRetries: 0, finishTurn: () => ({ action: "end" }) },
+    }).catch(() => { throw new Error("No se pudo completar la prueba de Azure AI Foundry."); });
+    if (!llamada) throw new Error("Azure AI Foundry no devolvió la llamada de prueba. Revisa acceso, cuota y deployment.");
+    mostrar(`Azure AI Foundry · function calling verificado · ${modelo.modelo.id}`);
+  }
+
+  async function menuFoundry() {
+    const { modelo } = modeloFoundry(config);
+    const opcion = await interfaz.elegir(`Azure AI Foundry · configurado · ${modelo.id}`, [
+      { value: "modelo", label: "Cambiar deployment" },
+      { value: "listar", label: "Consultar deployment" },
+      { value: "credencial", label: "Consultar origen de la credencial" },
+      { value: "probar", label: "Probar conexión", description: "Consume tokens" },
+      { value: "desconectar", label: "Desconectar del proyecto" },
+      { value: "proveedor", label: "Cambiar proveedor" },
+    ]);
+    if (opcion === "modelo") await configurarFoundry();
+    if (opcion === "listar") mostrar(`Azure AI Foundry · deployment ${modelo.id}`);
+    if (opcion === "credencial") mostrar("Azure AI Foundry usa FOUNDRY_API_KEY del entorno.");
+    if (opcion === "probar") await probarFoundry();
+    if (opcion === "desconectar") {
+      await actualizarConfig(({ foundry, ...actual }) => ({ ...actual, llm: { ...actual.llm, proveedor: "demo" } }));
+      mostrar("Azure AI Foundry desvinculado del proyecto.");
+    }
+    return opcion;
+  }
+
+  async function elegirModeloOpenAI(entorno, { consulta = false } = {}) {
     const modelos = await listarModelosOpenAI({ entorno });
     if (cerrando) return;
     if (!modelos.length) throw new Error("La API de OpenAI no devolvió modelos para este proyecto.");
-    const id = await interfaz.elegir("Modelos de tu proyecto OpenAI · Enter guarda · Esc cancela",
-      modelos.map((modelo) => ({ value: modelo, label: modelo })), config.llm?.openaiModelId);
+    const id = await interfaz.elegir(consulta ? "Modelos de tu proyecto OpenAI · consulta"
+      : "Modelos de tu proyecto OpenAI · Enter guarda · Esc cancela",
+    modelos.map((value) => ({ value, label: value, description: estadoModelo(value, entorno) })),
+    config.llm?.openaiModelId, { filtrar: true });
+    if (consulta && id) mostrar(`${id} · ${estadoModelo(id, entorno)}`);
+    return consulta ? undefined : id;
+  }
+
+  async function conectarOpenAI(existente, cambiarClave = false) {
+    const entrada = cambiarClave || !existente.fuente
+      ? await interfaz.preguntarSecreto("API key de OpenAI · entrada oculta · Esc cancela >") : "";
+    if (entrada === undefined || cerrando || (cambiarClave && !entrada)) return;
+    const entorno = entrada ? credenciales.conClave(entrada) : existente.entorno;
+    const id = await elegirModeloOpenAI(entorno);
     if (!id || cerrando) return;
-    await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: elegido, openaiModelId: id } }));
     const fuente = entrada ? await credenciales.guardar(entrada) : existente.fuente;
+    if (entrada) verificaciones.clear();
+    await guardarModeloOpenAI(id);
     mostrar(`OpenAI API conectado · Modelo: ${id} · Credencial: ${fuente}`);
     if (fuente === "memoria de Harwiff") mostrar("Secret Service no disponible. La clave se elimina al cerrar Harwiff.");
-    mostrar("Usa /connect test para comprobar Responses y function calling. La prueba consume tokens.");
+  }
+
+  async function guardarModeloOpenAI(id, soloSiOpenAI = false) {
+    await actualizarConfig((actual) => {
+      if (soloSiOpenAI && proveedorAgente(actual) !== "openai") {
+        throw new Error("El proveedor del proyecto cambió. Vuelve a seleccionar OpenAI.");
+      }
+      return { ...actual, llm: { ...actual.llm, proveedor: "openai", openaiModelId: id } };
+    });
+  }
+
+  async function conectarProveedor() {
+    if (!interfaz) throw new Error("Usa /connect en una terminal interactiva. Para scripts usa OPENAI_API_KEY y /config.");
+    const actual = config.llm?.proveedor;
+    if (actual === "openai") {
+      const conexion = await credenciales.resolver();
+      const id = config.llm.openaiModelId;
+      const estado = conexion.fuente ? `credencial en ${conexion.fuente}` : "sin credencial";
+      const opcion = await interfaz.elegir(`OpenAI API · ${estado} · modelo ${id ?? "sin seleccionar"}`, [
+        { value: "modelo", label: "Cambiar modelo", description: id && conexion.fuente ? estadoModelo(id, conexion.entorno) : undefined },
+        { value: "listar", label: "Consultar modelos" },
+        { value: "credencial", label: "Cambiar credencial" },
+        { value: "probar", label: "Probar conexión", description: "Consume tokens" },
+        { value: "desconectar", label: "Desconectar" },
+        { value: "proveedor", label: "Cambiar proveedor" },
+      ]);
+      if (opcion === "modelo") {
+        if (!conexion.fuente) await conectarOpenAI(conexion);
+        else {
+          const elegido = await elegirModeloOpenAI(conexion.entorno);
+          if (elegido && !cerrando) {
+            await guardarModeloOpenAI(elegido, true);
+            mostrar(`Modelo OpenAI guardado: ${elegido} · ${estadoModelo(elegido, conexion.entorno)}`);
+          }
+        }
+      }
+      if (opcion === "listar") await elegirModeloOpenAI(conexion.entorno, { consulta: true });
+      if (opcion === "credencial") await conectarOpenAI(conexion, true);
+      if (opcion === "probar") await probarOpenAI(id, conexion);
+      if (opcion === "desconectar") await desvincularOpenAI();
+      if (opcion !== "proveedor") return;
+    } else if (actual === "azure-foundry") {
+      const configurado = process.env.FOUNDRY_API_KEY?.trim() && (config.foundry?.host ?? process.env.FOUNDRY_HOST)
+        && (config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT);
+      if (configurado && await menuFoundry() !== "proveedor") return;
+    }
+    const elegido = await elegirProveedor();
+    if (!elegido || cerrando) return;
+    if (elegido === "azure-foundry") return configurarFoundry();
+    if (elegido === "openai") return conectarOpenAI(await credenciales.resolver());
+    await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: elegido } }));
+    mostrar("Proveedor de /agente: demo");
   }
 
   async function seleccionarProyecto(carpeta, { cliente = "demo", soloAbrir = false, enlaceExplicito = false } = {}) {
-    if ([...agentes.values()].some((item) => item.trabajo)) {
+    if ([...agentes.values()].some((item) => item.trabajo || envios.has(item))) {
       throw new Error("Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
     }
     const existente = await (soloAbrir && !enlaceExplicito ? lstat : stat)(carpeta).catch((error) => {
@@ -457,13 +617,33 @@ async function aplicar(destino) {
     });
   }
 
+  function enviarConversacion(item, texto) {
+    const proyectoActual = proyectoWifi();
+    const previo = envios.get(item) ?? Promise.resolve();
+    const envio = previo.then(async () => {
+      if (cerrando) return;
+      const resolverEntornoLlm = item.modo === "openai" ? async () => {
+        const { entorno } = await credenciales.resolver();
+        if (cerrando) throw new Error("Harwiff está cerrando.");
+        return entorno;
+      } : undefined;
+      await enviarMensajeAgente({ proyecto: proyectoActual, item, texto, alCambiar: actualizar, resolverEntornoLlm });
+      if (cerrando) item.controlador?.abort();
+    });
+    const cola = envio.catch(() => {}).finally(() => {
+      if (envios.get(item) === cola) envios.delete(item);
+    });
+    envios.set(item, cola);
+    return envio;
+  }
+
   async function procesar(texto) {
     if (texto === "/ayuda") {
       mostrar(Object.entries(disponibles(proyecto, agente)).map(([nombre, ayuda]) => `${nombre}  ${ayuda}`).join("\n"));
       return;
     }
-    if (texto === "/salir") return cerrar();
-    if (texto === "/volver") {
+    if (texto === "/salir" && !agente) return cerrar();
+    if (texto === "/volver" || texto === "/salir") {
       volver();
       if (!tty) salida(PROMPT_ENTORNO);
       return;
@@ -482,9 +662,39 @@ async function aplicar(destino) {
       return;
     }
     if (agente && !texto.startsWith("/")) {
-      if (agente.autonoma) throw new Error("Usa Esc o /volver y /agente <objetivo> para iniciar otra sesión.");
-      iniciarTurno(texto, agente);
-      if (!tty) await agente.trabajo;
+      const item = agente;
+      if (item.autonoma) {
+        const previos = item.mensajes.length;
+        await enviarConversacion(item, texto);
+        if (!tty) {
+          await item.trabajo;
+          for (const mensaje of item.mensajes.slice(previos)) salida(mensaje);
+        }
+      } else {
+        iniciarTurno(texto, item);
+        if (!tty) await item.trabajo;
+      }
+      return;
+    }
+    if (agente?.autonoma && (texto === "/detalle" || texto.startsWith("/detalle "))) {
+      const opciones = agente.operaciones.filter(({ auditId }) => auditId);
+      if (!opciones.length) throw new Error("Todavía no hay operaciones con auditoría en esta sesión.");
+      const id = texto.slice("/detalle".length).trim() || (interfaz && await interfaz.elegir("Detalles de operaciones",
+        opciones.map(({ tool, auditId, autorizacion }) => ({ value: auditId, label: tool,
+          description: `${autorizacion?.decision ?? ""} · ${auditId}` }))));
+      if (!id) return;
+      const operacion = opciones.find(({ auditId }) => auditId === id);
+      if (!operacion) throw new Error("Ese ID no corresponde a una operación de esta sesión.");
+      const registro = await leerAuditoria(proyecto, operacion.auditId);
+      const detalle = seguro(ocultar([
+        `Herramienta · ${operacion.tool} · ${registro.autorizacion?.decision} · ${registro.autorizacion?.motivo}`,
+        `Parámetros · ${JSON.stringify(operacion.parametros ?? registro.parametrosNormalizados ?? {})}`,
+        `Auditoría · ${operacion.auditId}`,
+        `Resultado · ${JSON.stringify(operacion.result)}`,
+        `Evidencias · ${JSON.stringify(registro.referenciasEvidencia ?? [])}`,
+      ].join("\n")));
+      if (interfaz) await interfaz.mostrarDetalle(detalle);
+      else mostrar(detalle);
       return;
     }
     if (agente) throw new Error("Usa Esc o /volver para usar los comandos del proyecto.");
@@ -529,11 +739,7 @@ async function aplicar(destino) {
     if (comando === "/connect" && args === "list") return listarConexiones();
     if (comando === "/disconnect") {
       if (args !== "openai") throw new Error("Usa /disconnect openai.");
-      const estado = await credenciales.desvincular();
-      mostrar(estado === "no_disponible" ? "Memoria desvinculada. No se pudo comprobar la eliminación en Secret Service."
-        : "Credencial de OpenAI desvinculada de Harwiff.");
-      if (process.env.OPENAI_API_KEY?.trim()) mostrar("OPENAI_API_KEY externa sigue disponible.");
-      return;
+      return desvincularOpenAI();
     }
     if (!proyecto) {
       mostrar("Abre o crea un proyecto con /proyecto.");
@@ -551,12 +757,8 @@ async function aplicar(destino) {
         config = await leerJson(ruta);
         if (!args) await conectarProveedor();
         else if (args === "test") {
-          const { entorno } = await credenciales.resolver();
-          const resultado = await comprobarHerramientasOpenAI(config.llm?.openaiModelId, { entorno });
-          mostrar(`OpenAI Responses y function calling verificados · ${resultado.modeloDevuelto ?? resultado.modelId} · ${resultado.herramienta}`);
-          const { tokens } = resultado;
-          mostrar(tokens ? `Tokens de conectividad · entrada ${tokens.entrada}, salida ${tokens.salida}, total ${tokens.total}`
-            : "OpenAI no informó tokens para la prueba de conectividad.");
+          if (proveedorAgente(config) === "azure-foundry") await probarFoundry();
+          else await probarOpenAI(config.llm?.openaiModelId);
         } else throw new Error("Usa /connect, /connect list o /connect test.");
         break;
       }
@@ -632,8 +834,10 @@ async function aplicar(destino) {
         }
         if (host === "modelos") {
           if (deployment) throw new Error("Usa /config modelos.");
-          const modelos = await listarModelosOpenAI(await credenciales.resolver());
-          mostrar(modelos.length ? `Modelos disponibles en tu proyecto OpenAI: ${modelos.join(", ")}`
+          const conexion = await credenciales.resolver();
+          const modelos = await listarModelosOpenAI(conexion);
+          mostrar(modelos.length ? `Modelos disponibles en tu proyecto OpenAI: ${modelos
+            .map((id) => `${id} (${estadoModelo(id, conexion.entorno)})`).join(", ")}`
             : "La API de OpenAI no devolvió modelos para este proyecto.");
           break;
         }
@@ -641,10 +845,7 @@ async function aplicar(destino) {
           if (extra || !deployment) throw new Error("Usa /config modelo <model-id>.");
           if (proveedorAgente(config) !== "openai") throw new Error("Selecciona primero /config proveedor openai.");
           await validarModeloOpenAI(deployment, await credenciales.resolver());
-          await actualizarConfig((actual) => {
-            if (proveedorAgente(actual) !== "openai") throw new Error("El proveedor de la sesión cambió. Vuelve a seleccionar OpenAI.");
-            return { ...actual, llm: { ...actual.llm, openaiModelId: deployment } };
-          });
+          await guardarModeloOpenAI(deployment, true);
           mostrar(`Modelo OpenAI guardado: ${deployment}`);
           break;
         }

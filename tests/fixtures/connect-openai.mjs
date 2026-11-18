@@ -1,4 +1,6 @@
 // Servidor simulado dentro del proceso de las pruebas de terminal.
+import { setTimeout as esperar } from "node:timers/promises";
+
 globalThis.fetch = async (input, init) => {
   const solicitud = new Request(input, init);
   if (solicitud.headers.get("authorization") !== "Bearer sk-fixture-harwiff-terminal") {
@@ -14,14 +16,34 @@ globalThis.fetch = async (input, init) => {
     name: "observar_entorno", arguments: "{}", status: "completed" };
   if (!stream) return Response.json({ status: "completed", model, usage, output: [llamada] });
   const recibio = contexto.some((item) => item.type === "function_call_output");
+  const pausa = Number(process.env.HARWIFF_FIXTURE_STREAM_DELAY);
+  const seguimiento = contexto.some((item) => JSON.stringify(item).includes("Confirma lo que guardaste"));
+  const fase = seguimiento ? "seguimiento" : "proveedor";
+  const parcial = `Texto parcial del ${fase}.`;
+  const texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
   const item = recibio ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
-    content: [{ type: "output_text", text: "Conclusión basada en el fixture simulado.", annotations: [] }] } : llamada;
+    content: [{ type: "output_text", text: texto, annotations: [] }] } : llamada;
   const respuesta = { id: recibio ? "resp_fixture_2" : "resp_fixture_1", model };
   const eventos = [
     { type: "response.created", response: { ...respuesta, status: "in_progress" } },
     { type: "response.output_item.done", output_index: 0, item },
     { type: "response.completed", response: { ...respuesta, status: "completed", usage, output: [item] } },
   ];
-  return new Response(eventos.map((evento) => `event: ${evento.type}\ndata: ${JSON.stringify(evento)}\n\n`).join(""),
-    { headers: { "Content-Type": "text/event-stream" } });
+  const headers = { "Content-Type": "text/event-stream" };
+  const sse = (evento) => `event: ${evento.type}\ndata: ${JSON.stringify(evento)}\n\n`;
+  if (!pausa || !recibio) return new Response(eventos.map(sse).join(""), { headers });
+  const codificar = new TextEncoder();
+  return new Response(new ReadableStream({
+    async start(controller) {
+      const enviar = (evento) => controller.enqueue(codificar.encode(sse(evento)));
+      enviar(eventos[0]);
+      enviar({ type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", content: [] } });
+      enviar({ type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: item.id,
+        delta: parcial });
+      await esperar(pausa);
+      enviar(eventos[1]);
+      enviar(eventos[2]);
+      controller.close();
+    },
+  }), { headers });
 };

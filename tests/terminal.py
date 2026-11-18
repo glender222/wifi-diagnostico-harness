@@ -120,6 +120,20 @@ else process.exit(1);
                 esperar("Proyecto abierto")
                 escribir(b"/connect list\r")
                 esperar("credencial en Secret Service · modelo gpt-5-mini · seleccionado")
+                escribir(b"/connect\r")
+                self.assertNotIn(b"entrada oculta", esperar("Cambiar modelo"))
+                escribir(b"\r")
+                esperar("Modelos de tu proyecto OpenAI")
+                escribir(b"gpt-4")
+                esperar("Filtrar por ID")
+                escribir(b"\r")
+                esperar("Modelo OpenAI guardado: gpt-4.1-mini")
+                self.assertEqual(json.loads((proyecto / "harness.json").read_text())["llm"]["openaiModelId"], "gpt-4.1-mini")
+                escribir(b"/connect\r")
+                esperar("modelo gpt-4.1-mini")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                self.assertTrue(almacen.exists())
                 escribir(b"/agente Revisar el fixture autorizado\r")
                 esperar("Sesión iniciada")
                 [agente] = (proyecto / "agentes").iterdir()
@@ -136,11 +150,86 @@ else process.exit(1);
                 esperar("Credencial de OpenAI desvinculada")
                 self.assertFalse(almacen.exists())
                 escribir(b"/connect list\r")
-                esperar("OpenAI API · sin credencial · modelo gpt-5-mini · seleccionado")
+                esperar("OpenAI API · sin credencial · modelo gpt-4.1-mini · seleccionado")
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
             self.assertNotIn(secreto, log_terminal.read_bytes())
+
+    def test_streaming_y_modelo_fijado_durante_cambio(self):
+        preload = (Path(__file__).parent / "fixtures" / "connect-openai.mjs").resolve().as_uri()
+        env = self.entorno_demo()
+        env.update(OPENAI_API_KEY="sk-fixture-harwiff-terminal", NODE_OPTIONS=f"--import={preload}",
+                   HARWIFF_FIXTURE_STREAM_DELAY="1800")
+        with tempfile.TemporaryDirectory() as raiz:
+            proyecto = Path(raiz) / "prueba"
+            with terminal(raiz, env) as (proceso, esperar, escribir):
+                self.configurar_sesion_mock(esperar, escribir)
+                escribir(b"/config proveedor openai\r")
+                esperar("Proveedor de /agente: openai")
+                escribir(b"/config modelo gpt-4.1-mini\r")
+                esperar("Modelo OpenAI guardado: gpt-4.1-mini")
+                escribir(b"/agente Sesion original\r")
+                esperar("Sesión iniciada")
+                [original] = (proyecto / "agentes").iterdir()
+                escribir(b"\t")
+                esperar(f"[{original.name}")
+                escribir(b"\r")
+                datos = esperar("Texto parcial del proveedor")
+                self.assertNotIn(b"Cierre del proveedor", datos)
+                escribir(b"Conserva los datos observados\rDistingue evidencia e hipotesis\r")
+                esperar("Distingue evidencia e hipotesis")
+                self.assertEqual(json.loads((original / "sesion.json").read_text())["status"], "running")
+                escribir(b"/salir\r")
+                esperar("harwiff >")
+                self.assertIsNone(proceso.poll())
+                escribir(b"/connect\r")
+                esperar("Cambiar modelo")
+                escribir(b"\r")
+                esperar("Modelos de tu proyecto OpenAI")
+                escribir(b"gpt-5")
+                esperar("Filtrar por ID")
+                escribir(b"\r")
+                esperar("Modelo OpenAI guardado: gpt-5-mini")
+                escribir(b"/agente Sesion con otro modelo\r")
+                esperar("· OpenAI · gpt-5-mini")
+                [nueva] = [carpeta for carpeta in (proyecto / "agentes").iterdir() if carpeta != original]
+                self.assertEqual(json.loads((original / "sesion.json").read_text())["modelId"], "gpt-4.1-mini")
+                self.assertEqual(json.loads((nueva / "sesion.json").read_text())["modelId"], "gpt-5-mini")
+                limite = time.monotonic() + 8
+                while any(json.loads((item / "sesion.json").read_text())["status"] != "completed"
+                          for item in (original, nueva)):
+                    self.assertLess(time.monotonic(), limite)
+                    time.sleep(0.05)
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+            [primer] = (original / "turnos").iterdir()
+            eventos = json.loads((primer / "eventos.json").read_text())
+            incorporados = {evento["messageId"] for evento in eventos
+                            if evento["type"] == "user_state" and evento["status"] == "incorporated"}
+            self.assertEqual([evento["text"] for evento in eventos if evento["type"] == "user" and evento["messageId"] in incorporados],
+                             ["Sesion original", "Conserva los datos observados", "Distingue evidencia e hipotesis"])
+            with terminal(proyecto, env) as (proceso, esperar, escribir):
+                esperar("OpenAI / gpt-5-mini")
+                esperar(f"{original.name} · completed")
+                escribir(f"agent harwiff {original.name}\r".encode())
+                esperar(f"agente/{original.name} >")
+                escribir(b"/detalle\r")
+                esperar("Detalles de operaciones")
+                escribir(b"\r")
+                esperar("Parámetros · {}")
+                escribir(b"\x1b")
+                esperar(f"agente/{original.name} >")
+                escribir(b"Confirma lo que guardaste\r")
+                esperar("Texto parcial del seguimiento")
+                esperar("Cierre del seguimiento")
+                esperar("Sesión completada.")
+                escribir(b"/volver\r")
+                esperar("harwiff >")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+            self.assertEqual(len(list((original / "turnos").iterdir())), 2)
+            self.assertEqual(json.loads((original / "sesion.json").read_text())["modelId"], "gpt-4.1-mini")
 
     def test_connect_foundry_reutiliza_configuracion(self):
         env = self.entorno_demo()
@@ -206,6 +295,8 @@ else process.exit(1);
                 escribir(b"\r")
                 esperar("Sesión completada.")
                 escribir(b"/salir\r")
+                esperar("harwiff >")
+                escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
     def test_detener_sesion_mock_seleccionada(self):
@@ -222,6 +313,8 @@ else process.exit(1);
             esperar("Sesión cancelada.")
             datos = json.loads((sesion / "sesion.json").read_text())
             self.assertEqual(datos["status"], "cancelled")
+            escribir(b"/salir\r")
+            esperar("harwiff >")
             escribir(b"/salir\r")
             self.assertEqual(proceso.wait(timeout=5), 0)
 
@@ -296,6 +389,8 @@ else process.exit(1);
             escribir(b"\r")
             esperar("agente/harwiff >")
             escribir(b"/salir\r")
+            esperar("harwiff >")
+            escribir(b"/salir\r")
             self.assertEqual(proceso.wait(timeout=5), 0)
 
     def test_consulta_directa_desde_wifi(self):
@@ -306,6 +401,8 @@ else process.exit(1);
             escribir(b"Consulta directa\r")
             esperar("agente/harwiff >")
             esperar("Todavía no hay informes")
+            escribir(b"/salir\r")
+            esperar("harwiff >")
             escribir(b"/salir\r")
             self.assertEqual(proceso.wait(timeout=5), 0)
 

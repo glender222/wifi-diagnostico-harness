@@ -1,10 +1,16 @@
 import {
-  CombinedAutocompleteProvider, Container, decodeKittyPrintable, Editor, isKeyRelease, matchesKey, ProcessTerminal,
+  CombinedAutocompleteProvider, Container, decodeKittyPrintable, Editor, isKeyRelease, matchesKey, Markdown, ProcessTerminal,
   ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
 
 const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
 const simple = (texto) => texto;
+const fuerte = (texto) => `\x1b[1m${texto}\x1b[22m`;
+const temaMarkdown = {
+  heading: fuerte, link: acento, linkUrl: simple, code: acento, codeBlock: simple, codeBlockBorder: simple,
+  quote: simple, quoteBorder: acento, hr: simple, listBullet: acento, bold: fuerte,
+  italic: (texto) => `\x1b[3m${texto}\x1b[23m`, strikethrough: simple, underline: simple,
+};
 const tema = {
   selectedPrefix: acento, selectedText: acento, description: simple, scrollInfo: simple, noMatch: simple,
 };
@@ -80,18 +86,22 @@ export function pantalla(comandos, acciones) {
     encabezado, { component: controlWifi, visible: () => Boolean(estado && !estado.agente) },
     { component: viewport, grow: 1, basis: 0 },
     { component: etiqueta, visible: () => Boolean(estado?.agente && !pregunta) },
-    { component: editor, visible: () => !selector && !secreto },
+    { component: editor, visible: () => !selector && !secreto && !detalle },
     { component: campoSecreto, visible: () => Boolean(secreto) },
-    { component: panel, visible: () => Boolean(selector) },
-    { component: fila, visible: () => Boolean(!selector && estado?.agentes.length) },
+    { component: panel, visible: () => Boolean(selector || detalle) },
+    { component: fila, visible: () => Boolean(!selector && !detalle && estado?.agentes.length) },
   ]));
   let selector;
+  let detalle;
+  let filtroSelector;
+  const filtroVisible = new Text("", 1);
   let esperando;
   let cerrado = false;
   let enFila = false;
   let indice = 0;
   let estado;
-  let mensajesVisibles;
+  let bloquesVisibles = new Map();
+  let vistaHistorial;
   let pregunta;
   let secreto;
   let alcance;
@@ -102,17 +112,25 @@ export function pantalla(comandos, acciones) {
     pregunta = undefined;
     secreto = undefined;
     selector = undefined;
+    detalle = undefined;
+    filtroSelector = undefined;
     panel.clear();
     resolver?.(texto);
     render(estado);
   }
   editor.onSubmit = (texto) => {
-    if (texto.trim() === "/salir") {
+    if (pregunta && !estado?.agente && texto.trim() === "/salir") {
       acciones.salir();
       return;
     }
-    if ((!texto && !pregunta) || !esperando) return;
+    if (!texto && !pregunta) return;
     const visible = acciones.ocultar(texto);
+    if (!pregunta && estado?.autonoma && visible.trim() && !visible.trimStart().startsWith("/")) {
+      editor.addToHistory(visible);
+      acciones.enviar(estado.agente, visible.trim());
+      return;
+    }
+    if (!esperando) return;
     if (!pregunta && visible) editor.addToHistory(visible);
     resolverEntrada(visible);
   };
@@ -144,7 +162,27 @@ export function pantalla(comandos, acciones) {
       capturarSecreto(dato);
       return { consume: true };
     }
-    if (selector) return undefined;
+    if (detalle) {
+      if (!isKeyRelease(dato) && (matchesKey(dato, "escape") || matchesKey(dato, "enter"))) {
+        resolverEntrada(undefined);
+        return { consume: true };
+      }
+      return undefined;
+    }
+    if (selector) {
+      if (filtroSelector !== undefined && !isKeyRelease(dato)) {
+        const caracter = decodeKittyPrintable(dato) ?? dato;
+        if (matchesKey(dato, "backspace")) filtroSelector = filtroSelector.slice(0, -1);
+        else if (matchesKey(dato, "ctrl+u")) filtroSelector = "";
+        else if (/^[\w./:-]$/.test(caracter)) filtroSelector += caracter;
+        else return undefined;
+        selector.setFilter(filtroSelector);
+        filtroVisible.setText(`Filtrar por ID · ${filtroSelector}`);
+        ui.requestRender();
+        return { consume: true };
+      }
+      return undefined;
+    }
     if (pregunta && matchesKey(dato, "escape")) {
       editor.setText("");
       resolverEntrada(undefined);
@@ -188,10 +226,11 @@ export function pantalla(comandos, acciones) {
     estado = nuevo;
     if (!nuevo.agentes.length) enFila = false;
     const contexto = nuevo.proyecto ? `${nuevo.proyecto}  ·  ${nuevo.cliente}` : "Sin proyecto";
-    encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}`);
+    const llm = !nuevo.agente && nuevo.proveedor ? `  ·  ${nuevo.proveedor}${nuevo.modelo ? ` / ${nuevo.modelo}` : ""}` : "";
+    encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}${llm}`);
     controlWifi.setText(resumenControlWifi(nuevo.controlWifi));
     editor.prefijo = pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno);
-    etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}` : "");
+    etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}${nuevo.soloConsulta ? "  ·  Solo consulta" : ""}` : "");
     if (secreto) campoSecreto.setText(`${secreto.titulo} ${"•".repeat(Math.min(32, secreto.valor.length))}`);
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
     const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
@@ -200,13 +239,31 @@ export function pantalla(comandos, acciones) {
       return enFila && n === indice ? acento(`[${texto}]`) : texto;
     });
     fila.setText(`Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : "   ·   Tab"}`);
-    if (mensajesVisibles !== nuevo.mensajes) {
+    const vista = JSON.stringify([nuevo.rutaProyecto, nuevo.agente, Boolean(detalle)]);
+    if (vistaHistorial !== vista) {
       historial.clear();
-      for (const mensaje of nuevo.mensajes) historial.addChild(new Text(mensaje, 1));
-      viewport.scrollToEnd();
-      mensajesVisibles = nuevo.mensajes;
+      bloquesVisibles.clear();
+      if (detalle) viewport.scrollToStart();
+      else viewport.scrollToEnd();
+      vistaHistorial = vista;
     }
-    ui.setFocus(selector ?? (enFila || secreto ? null : editor));
+    const proximos = new Map();
+    const bloques = detalle ? [{ id: "detalle", text: detalle }] :
+      [...(nuevo.transcript ?? []), ...nuevo.mensajes.map((text, indice) => ({ id: `aviso/${indice}`, text }))];
+    for (const bloque of bloques) {
+      const anterior = bloquesVisibles.get(bloque.id);
+      const componente = anterior?.componente ??
+        (bloque.markdown ? new Markdown(bloque.text, 1, 0, temaMarkdown) : new Text(bloque.text, 1));
+      if (anterior && anterior.text !== bloque.text) componente.setText(bloque.text);
+      proximos.set(bloque.id, { componente, text: bloque.text });
+    }
+    const componentes = [...proximos.values()].map(({ componente }) => componente);
+    if (historial.children.length !== componentes.length || componentes.some((item, i) => historial.children[i] !== item)) {
+      historial.clear();
+      for (const componente of componentes) historial.addChild(componente);
+    }
+    bloquesVisibles = proximos;
+    ui.setFocus(selector ?? (enFila || secreto || detalle ? null : editor));
     ui.requestRender();
   }
 
@@ -231,7 +288,7 @@ export function pantalla(comandos, acciones) {
         render(estado);
       });
     },
-    elegir(titulo, opciones, activa) {
+    elegir(titulo, opciones, activa, { filtrar = false } = {}) {
       if (cerrado) return Promise.resolve(undefined);
       return new Promise((resuelve) => {
         esperando = resuelve;
@@ -242,7 +299,21 @@ export function pantalla(comandos, acciones) {
         selector.onSelect = ({ value }) => resolverEntrada(value);
         selector.onCancel = () => resolverEntrada(undefined);
         panel.addChild(new Text(titulo, 1));
+        if (filtrar) {
+          filtroSelector = "";
+          filtroVisible.setText("Filtrar por ID");
+          panel.addChild(filtroVisible);
+        }
         panel.addChild(selector);
+        render(estado);
+      });
+    },
+    mostrarDetalle(texto) {
+      if (cerrado) return Promise.resolve();
+      return new Promise((resuelve) => {
+        esperando = resuelve;
+        detalle = texto;
+        panel.addChild(new Text("Detalles de operación · Esc vuelve a la sesión", 1));
         render(estado);
       });
     },

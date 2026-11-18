@@ -71,4 +71,7 @@ await assert.rejects(comprobarHerramientasOpenAI(modelId, opciones(() => Respons
 await assert.rejects(comprobarHerramientasOpenAI(modelId, opciones(() =>
   Response.json({ error: { code: "insufficient_quota", message: clave } }, { status: 429 }))),
   (error) => error.code === "openai_quota" && !error.message.includes(clave));
+await assert.rejects(comprobarHerramientasOpenAI(modelId, opciones(() =>
+  Response.json({ error: { code: "unsupported_parameter", param: "tools" } }, { status: 400 }))),
+  { code: "openai_tools_unsupported" });
 console.log("Connect simulado · almacén, memoria, desvinculación y prueba de function calling verificados.");

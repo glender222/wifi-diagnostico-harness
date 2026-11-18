@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, validarModeloOpenAI } from "../proveedor-openai.mjs";
 import { guardarAlcance, leerAuditoria, usarAdaptador } from "../proyecto.mjs";
-import { iniciarSesionAgente, proveedorAgente } from "../sesion-agente.mjs";
+import { cargarSesionAutonoma, enviarMensajeAgente, iniciarSesionAgente, proveedorAgente } from "../sesion-agente.mjs";
 
 const raiz = await mkdtemp(join(tmpdir(), "harwiff-openai-"));
 const modelId = "gpt-4.1-mini";
@@ -158,6 +158,63 @@ try {
   assert.equal(hallazgo.autorizacion.decision, "ALLOWED");
   assert.doesNotMatch(JSON.stringify([primera, hallazgo, await leer(join(raiz, hallazgo.evidencia.referencia))]), new RegExp(clave));
 
+  const razonador = "o4-mini";
+  const proyectoRazonador = { ...proyecto, config: { ...config, llm: { proveedor: "openai", openaiModelId: razonador } } };
+  const catalogo = () => Response.json({ data: [{ id: razonador }] });
+  const razonamiento = { type: "reasoning", id: "rs_fixture", encrypted_content: "cifrado-fixture",
+    summary: [{ type: "summary_text", text: "Resumen oficial del proveedor." }] };
+  const privada = "Pensamiento privado de prueba";
+  const parcial = { ...razonamiento, summary: [] };
+  const llamada = herramienta(30, "observar_entorno");
+  const inicial = { id: "resp_razonador", status: "in_progress", model: razonador };
+  const finConHerramienta = { ...inicial, status: "completed", output: [razonamiento, llamada],
+    usage: { input_tokens: 9, output_tokens: 5, total_tokens: 14 } };
+  const conRazonamiento = await iniciar(api({ id: razonador, catalogo, pasos: [
+    (payload) => {
+      assert.equal(payload.reasoning.summary, "auto");
+      assert.ok(payload.include.includes("reasoning.encrypted_content"));
+      return sse({ type: "response.created", response: inicial },
+        { type: "response.output_item.added", output_index: 0, item: parcial },
+        { type: "response.reasoning_text.delta", output_index: 0, delta: privada },
+        { type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0,
+          delta: "Resumen oficial" },
+        { type: "response.output_item.done", output_index: 0,
+          item: { ...razonamiento, content: [{ type: "reasoning_text", text: privada }] } },
+        { type: "response.output_item.done", output_index: 1, item: llamada },
+        { type: "response.completed", response: finConHerramienta });
+    },
+    (payload) => {
+      const historial = payload.input.filter(({ type }) => ["reasoning", "function_call", "function_call_output"].includes(type));
+      assert.deepEqual(historial.map(({ type }) => type), ["reasoning", "function_call", "function_call_output"]);
+      assert.equal(historial[0].encrypted_content, razonamiento.encrypted_content);
+      assert.equal(historial[1].call_id, historial[2].call_id);
+      return respuesta(31, mensaje(31, "Contexto visible conservado."));
+    },
+  ] }), { proyecto: proyectoRazonador });
+  const turnoCifrado = await finalizar(conRazonamiento);
+  assert.equal(turnoCifrado.estado.reason, "completed");
+  assert.equal(turnoCifrado.eventos.find(({ type }) => type === "summary").text, "Resumen oficial del proveedor.");
+  assert.doesNotMatch(JSON.stringify([turnoCifrado, conRazonamiento.transcript]), /Pensamiento privado|cifrado-fixture/);
+  const reabierta = await cargarSesionAutonoma(conRazonamiento.dir, turnoCifrado.estado);
+  await enviarMensajeAgente({ proyecto, item: reabierta, texto: "Contrasta lo observado con la postura del escenario",
+    entornoLlm: entorno, fetchOpenAI: api({ id: razonador, catalogo, pasos: [
+      (payload) => {
+        assert.match(JSON.stringify(payload.input), /Contexto visible conservado/);
+        assert.match(JSON.stringify(payload.input), /Datos históricos de Harwiff/);
+        assert.ok(!payload.input.some(({ type }) => ["reasoning", "function_call", "function_call_output"].includes(type)));
+        return respuesta(32, herramienta(32, "inspeccionar_postura", { bssid }));
+      },
+      (payload) => {
+        assert.equal(payload.input.findLast(({ type }) => type === "function_call_output").call_id, "call_32");
+        return respuesta(33, mensaje(33, "Segunda respuesta con herramientas."));
+      },
+    ] }),
+  });
+  const reanudada = await finalizar(reabierta);
+  assert.equal(reanudada.estado.modelId, razonador);
+  assert.equal(reanudada.estado.reason, "completed");
+  assert.equal(reanudada.herramientas[0].tool, "inspeccionar_postura");
+
   const alternativa = await finalizar(await iniciar(api({ pasos: [
     () => respuesta(1, herramienta(1, "inspeccionar_postura", { bssid })),
     () => respuesta(2, herramienta(2, "observar_entorno")),
@@ -252,7 +309,7 @@ try {
     input: comandos, encoding: "utf8", env: { ...process.env, ...entorno, WIFI_PYTHON: python },
   });
   assert.equal(cliResult.status, 0, cliResult.stderr);
-  assert.match(cliResult.stdout, /Modelos disponibles en tu proyecto OpenAI: gpt-4\.1-mini, whisper-1/);
+  assert.match(cliResult.stdout, /Modelos disponibles en tu proyecto OpenAI: gpt-4\.1-mini \(listado · pendiente de verificar\), whisper-1/);
   assert.match(cliResult.stdout, /Modelo OpenAI guardado: gpt-4\.1-mini/);
   assert.match(cliResult.stdout, /Alcance guardado/);
   assert.doesNotMatch(cliResult.stdout + cliResult.stderr, new RegExp(clave));

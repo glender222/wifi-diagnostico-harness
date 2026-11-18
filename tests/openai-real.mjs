@@ -5,7 +5,7 @@ import { crearCredencialesOpenAI } from "../credenciales-openai.mjs";
 import { cargarObjetivosMock } from "../policy.mjs";
 import { guardarAlcance, idsAuditoria, leerAuditoria, leerJson, usarAdaptador } from "../proyecto.mjs";
 import { comprobarHerramientasOpenAI, ocultarClaveOpenAI } from "../proveedor-openai.mjs";
-import { iniciarSesionAgente } from "../sesion-agente.mjs";
+import { cargarSesionAutonoma, enviarMensajeAgente, iniciarSesionAgente } from "../sesion-agente.mjs";
 
 const credenciales = await crearCredencialesOpenAI().resolver();
 if (!credenciales.fuente) {
@@ -74,6 +74,27 @@ async function probar(openaiModelId, entorno) {
     if (estado.provider !== "openai" || estado.status !== "completed" || estado.reason !== "completed"
         || !iteroConEvidencia || !evidenciaEnAlcance || !limitesRespetados
         || !explicaciones.length || !estado.consumo?.tokens) process.exitCode = 1;
+    if (process.exitCode) return;
+    const reabierta = await cargarSesionAutonoma(item.dir, estado);
+    await enviarMensajeAgente({ proyecto, item: reabierta, entornoLlm: entorno,
+      texto: "Continúa con el alcance original. Usa una herramienta para verificar una observación del turno anterior " +
+        "sobre LAB_TEST_AP. Explica si coincide con la evidencia histórica y cita sus referencias." });
+    await reabierta.trabajo;
+    const segundo = await leerJson(join(item.dir, "sesion.json"));
+    const eventosSegundo = await leerJson(join(item.dir, "turnos", segundo.turnId, "eventos.json"));
+    const operacionesSegundo = await Promise.all(eventosSegundo.filter(({ type }) => type === "tool_result")
+      .map(({ auditId }) => leerAuditoria(raiz, auditId)));
+    const evidenciaSegunda = operacionesSegundo.some((registro) =>
+      registro.padre === segundo.turnId && registro.sesion === estado.id && registro.scopeId === estado.scopeId &&
+      registro.autorizacion?.decision === "ALLOWED" && registro.estado === "completo" &&
+      registro.referenciasEvidencia?.length > 0);
+    const limitesSegundo = [segundo.iteration, segundo.toolAttempts].every((cantidad) =>
+      Number.isSafeInteger(cantidad) && cantidad >= 0 && cantidad <= limite);
+    console.log(JSON.stringify({ seguimiento: { modeloSolicitado: segundo.modelId, estado: segundo.status,
+      motivo: segundo.reason, nuevaAuditoria: segundo.turnId, iteraciones: segundo.iteration,
+      evidenciaAutorizada: evidenciaSegunda, limitesRespetados: limitesSegundo, consumo: segundo.consumo } }, null, 2));
+    if (segundo.turnId === estado.turnId || segundo.modelId !== estado.modelId || segundo.reason !== "completed" ||
+        !evidenciaSegunda || !limitesSegundo || !segundo.consumo?.tokens) process.exitCode = 1;
   } catch (error) {
     console.error(ocultarClaveOpenAI(error.message, entorno));
     process.exitCode = 1;

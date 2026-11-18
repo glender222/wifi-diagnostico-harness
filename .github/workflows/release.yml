@@ -20,6 +20,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node tests/runtime.mjs
       - run: node tests/agente.mjs
+      - run: node tests/interactivo.mjs
       - run: node tests/openai.mjs
       - run: node tests/connect.mjs
       - run: node tests/proyectos.mjs
