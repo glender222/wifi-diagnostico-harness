@@ -117,10 +117,10 @@ function snapshotWifi(projectId, adapter, scope) {
   });
 }
 
-async function validarControlWifi(estado) {
+async function validarControlWifi(estado, observed) {
   const { adapter, scope } = estado;
   if (!adapter) return { estado: { ...estado, preflight: null, snapshot: null }, lockedBySession: null };
-  const resultado = await entorno("preflight", { id: adapter.id, name: adapter.name, scope }).catch((error) => ({
+  const resultado = await entorno("preflight", { id: adapter.id, name: adapter.name, scope, observed }).catch((error) => ({
     preflight: { ok: false, errors: [error.message], capabilities: [] },
   }));
   const actual = resultado.adapter;
@@ -134,12 +134,13 @@ async function validarControlWifi(estado) {
       preflight: resultado.preflight,
       snapshot: resultado.preflight.ok ? snapshotWifi(estado.projectId, seleccion, alcance) : null,
     },
+    code: resultado.code ?? null,
     lockedBySession: actual?.lockedBySession ?? null,
   };
 }
 
-function errorPreflight(preflight) {
-  return Object.assign(new Error(preflight.errors.join(" ")), { preflight });
+function errorPreflight(preflight, code) {
+  return Object.assign(new Error(preflight.errors.join(" ")), { preflight, code });
 }
 
 export async function validarScopeSnapshot(project) {
@@ -167,12 +168,12 @@ export async function guardarAlcance(proyecto, datos) {
   });
 }
 
-export async function usarAdaptador(proyecto, name, id) {
+export async function usarAdaptador(proyecto, name, id, observed) {
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
-    const resultado = await validarControlWifi({ ...anterior, adapter: { id, name } });
+    const resultado = await validarControlWifi({ ...anterior, adapter: { id, name } }, observed);
     const estado = revisarAlcance(anterior, resultado.estado);
-    if (!estado.snapshot) throw errorPreflight(estado.preflight);
+    if (!estado.snapshot) throw errorPreflight(estado.preflight, resultado.code);
     const cambio = estado.adapter.id !== anterior.adapter?.id || estado.adapter.mode !== anterior.adapter?.mode;
     await guardarCambioConfiguracion(proyecto.raiz, cambio ? ["adaptador"] : [], () => guardarControlWifi(proyecto, estado));
     return estado;

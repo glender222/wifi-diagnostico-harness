@@ -36,6 +36,12 @@ class DiagnosticoBloqueado(RuntimeError):
     pass
 
 
+class PreflightError(RuntimeError):
+    def __init__(self, codigo, mensaje):
+        super().__init__(mensaje)
+        self.codigo = codigo
+
+
 def adaptadores(sysfs=Path("/sys/class/net")):
     estados = {}
     for linea in nmcli("DEVICE,TYPE,STATE", "device", "status").splitlines():
@@ -151,26 +157,28 @@ def buscar_adaptador(nombre, identificador):
     detectados = fisicos()
     candidatos = [item for item in detectados
                   if (item["id"] == identificador if identificador is not None else item["name"] == nombre)]
+    if not candidatos:
+        raise PreflightError("adapter_disconnected", "El adaptador elegido no está disponible. Usa /adaptador listar.")
     if len(candidatos) != 1 or sum(item["id"] == candidatos[0]["id"] for item in detectados) != 1:
-        raise RuntimeError("El adaptador elegido no está disponible o es ambiguo. Usa /adaptador listar.")
+        raise PreflightError("ambiguous_interface", "La selección del adaptador es ambigua. Usa /adaptador listar.")
     return candidatos[0]
 
 
 def relacion_phy(adaptador, rutas):
     nombre = adaptador["name"]
     if nombre in rutas:
-        raise RuntimeError("El adaptador forma parte de una ruta por defecto del host.")
+        raise PreflightError("critical_connectivity", "El adaptador forma parte de una ruta por defecto del host.")
     avisos = []
     dispositivos = core.topologia(core.SYS, avisos)
     candidatos = [(phy, interfaz) for d in dispositivos for phy in d["phys"] for interfaz in phy["interfaces"]
                   if interfaz["ifname"] == nombre and interfaz["legacyAdapterId"] == adaptador["id"]]
     if len(candidatos) != 1 or avisos:
-        raise RuntimeError("No se pudo verificar el PHY del adaptador y su conectividad.")
+        raise PreflightError("critical_connectivity", "No se pudo verificar el PHY del adaptador y su conectividad.")
     phy, interfaz = candidatos[0]
     hermanos = {x["ifname"] for x in phy["interfaces"]}
     estado = core.conectividad(core.SYS, hermanos, rutas)
     if estado["criticality"] != "noncritical":
-        raise RuntimeError("El radio comparte una ruta por defecto del host o su dependencia es indeterminada.")
+        raise PreflightError("critical_connectivity", "El radio comparte una ruta por defecto del host o su dependencia es indeterminada.")
     return phy, interfaz
 
 
@@ -198,46 +206,57 @@ def informe_demo():
     return informe
 
 
-def ocupar_fisico(recursos, adaptador, propietario=None):
+def ocupar_fisico(recursos, adaptador, propietario=None, esperado=None):
     ocupado = recursos.enter_context(reserva_adaptador(adaptador["id"], propietario))
     adaptador["lockedBySession"] = ocupado
     if ocupado:
-        raise RuntimeError("El adaptador está ocupado por otra operación de Harwiff.")
+        raise PreflightError("resource_busy", "El adaptador está ocupado por otra operación de Harwiff.")
     phy, interfaz = relacion_phy(adaptador, interfaces_salida())
+    if esperado is not None and esperado != {
+        "phyId": phy["phyId"], "interfaceId": interfaz["interfaceId"],
+        "ifindex": interfaz["ifindex"], "ifname": interfaz["ifname"],
+    }:
+        raise PreflightError("adapter_disconnected", "La interfaz cambió. Actualiza el inventario antes de seleccionarla.")
     clave = core.clave_phy(phy)
     if clave != adaptador["id"]:
         ocupado = recursos.enter_context(reserva_adaptador(clave, propietario))
         adaptador["lockedBySession"] = ocupado
         if ocupado:
-            raise RuntimeError("El radio está ocupado por otra operación de Harwiff.")
+            raise PreflightError("resource_busy", "El radio está ocupado por otra operación de Harwiff.")
     return phy["phyId"], interfaz["interfaceId"], interfaz["ifindex"]
 
 
 def revalidar_fisico(adaptador, observado):
     phy, interfaz = relacion_phy(adaptador, interfaces_salida())
     if observado != (phy["phyId"], interfaz["interfaceId"], interfaz["ifindex"]):
-        raise RuntimeError("El adaptador o su radio cambió durante la operación.")
+        raise PreflightError("adapter_disconnected", "El adaptador o su radio cambió durante la operación.")
 
 
-def preflight_detalle(adapter_name, scope, adapter_id=None):
+def preflight_detalle(adapter_name, scope, adapter_id=None, observado=None):
     capacidades = []
     adaptador = None
     normalizado = None
     errores = []
+    codigo = None
     try:
+        if isinstance(scope, dict) and scope.get("allowedBssids") == [] and scope.get("allowedSsids") == []:
+            raise PreflightError("scope_required", "Define al menos un BSSID o SSID con /alcance set.")
         normalizado = normalizar_alcance(scope)
         adaptador = {**buscar_adaptador(adapter_name, adapter_id), "lockedBySession": None}
+        if observado is not None and (adaptador["mode"] != "sandbox" or adaptador["name"] != adapter_name):
+            raise PreflightError("adapter_disconnected", "La interfaz cambió. Actualiza el inventario antes de seleccionarla.")
         if adaptador["mode"] == "mock":
             informe_demo()
             capacidades.append("informe-sintetico")
         else:
             with ExitStack() as recursos:
-                identidad = ocupar_fisico(recursos, adaptador)
+                identidad = ocupar_fisico(recursos, adaptador, esperado=observado)
                 comprobar_fisico(adaptador, capacidades)
                 revalidar_fisico(adaptador, identidad)
     except (RuntimeError, ValueError) as error:
         errores.append(str(error))
-    return {"preflight": {"ok": not errores, "errors": errores, "capabilities": capacidades},
+        codigo = getattr(error, "codigo", "preflight_failed")
+    return {"code": codigo, "preflight": {"ok": not errores, "errors": errores, "capabilities": capacidades},
             "adapter": adaptador, "scope": normalizado}
 
 
@@ -414,7 +433,8 @@ def main():
             elif not isinstance(entrada, dict):
                 raise ValueError("La operación requiere una solicitud JSON.")
             elif args.operacion == "preflight":
-                resultado = preflight_detalle(entrada.get("name"), entrada.get("scope"), entrada.get("id"))
+                resultado = preflight_detalle(entrada.get("name"), entrada.get("scope"), entrada.get("id"),
+                                             entrada.get("observed"))
             elif args.operacion == "broker-mock":
                 resultado = ejecutar_mock(entrada, normalizar_alcance)
             else:

@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
 import { crearCredencialesOpenAI } from "./credenciales-openai.mjs";
 import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
+import { detalleAdaptador, panelAdaptadores } from "./panel-adaptadores.mjs";
 import {
   ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarCambioConfiguracion, guardarInforme, idsAuditoria,
   informesAgente, inspeccionarControlWifi, leerActividadProyecto, leerAuditoria, leerControlWifi, leerJson, localizarProyecto,
@@ -27,7 +28,7 @@ const comandos = {
   "/init": "Inicializar Harwiff en la carpeta actual",
   "/proyecto": "Crear o abrir un proyecto",
   "/proyectos": "Listar y abrir proyectos de una ruta",
-  "/adaptador": "Listar adaptadores o usar uno por nombre",
+  "/adaptador": "Consultar inventario y elegir adaptador",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
   "/alcance": "Definir o ver el alcance autorizado",
   "/agente": "Iniciar una sesión sobre el escenario mock",
@@ -911,6 +912,21 @@ async function aplicar(destino) {
         break;
       }
       case "/adaptador": {
+        if (!args && interfaz) {
+          controlWifi = await leerControlWifi(proyectoWifi());
+          await panelAdaptadores(interfaz, seguro(controlWifi.adapter?.name ?? "ninguno"), async (name, id, observado) => {
+            controlWifi = await usarAdaptador(proyectoWifi(), name, id, observado);
+            mostrar("Adaptador seleccionado: " + controlWifi.adapter.name + " · Preflight: OK");
+          });
+          break;
+        }
+        const detalle = /^detalle\s+(\S+)$/.exec(args)?.[1];
+        if (detalle) {
+          const texto = seguro(await detalleAdaptador(detalle));
+          if (interfaz) await interfaz.mostrarDetalle(texto, "Harwiff / Adaptadores · Esc vuelve a harwiff >");
+          else mostrar(texto);
+          break;
+        }
         if (!args || args === "listar") {
           const { adaptadores, aviso } = await entorno("adaptadores");
           controlWifi = await leerControlWifi(proyectoWifi());
@@ -928,7 +944,7 @@ async function aplicar(destino) {
           name = elegido?.name;
           id = elegido?.id;
         }
-        if (!name) throw new Error("Usa /adaptador listar, /adaptador usar <nombre> o /adaptador <número>.");
+        if (!name) throw new Error("Usa /adaptador listar, /adaptador detalle <nombre>, /adaptador usar <nombre> o /adaptador <número>.");
         controlWifi = await usarAdaptador(proyectoWifi(), name, id);
         mostrar(`Adaptador seleccionado: ${controlWifi.adapter.name} · Preflight: OK`);
         break;

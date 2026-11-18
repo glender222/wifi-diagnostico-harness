@@ -82,6 +82,7 @@ export function pantalla(comandos, acciones) {
   ]));
   let selector;
   let detalle;
+  let consulta;
   let filtroSelector;
   const filtroVisible = new Text("", 1);
   let esperando;
@@ -149,6 +150,10 @@ export function pantalla(comandos, acciones) {
     }
     if (secreto) {
       capturarSecreto(dato);
+      return { consume: true };
+    }
+    if (consulta) {
+      if (matchesKey(dato, "escape")) consulta.abort();
       return { consume: true };
     }
     if (detalle) {
@@ -297,18 +302,36 @@ export function pantalla(comandos, acciones) {
         render(estado);
       });
     },
-    mostrarDetalle(texto) {
+    mostrarDetalle(texto, titulo = "Detalles de operación · Esc vuelve a la sesión") {
       if (cerrado) return Promise.resolve();
       return new Promise((resuelve) => {
         esperando = resuelve;
         detalle = texto;
-        panel.addChild(new Text("Detalles de operación · Esc vuelve a la sesión", 1));
+        panel.addChild(new Text(titulo, 1));
         render(estado);
       });
+    },
+    async consultar(texto, tarea) {
+      if (cerrado) return;
+      const controlador = new AbortController();
+      consulta = controlador;
+      detalle = texto;
+      panel.addChild(new Text("Esc cancela la consulta", 1));
+      render(estado);
+      try {
+        const resultado = await tarea(controlador.signal);
+        if (!controlador.signal.aborted) return resultado;
+      } catch (error) {
+        if (!controlador.signal.aborted) throw error;
+      } finally {
+        consulta = undefined;
+        resolverEntrada(undefined);
+      }
     },
     cerrar() {
       if (cerrado) return;
       cerrado = true;
+      consulta?.abort();
       secreto = undefined;
       esperando?.(undefined);
       ui.stop();

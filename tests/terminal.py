@@ -19,9 +19,9 @@ FUENTE = Path(__file__).resolve().parent.parent / "consola.mjs"
 
 
 @contextmanager
-def terminal(carpeta, env=None, destino=None):
+def terminal(carpeta, env=None, destino=None, filas=28, columnas=110):
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 110, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", filas, columnas, 0, 0))
     comando = ["node", str(FUENTE)]
     if destino is not None:
         comando.append(str(destino))
@@ -289,6 +289,126 @@ else process.exit(1);
     def entorno_demo():
         return {clave: valor for clave, valor in os.environ.items()
                 if clave not in {"FOUNDRY_HOST", "FOUNDRY_DEPLOYMENT", "FOUNDRY_API_KEY"}}
+
+    def test_panel_adaptadores_consulta_actualiza_y_selecciona_mock(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            python = base / "python-fixture"
+            cuenta = base / "consultas"
+            python.write_text("""#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+if sys.argv[-1] == "adaptadores-perfil":
+    with (Path.cwd() / "consultas").open("a") as archivo:
+        archivo.write("consulta\\n")
+    print('{"status":"partial","devices":[],"warnings":[]}')
+else:
+    os.execvp("python3", ["python3", *sys.argv[1:]])
+""")
+            python.chmod(0o700)
+            env = {**self.entorno_demo(), "WIFI_PYTHON": str(python)}
+            with terminal(base, env, filas=15, columnas=88) as (proceso, esperar, escribir):
+                self.descartar_inicio(esperar, escribir)
+                escribir(b"/proyecto prueba\r")
+                esperar("Proyecto creado")
+                datos = base / "prueba/.harwiff"
+                control = datos / "control-wifi.json"
+                estado_inicial = control.read_bytes() if control.exists() else None
+                escribir(b"/adaptador\r")
+                esperar("Actualizar inventario")
+                escribir(b"\x1b[B")
+                esperar("→ Actualizar inventario")
+                escribir(b"\r")
+                esperar("→ Mock · Simulado")
+                self.assertEqual(len(cuenta.read_text().splitlines()), 2)
+                escribir(b"\r")
+                esperar("Usar este adaptador")
+                escribir(b"\r")
+                esperar("Define al menos un BSSID o SSID")
+                self.assertEqual(control.read_bytes() if control.exists() else None, estado_inicial)
+                escribir(b"/adaptador\r")
+                esperar("Harwiff / Adaptadores")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                self.assertEqual(control.read_bytes() if control.exists() else None, estado_inicial)
+                escribir(b"/alcance set --ssid LAB_TEST_AP\r")
+                esperar("Alcance guardado")
+                escribir(b"/adaptador\r")
+                esperar("Harwiff / Adaptadores")
+                escribir(b"\r")
+                esperar("Usar este adaptador")
+                escribir(b"\r")
+                esperar("Adaptador seleccionado: mock")
+                self.assertEqual(json.loads(control.read_text())["adapter"]["id"], "mock")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_panel_fisico_conserva_seleccion_si_dispositivo_desaparece(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            perfil = {
+                "status": "partial", "warnings": [], "devices": [{
+                    "bus": "usb", "phys": [{
+                        "nameNow": "phy1", "phyId": "phy_fixture",
+                        "interfaces": [{"ifname": "wlanlab", "ifindex": 4, "interfaceId": "net_fixture",
+                                        "legacyAdapterId": "a" * 20}],
+                        "connectivity": {"criticality": "critical", "reasons": ["default_route_interface"]},
+                        "reservation": {"state": "free"}, "probe": {"warnings": []},
+                        "rfkill": {"softBlocked": None, "hardBlocked": None},
+                        "capabilities": {"monitor": {"declared": "unknown"}, "concurrency": {"declared": "unknown"}},
+                    }],
+                }],
+            }
+            (base / "wifi-fixture.json").write_text(json.dumps(perfil))
+            python = base / "python-fixture"
+            python.write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+if sys.argv[-1] == "adaptadores-perfil":
+    print(Path("wifi-fixture.json").read_text())
+elif sys.argv[-1] == "preflight":
+    entrada = json.load(sys.stdin)
+    if entrada["name"] == "wlanlab":
+        assert entrada["observed"]["ifindex"] == 4
+        print(json.dumps({
+            "code": "adapter_disconnected",
+            "preflight": {"ok": False, "errors": ["La interfaz cambió."], "capabilities": []}
+        }))
+    else:
+        lectura, escritura = os.pipe()
+        os.write(escritura, json.dumps(entrada).encode())
+        os.close(escritura)
+        os.dup2(lectura, 0)
+        os.close(lectura)
+        os.execvp("python3", ["python3", *sys.argv[1:]])
+else:
+    os.execvp("python3", ["python3", *sys.argv[1:]])
+""")
+            python.chmod(0o700)
+            env = {**self.entorno_demo(), "WIFI_PYTHON": str(python)}
+            with terminal(base, env, filas=18, columnas=105) as (proceso, esperar, escribir):
+                self.configurar_sesion_mock(esperar, escribir)
+                control = base / "prueba/.harwiff/control-wifi.json"
+                previo = control.read_bytes()
+                escribir(b"/adaptador\r")
+                esperar("Conexión principal")
+                escribir(b"\r")
+                esperar("Ver restricciones y motivos")
+                escribir(b"\x1b[B")
+                esperar("→ Ver capacidades completas")
+                escribir(b"\x1b[B")
+                esperar("→ Ver restricciones y motivos")
+                escribir(b"\r")
+                esperar("Una interfaz del radio sostiene una ruta")
+                escribir(b"\x1b")
+                esperar("Harwiff / Adaptadores")
+                escribir(b"\r")
+                esperar("Usar este adaptador")
+                escribir(b"\r")
+                esperar("La interfaz cambió.")
+                self.assertEqual(control.read_bytes(), previo)
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
 
     def test_sesion_mock_detach_continua_y_reabre(self):
         with tempfile.TemporaryDirectory() as raiz:

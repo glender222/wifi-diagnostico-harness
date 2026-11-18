@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from adaptador_core import FuenteError, consultar, identidad_heredada, inventario_perfil
+from adaptador_core import FuenteError, consultar, identidad_heredada, inventario_perfil, topologia
 from entorno import (DiagnosticoBloqueado, adaptadores, diagnostico_fisico, informe_demo,
                      inventario, preflight, preflight_detalle, reserva_adaptador)
 from wifi import asociacion_actual
@@ -249,6 +249,18 @@ class PreflightTest(unittest.TestCase):
             with self.assertRaisesRegex(DiagnosticoBloqueado, "ruta por defecto"):
                 diagnostico_fisico(self.fisico["id"], ALCANCE, EJECUCION, 0)
             sandbox.assert_not_called()
+
+    def test_revalida_perfil_ante_renombre_y_rechaza_legacy_ambiguo(self):
+        phy = topologia(self.sysfs, [])[0]["phys"][0]
+        interfaz = phy["interfaces"][0]
+        esperado = {"phyId": phy["phyId"], **{k: interfaz[k] for k in ("ifindex", "ifname", "interfaceId")}}
+        self.assertTrue(preflight_detalle("wlan1", ALCANCE, self.fisico["id"], esperado)["preflight"]["ok"])
+        os.rename(self.sysfs / "net/wlan1", self.sysfs / "net/wlan2")
+        self.detectados.return_value = [{**self.fisico, "interfaz": "wlan2"}]
+        resultado = preflight_detalle("wlan1", ALCANCE, self.fisico["id"], esperado)
+        self.assertEqual(resultado["code"], "adapter_disconnected")
+        self.detectados.return_value += [{**self.fisico, "interfaz": "wlanhermana"}]
+        self.assertEqual(preflight_detalle("wlan2", ALCANCE)["code"], "ambiguous_interface")
 
     def test_fisico_desconectado_desaparecido_o_sin_docker(self):
         self.assertTrue(preflight("wlan1", ALCANCE)["ok"])
