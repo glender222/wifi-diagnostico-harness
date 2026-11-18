@@ -21,6 +21,7 @@ jobs:
       - run: node tests/runtime.mjs
       - run: node tests/agente.mjs
       - run: node tests/openai.mjs
+      - run: node tests/connect.mjs
       - run: node tests/proyectos.mjs
       - run: python3 -B tests/adaptadores.py
       - run: python3 -B tests/terminal.py

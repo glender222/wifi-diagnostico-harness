@@ -1,8 +1,7 @@
 import {
-  CombinedAutocompleteProvider, Container, Editor, matchesKey, ProcessTerminal,
+  CombinedAutocompleteProvider, Container, decodeKittyPrintable, Editor, isKeyRelease, matchesKey, ProcessTerminal,
   ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
-import { ocultarClaveOpenAI } from "./proveedor-openai.mjs";
 
 const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
 const simple = (texto) => texto;
@@ -52,6 +51,7 @@ export function pantalla(comandos, acciones) {
   const fila = new Text("", 1);
   const etiqueta = new Text("", 1);
   const panel = new Container();
+  const campoSecreto = new Text("", 1);
   const editor = new EditorConsola(ui, { borderColor: acento, selectList: tema }, { paddingX: 1 });
   const completar = new CombinedAutocompleteProvider(
     Object.entries(comandos).map(([name, description]) => ({ name: name.slice(1), description })), process.cwd(),
@@ -80,7 +80,8 @@ export function pantalla(comandos, acciones) {
     encabezado, { component: controlWifi, visible: () => Boolean(estado && !estado.agente) },
     { component: viewport, grow: 1, basis: 0 },
     { component: etiqueta, visible: () => Boolean(estado?.agente && !pregunta) },
-    { component: editor, visible: () => !selector },
+    { component: editor, visible: () => !selector && !secreto },
+    { component: campoSecreto, visible: () => Boolean(secreto) },
     { component: panel, visible: () => Boolean(selector) },
     { component: fila, visible: () => Boolean(!selector && estado?.agentes.length) },
   ]));
@@ -92,12 +93,14 @@ export function pantalla(comandos, acciones) {
   let estado;
   let mensajesVisibles;
   let pregunta;
+  let secreto;
   let alcance;
   const borradores = new Map();
   function resolverEntrada(texto) {
     const resolver = esperando;
     esperando = undefined;
     pregunta = undefined;
+    secreto = undefined;
     selector = undefined;
     panel.clear();
     resolver?.(texto);
@@ -109,13 +112,36 @@ export function pantalla(comandos, acciones) {
       return;
     }
     if ((!texto && !pregunta) || !esperando) return;
-    const visible = ocultarClaveOpenAI(texto);
+    const visible = acciones.ocultar(texto);
     if (!pregunta && visible) editor.addToHistory(visible);
     resolverEntrada(visible);
   };
+  function capturarSecreto(dato) {
+    if (isKeyRelease(dato)) return;
+    if (matchesKey(dato, "escape")) {
+      resolverEntrada(undefined);
+      return;
+    }
+    if (matchesKey(dato, "enter")) {
+      resolverEntrada(secreto.valor);
+      return;
+    }
+    if (matchesKey(dato, "backspace")) secreto.valor = secreto.valor.slice(0, -1);
+    else if (matchesKey(dato, "ctrl+u")) secreto.valor = "";
+    else {
+      const entrada = dato.startsWith("\x1b[200~") && dato.endsWith("\x1b[201~")
+        ? dato.slice(6, -6).trim() : decodeKittyPrintable(dato) ?? dato;
+      if (/^[a-zA-Z0-9_-]+$/.test(entrada) && secreto.valor.length + entrada.length <= 512) secreto.valor += entrada;
+    }
+    render(estado);
+  }
   ui.addInputListener((dato) => {
-    if (matchesKey(dato, "ctrl+c") || (matchesKey(dato, "ctrl+d") && !editor.getText())) {
+    if (matchesKey(dato, "ctrl+c") || (matchesKey(dato, "ctrl+d") && !secreto && !editor.getText())) {
       acciones.salir();
+      return { consume: true };
+    }
+    if (secreto) {
+      capturarSecreto(dato);
       return { consume: true };
     }
     if (selector) return undefined;
@@ -155,7 +181,7 @@ export function pantalla(comandos, acciones) {
     if (cerrado || !nuevo) return;
     const siguiente = pregunta ? "pregunta" : JSON.stringify([nuevo.rutaProyecto, nuevo.agente]);
     if (alcance !== siguiente) {
-      if (alcance && alcance !== "pregunta") borradores.set(alcance, ocultarClaveOpenAI(editor.getText()));
+      if (alcance && alcance !== "pregunta") borradores.set(alcance, acciones.ocultar(editor.getText()));
       editor.setText(borradores.get(siguiente) ?? "");
       alcance = siguiente;
     }
@@ -166,6 +192,7 @@ export function pantalla(comandos, acciones) {
     controlWifi.setText(resumenControlWifi(nuevo.controlWifi));
     editor.prefijo = pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno);
     etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}` : "");
+    if (secreto) campoSecreto.setText(`${secreto.titulo} ${"•".repeat(Math.min(32, secreto.valor.length))}`);
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
     const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
       const reciente = actividad ? ` · ${truncateToWidth(actividad, 28, "…")}` : "";
@@ -179,7 +206,7 @@ export function pantalla(comandos, acciones) {
       viewport.scrollToEnd();
       mensajesVisibles = nuevo.mensajes;
     }
-    ui.setFocus(selector ?? (enFila ? null : editor));
+    ui.setFocus(selector ?? (enFila || secreto ? null : editor));
     ui.requestRender();
   }
 
@@ -194,6 +221,15 @@ export function pantalla(comandos, acciones) {
       pregunta = texto;
       render(estado);
       return new Promise((resuelve) => { esperando = resuelve; });
+    },
+    preguntarSecreto(titulo) {
+      if (cerrado) return Promise.resolve(undefined);
+      return new Promise((resuelve) => {
+        esperando = resuelve;
+        enFila = false;
+        secreto = { titulo, valor: "" };
+        render(estado);
+      });
     },
     elegir(titulo, opciones, activa) {
       if (cerrado) return Promise.resolve(undefined);
@@ -213,6 +249,7 @@ export function pantalla(comandos, acciones) {
     cerrar() {
       if (cerrado) return;
       cerrado = true;
+      secreto = undefined;
       esperando?.(undefined);
       ui.stop();
     },

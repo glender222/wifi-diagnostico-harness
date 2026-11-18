@@ -60,6 +60,110 @@ def terminal(carpeta, env=None):
 
 
 class TerminalTest(unittest.TestCase):
+    def test_connect_openai_oculta_clave_recupera_y_desvincula(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            proyecto = base / "prueba"
+            almacen = base / "vault-fixture"
+            log_terminal = base / "terminal.log"
+            secreto = b"sk-fixture-harwiff-terminal"
+            herramienta = base / "secret-tool"
+            herramienta.write_text("""#!/usr/bin/env node
+const fs = require("node:fs");
+const archivo = process.env.HARWIFF_VAULT_FIXTURE;
+const clave = "sk-fixture-harwiff-terminal";
+const [operacion, ...argumentos] = process.argv.slice(2);
+if (process.env.OPENAI_API_KEY || argumentos.includes(clave)) process.exit(9);
+if (operacion === "lookup" && fs.existsSync(archivo)) console.log(clave);
+else if (operacion === "store" && fs.readFileSync(0, "utf8") === clave) fs.writeFileSync(archivo, "presente");
+else if (operacion === "clear" && fs.existsSync(archivo)) fs.unlinkSync(archivo);
+else process.exit(1);
+""")
+            herramienta.chmod(0o700)
+            preload = (Path(__file__).parent / "fixtures" / "connect-openai.mjs").resolve().as_uri()
+            env = self.entorno_demo()
+            env.pop("OPENAI_API_KEY", None)
+            env.update(PATH=f"{base}:{os.environ['PATH']}", NODE_OPTIONS=f"--import={preload}", PI_TUI_WRITE_LOG=str(log_terminal),
+                       DBUS_SESSION_BUS_ADDRESS="unix:path=/fixture", HARWIFF_VAULT_FIXTURE=str(almacen))
+            with terminal(base, env) as (proceso, esperar, escribir):
+                self.configurar_sesion_mock(esperar, escribir)
+                escribir(b"/connect\r")
+                esperar("Conectar proveedor LLM")
+                escribir(b"\r")
+                esperar("entrada oculta")
+                escribir(b"\x1b[200~" + secreto + b"\x1b[201~")
+                self.assertNotIn(secreto, esperar("•"))
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                self.assertFalse(almacen.exists())
+                escribir(b"/connect\r")
+                esperar("Conectar proveedor LLM")
+                escribir(b"\r")
+                esperar("entrada oculta")
+                escribir(b"\x1b[200~" + secreto + b"\x1b[201~")
+                self.assertNotIn(secreto, esperar("•"))
+                escribir(b"\r")
+                self.assertNotIn(secreto, esperar("Modelos compatibles de OpenAI"))
+                escribir(b"\x1b[B\r")
+                self.assertNotIn(secreto, esperar("OpenAI API conectado · Modelo: gpt-5-mini · Credencial: Secret Service"))
+                self.assertEqual(almacen.read_text(), "presente")
+                datos = (proyecto / "harness.json").read_bytes()
+                self.assertNotIn(secreto, datos)
+                self.assertEqual(json.loads(datos)["llm"], {"proveedor": "openai", "openaiModelId": "gpt-5-mini"})
+                escribir(b"/connect test\r")
+                esperar("OpenAI Responses y function calling verificados")
+                esperar("Tokens de conectividad · entrada 8, salida 2, total 10")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+            with terminal(proyecto, env) as (proceso, esperar, escribir):
+                esperar("Proyecto abierto")
+                escribir(b"/connect list\r")
+                esperar("credencial en Secret Service · modelo gpt-5-mini · seleccionado")
+                escribir(b"/agente Revisar el fixture autorizado\r")
+                esperar("Sesión iniciada")
+                [agente] = (proyecto / "agentes").iterdir()
+                escribir(b"\t")
+                esperar(f"[{agente.name}")
+                escribir(b"\r")
+                esperar("ALLOWED")
+                esperar("Iteración 2")
+                esperar("Tokens OpenAI · entrada 16, salida 4, total 20")
+                self.assertNotIn(secreto, esperar("Sesión completada."))
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                escribir(b"/disconnect openai\r")
+                esperar("Credencial de OpenAI desvinculada")
+                self.assertFalse(almacen.exists())
+                escribir(b"/connect list\r")
+                esperar("OpenAI API · sin credencial · modelo gpt-5-mini · seleccionado")
+                escribir(b"/salir\r")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+            self.assertNotIn(secreto, log_terminal.read_bytes())
+
+    def test_connect_foundry_reutiliza_configuracion(self):
+        env = self.entorno_demo()
+        env.update(FOUNDRY_HOST="fixture.openai.azure.com", FOUNDRY_DEPLOYMENT="modelo-fixture",
+                   FOUNDRY_API_KEY="clave-foundry-fixture")
+        with tempfile.TemporaryDirectory() as raiz, terminal(raiz, env) as (proceso, esperar, escribir):
+            esperar("harwiff >")
+            escribir(b"/proyecto prueba\r")
+            esperar("Proyecto creado")
+            escribir(b"/connect\r")
+            esperar("Azure AI Foundry")
+            escribir(b"\r")
+            esperar("Dominio Azure")
+            escribir(b"\r")
+            esperar("Deployment [modelo-fixture]")
+            escribir(b"\r")
+            esperar("Azure AI Foundry configurado")
+            datos = (Path(raiz) / "prueba" / "harness.json").read_text()
+            self.assertNotIn("clave-foundry-fixture", datos)
+            self.assertEqual(json.loads(datos)["llm"], {"proveedor": "azure-foundry"})
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
     def configurar_sesion_mock(self, esperar, escribir):
         esperar("harwiff >")
         escribir(b"/proyecto prueba\r")

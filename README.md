@@ -61,7 +61,13 @@ Cada sesión tiene ocho solicitudes al modelo y ocho intentos de herramienta. Lo
 
 ### Usar la API oficial de OpenAI
 
-Inicia Harwiff con `OPENAI_API_KEY` en el entorno. En Bash puedes leer la clave sin mostrarla ni incluirla en el historial de comandos.
+Con un proyecto abierto en `harwiff >`, escribe `/connect`, elige **OpenAI API**, introduce la clave en la entrada oculta y selecciona uno de los modelos disponibles. Harwiff guarda la clave en Secret Service si `secret-tool` y el almacén de la sesión están disponibles. Si el almacén falla, Harwiff conserva la clave en memoria hasta que cierres el proceso. El proyecto guarda únicamente el proveedor y el modelo.
+
+`/connect list` muestra la configuración y el origen local de la credencial. Harwiff usa primero una clave recién conectada en el proceso, después `OPENAI_API_KEY` si está definida y, por último, Secret Service. `/disconnect openai` desvincula la clave de Harwiff y del almacén de ese usuario. La variable externa sigue disponible. El selector también permite configurar Azure AI Foundry con el dominio, el deployment y `FOUNDRY_API_KEY`.
+
+`/connect test` comprueba autenticación, acceso al modelo y function calling en Responses. Hace una solicitud de generación facturable y muestra sus tokens por separado. El agente elige sus propias herramientas durante `/agente`. [Function calling de OpenAI](https://developers.openai.com/api/docs/guides/function-calling)
+
+Para servidores y automatización, inicia Harwiff con `OPENAI_API_KEY` en el entorno y usa `/config`. En Bash puedes leer la clave sin mostrarla ni incluirla en el historial de comandos.
 
 ```bash
 read -rsp 'Clave de OpenAI: ' OPENAI_API_KEY
@@ -70,7 +76,7 @@ printf '\n'
 npm start
 ```
 
-Con un proyecto abierto en `harwiff >`, elige un modelo que aparezca en la lista. Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso.
+Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso. Si ya lo seleccionaste mediante `/connect`, empieza por definir el alcance.
 
 ```text
 /config proveedor openai
@@ -85,7 +91,7 @@ Con un proyecto abierto en `harwiff >`, elige un modelo que aparezca en la lista
 
 El resultado y la vista de la sesión incluyen el ID solicitado, los IDs devueltos y los tokens informados por Responses. Una medición parcial indica que alguna solicitud carece de cifras. Desde el repositorio, `node tests/openai.mjs` ejecuta la simulación. El fixture de `gpt-4.1-mini` reporta 101 tokens de entrada, 22 de salida y 123 en total, todos simulados.
 
-La prueba real voluntaria usa `npm run test:openai -- gpt-4.1-mini` o el ID compatible elegido. Con una clave y acceso, hace solicitudes facturables, usa un proyecto temporal y muestra el modelo y el consumo informado. Sin clave, la prueba se omite. [Streaming de Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
+La prueba real voluntaria usa `npm run test:openai -- gpt-4.1-mini` o el ID compatible elegido. Con una clave en el entorno o en Secret Service, hace una comprobación facturable de conectividad y luego una sesión agéntica en un proyecto temporal. Reporta por separado ambos consumos, registra la secuencia y comprueba que el modelo recibió evidencia en una iteración posterior. Sin credencial, la prueba se omite. [Streaming de Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
 
 ### Chat e informes guardados
 

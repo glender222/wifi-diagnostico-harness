@@ -9,8 +9,8 @@ const CUOTA = new Set(["insufficient_quota", "billing_hard_limit_reached", "cred
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "organization_usage_limit_exceeded"]);
 
 export const MENSAJES_OPENAI = {
-  openai_key_missing: "OpenAI requiere OPENAI_API_KEY en el entorno de Harwiff.",
-  openai_key_invalid: "OpenAI rechazó la autenticación. Revisa OPENAI_API_KEY y los permisos de la clave.",
+  openai_key_missing: "Conecta OpenAI con /connect o define OPENAI_API_KEY en el entorno de Harwiff.",
+  openai_key_invalid: "OpenAI rechazó la autenticación. Revisa la clave y sus permisos.",
   openai_model_missing: "Selecciona un modelo con /config modelos y /config modelo <model-id>.",
   openai_model_incompatible: "El modelo no está en el catálogo compatible de Harwiff. Consulta /config modelos.",
   openai_model_access: "OpenAI no autoriza el acceso al modelo o a este recurso. Revisa el proyecto y /config modelos.",
@@ -19,6 +19,7 @@ export const MENSAJES_OPENAI = {
   openai_connection: "No se pudo completar la conexión con la API oficial de OpenAI.",
   openai_service: "El servicio de OpenAI interrumpió la operación. Intenta de nuevo más tarde.",
   openai_request: "OpenAI rechazó la solicitud. Revisa el modelo y su compatibilidad con Responses.",
+  openai_probe_tool: "OpenAI respondió, pero la llamada de comprobación de herramientas quedó incompleta.",
 };
 
 function errorOpenAI(code) {
@@ -64,15 +65,21 @@ async function codigoHttp(response) {
   return codigoOpenAI(response.status, cuerpo?.error);
 }
 
-export async function listarModelosOpenAI({ entorno = process.env, fetchFn = globalThis.fetch } = {}) {
+async function solicitarOpenAI(ruta, { entorno = process.env, fetchFn = globalThis.fetch } = {}, payload) {
   const clave = claveOpenAI(entorno);
   const headers = cabecerasProyecto(entorno);
   headers.set("Authorization", `Bearer ${clave}`);
-  const response = await fetchFn(`${BASE}/models`, {
-    headers, signal: AbortSignal.timeout(10_000), redirect: "error",
+  if (payload) headers.set("Content-Type", "application/json");
+  const response = await fetchFn(`${BASE}/${ruta}`, {
+    headers, signal: AbortSignal.timeout(payload ? 30_000 : 10_000), redirect: "error",
+    ...(payload ? { method: "POST", body: JSON.stringify(payload) } : {}),
   }).catch(() => { throw errorOpenAI("openai_connection"); });
   if (!response.ok) throw errorOpenAI(await codigoHttp(response));
-  const listado = await response.json().catch(() => null);
+  return response.json().catch(() => null);
+}
+
+export async function listarModelosOpenAI(opciones) {
+  const listado = await solicitarOpenAI("models", opciones);
   if (!Array.isArray(listado?.data)) throw errorOpenAI("openai_service");
   const disponibles = new Set(listado.data.map((modelo) => modelo?.id));
   return MODELOS_VERIFICADOS.filter((id) => modelosPi.has(id) && disponibles.has(id));
@@ -86,6 +93,37 @@ export async function validarModeloOpenAI(id, opciones) {
 }
 
 const esConteo = (valor) => Number.isSafeInteger(valor) && valor >= 0;
+const modeloValido = (modelo) => typeof modelo === "string" && /^gpt-[a-z0-9.-]{1,96}$/.test(modelo);
+
+function tokensReportados(uso) {
+  if (!uso || ![uso.input_tokens, uso.output_tokens, uso.total_tokens].every(esConteo)) return null;
+  return { entrada: uso.input_tokens, salida: uso.output_tokens, total: uso.total_tokens };
+}
+
+export async function comprobarHerramientasOpenAI(modelId, opciones) {
+  await validarModeloOpenAI(modelId, opciones);
+  const name = "observar_entorno";
+  const respuesta = await solicitarOpenAI("responses", opciones, {
+    model: modelId, input: "Devuelve la llamada sin argumentos de comprobación de conectividad.",
+    tools: [{ type: "function", name, strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } }],
+    tool_choice: { type: "function", name }, max_output_tokens: 512, store: false,
+  });
+  if (respuesta?.error) throw errorOpenAI(codigoOpenAI(undefined, respuesta.error));
+  const llamada = Array.isArray(respuesta?.output) && respuesta.output.find((item) =>
+    item?.type === "function_call" && item.name === name && typeof item.arguments === "string");
+  let argumentos;
+  try {
+    if (llamada) argumentos = JSON.parse(llamada.arguments);
+  } catch {
+    // La prueba verifica el protocolo de herramientas y no ejecuta la llamada.
+  }
+  if (respuesta?.status !== "completed" || !argumentos || Array.isArray(argumentos)
+      || typeof argumentos !== "object" || Object.keys(argumentos).length) {
+    throw errorOpenAI("openai_probe_tool");
+  }
+  return { modelId, modeloDevuelto: modeloValido(respuesta.model) ? respuesta.model : null, herramienta: name,
+    tokens: tokensReportados(respuesta.usage) };
+}
 
 export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) {
   const solicitudes = [];
@@ -135,7 +173,7 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) 
       },
       onProviderStreamEvent(evento) {
         const respuesta = evento.response;
-        if (typeof respuesta?.model === "string" && /^gpt-[a-z0-9.-]{1,96}$/.test(respuesta.model)) {
+        if (modeloValido(respuesta?.model)) {
           actual.modelo = respuesta.model;
         }
         if (evento.type === "error" || evento.type === "response.failed") {
@@ -143,10 +181,7 @@ export function seguirOpenAI(fetchFn = globalThis.fetch, entorno = process.env) 
         }
         if (["response.completed", "response.incomplete", "response.failed"].includes(evento.type)) {
           actual.terminal = true;
-          const uso = respuesta?.usage;
-          if (uso && [uso.input_tokens, uso.output_tokens, uso.total_tokens].every(esConteo)) {
-            actual.tokens ??= { entrada: uso.input_tokens, salida: uso.output_tokens, total: uso.total_tokens };
-          }
+          actual.tokens ??= tokensReportados(respuesta?.usage);
         }
       },
     },

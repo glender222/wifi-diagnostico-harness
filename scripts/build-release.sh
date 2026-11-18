@@ -28,6 +28,7 @@ uv pip install --no-deps --python "$stage/python/bin/python3" \
   --target "$stage/python/lib/python3.12/site-packages" -r "$raiz/requirements-runtime.txt"
 
 for archivo in consola.mjs pantalla.mjs proyecto.mjs bucle.mjs entorno.mjs sesion-agente.mjs policy.mjs proveedor-openai.mjs \
+  credenciales-openai.mjs \
   app.py entorno.py wifi.py diagnostico.py foundry.py broker_mock.py \
   AGENTS.proyecto.md package.json package-lock.json requirements-opensandbox.txt; do
   cp -- "$raiz/$archivo" "$stage/app/"

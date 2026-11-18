@@ -59,9 +59,11 @@ class FinSesion extends Error {
 function lineaEvento(evento) {
   switch (evento.type) {
     case "start": return `${etiquetaProveedor(evento.provider)}${evento.modelId ? ` · ${evento.modelId}` : ""} · ${evento.goal}`;
+    case "request": return `Iteración ${evento.iteration}`;
     case "tool_call": return `Herramienta · ${evento.tool}`;
     case "tool_result": return `${evento.tool} · ${evento.result.ok ? JSON.stringify(evento.result)
-      : evento.result.code}${evento.auditId ? ` · auditoría ${evento.auditId}` : ""}`;
+      : evento.result.code}${evento.autorizacion ? ` · ${evento.autorizacion.decision}` : ""}` +
+      `${evento.auditId ? ` · auditoría ${evento.auditId}` : ""}`;
     case "response": return `Harwiff  ${evento.text}`;
     case "usage": {
       const { tokens, estado, modelosDevueltos } = evento.consumo;
@@ -254,14 +256,14 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
         const autorizada = llamada.autorizada && !denegada;
         const motivo = estado === "cancelado" ? "cancelled"
           : denegada ? error.code : error ? "broker_error" : "authorized";
-        return {
-          ...(error ? { motivo: MOTIVOS[motivo] ?? motivo } : {}),
+        llamada.auditoria = {
           autorizacion: { decision: autorizada ? "ALLOWED" : "DENIED", motivo },
           referenciasEvidencia: [
             ...(autorizada && llamada.evidenciaEntrada ? [llamada.evidenciaEntrada.referencia] : []),
             ...(resultado?.evidencia ? [resultado.evidencia] : []),
           ],
         };
+        return { ...(error ? { motivo: MOTIVOS[motivo] ?? motivo } : {}), ...llamada.auditoria };
       });
     } catch (error) {
       if (signal.aborted) llamada.result = { ok: false, code: "cancelled" };
@@ -329,7 +331,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
 
   function anotarResultado(llamada) {
     return anotar({ type: "tool_result", tool: llamada.tool, llamadaId: llamada.id,
-      result: llamada.result, auditId: llamada.auditId });
+      result: llamada.result, auditId: llamada.auditId, ...llamada.auditoria });
   }
 
   async function emitir(evento) {
