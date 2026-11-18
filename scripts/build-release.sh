@@ -27,10 +27,12 @@ cp -a -- "$(dirname -- "$(dirname -- "$interprete")")" "$stage/python"
 uv pip install --no-deps --python "$stage/python/bin/python3" \
   --target "$stage/python/lib/python3.12/site-packages" -r "$raiz/requirements-runtime.txt"
 
-for archivo in consola.mjs pantalla.mjs proyecto.mjs bucle.mjs app.py entorno.py wifi.py diagnostico.py foundry.py \
+for archivo in consola.mjs pantalla.mjs proyecto.mjs bucle.mjs entorno.mjs app.py entorno.py wifi.py diagnostico.py foundry.py \
   AGENTS.proyecto.md package.json package-lock.json requirements-opensandbox.txt; do
   cp -- "$raiz/$archivo" "$stage/app/"
 done
+mkdir -- "$stage/app/ejemplos"
+cp -- "$raiz/ejemplos/informe-demo.json" "$stage/app/ejemplos/"
 cp -a -- "$raiz/vendor" "$stage/app/"
 (cd "$stage/app" && npm ci --omit=dev --ignore-scripts)
 cp -- "$raiz/scripts/harwiff" "$stage/harwiff"

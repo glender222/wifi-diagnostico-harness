@@ -59,6 +59,18 @@ def terminal(carpeta):
 
 
 class TerminalTest(unittest.TestCase):
+    def test_cabecera_del_plano_de_control(self):
+        with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
+            esperar("Adaptador: ninguno | Alcance: pendiente | Preflight: Pendiente")
+            escribir(b"/proyecto prueba\r")
+            esperar("Proyecto creado")
+            escribir(b'/alcance set --ssid "Red de laboratorio"\r')
+            esperar("Alcance guardado")
+            escribir(b"/adaptador usar mock\r")
+            esperar("Adaptador: mock | Alcance: 1 SSID | Preflight: OK")
+            escribir(b"/salir\r")
+            self.assertEqual(proceso.wait(timeout=5), 0)
+
     def test_inicio_proyecto_guiado_y_salida(self):
         with tempfile.TemporaryDirectory() as raiz:
             proyecto = Path(raiz) / "prueba con espacios"

@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { guardarJson } from "./bucle.mjs";
+import { conBloqueoProyecto, entorno } from "./entorno.mjs";
 
 export const CLIENTES = ["demo", "azure-foundry", "chatgpt", "opencode"];
 export const ID_SESION = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -40,6 +41,119 @@ export async function localizarProyecto(carpeta) {
     if (raiz === interno) throw new Error(`El manifiesto de Harwiff en ${archivo} tiene un formato desconocido.`);
   }
   return undefined;
+}
+
+export async function leerControlWifi(proyecto) {
+  const ruta = join(proyecto.raiz, "control-wifi.json");
+  const info = await infoRuta(ruta);
+  if (!info) {
+    const id = proyecto.config?.adaptador;
+    return {
+      projectId: null,
+      adapter: typeof id === "string" ? { id, name: null, mode: "sandbox" } : null,
+      scope: { allowedBssids: [], allowedSsids: [], allowedChannels: [], maxIterations: 8 },
+      preflight: null,
+      snapshot: null,
+    };
+  }
+  try {
+    if (!info.isFile()) throw new TypeError();
+    const estado = await leerJson(ruta);
+    if (estado?.esquema !== "harwiff-control-wifi/v1" || typeof estado.projectId !== "string"
+        || !["allowedBssids", "allowedSsids", "allowedChannels"].every((campo) => Array.isArray(estado.scope?.[campo]))
+        || (estado.adapter !== null && typeof estado.adapter?.id !== "string")) {
+      throw new TypeError();
+    }
+    return estado;
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof TypeError) {
+      throw new Error("Revisa control-wifi.json. El estado Wi-Fi del proyecto tiene un formato inválido.");
+    }
+    throw error;
+  }
+}
+
+async function guardarControlWifi(proyecto, estado) {
+  await guardarJson(join(proyecto.raiz, "control-wifi.json"), { ...estado, esquema: "harwiff-control-wifi/v1" });
+}
+
+function snapshotWifi(projectId, adapter, scope) {
+  return Object.freeze({
+    projectId,
+    adapter: Object.freeze({ name: adapter.name, mode: adapter.mode, lockedBySession: null }),
+    scope: Object.freeze({
+      allowedBssids: Object.freeze([...scope.allowedBssids]),
+      allowedSsids: Object.freeze([...scope.allowedSsids]),
+      allowedChannels: Object.freeze([...scope.allowedChannels]),
+      maxIterations: scope.maxIterations,
+    }),
+    preflightPassed: true,
+  });
+}
+
+async function validarControlWifi(estado) {
+  const { adapter, scope } = estado;
+  if (!adapter) return { estado: { ...estado, preflight: null, snapshot: null }, lockedBySession: null };
+  const resultado = await entorno("preflight", { id: adapter.id, name: adapter.name, scope }).catch((error) => ({
+    preflight: { ok: false, errors: [error.message], capabilities: [] },
+  }));
+  const actual = resultado.adapter;
+  const seleccion = actual ? { id: actual.id, name: actual.name, mode: actual.mode } : adapter;
+  const alcance = resultado.scope ?? scope;
+  return {
+    estado: {
+      ...estado,
+      adapter: seleccion,
+      scope: alcance,
+      preflight: resultado.preflight,
+      snapshot: resultado.preflight.ok ? snapshotWifi(estado.projectId, seleccion, alcance) : null,
+    },
+    lockedBySession: actual?.lockedBySession ?? null,
+  };
+}
+
+function errorPreflight(preflight) {
+  return Object.assign(new Error(preflight.errors.join(" ")), { preflight });
+}
+
+export async function buildScopeSnapshot(project) {
+  const actual = await leerControlWifi(project);
+  const { estado } = await validarControlWifi(actual);
+  if (estado.snapshot) return estado.snapshot;
+  throw errorPreflight(estado.preflight ?? {
+    ok: false, errors: ["Selecciona un adaptador con /adaptador usar."], capabilities: [],
+  });
+}
+
+export async function guardarAlcance(proyecto, datos) {
+  const scope = await entorno("alcance", datos);
+  return conBloqueoProyecto(proyecto.raiz, async () => {
+    const anterior = await leerControlWifi(proyecto);
+    const { estado } = await validarControlWifi({ ...anterior, projectId: anterior.projectId ?? randomUUID(), scope });
+    await guardarControlWifi(proyecto, estado);
+    return estado;
+  });
+}
+
+export async function usarAdaptador(proyecto, name, id) {
+  return conBloqueoProyecto(proyecto.raiz, async () => {
+    const anterior = await leerControlWifi(proyecto);
+    const { estado } = await validarControlWifi({ ...anterior, adapter: { id, name } });
+    if (!estado.snapshot) throw errorPreflight(estado.preflight);
+    await guardarControlWifi(proyecto, estado);
+    return estado;
+  });
+}
+
+export async function inspeccionarControlWifi(proyecto) {
+  return conBloqueoProyecto(proyecto.raiz, async () => {
+    const anterior = await leerControlWifi(proyecto);
+    const resultado = await validarControlWifi(anterior);
+    if (anterior.projectId && JSON.stringify(resultado.estado) !== JSON.stringify(anterior)) {
+      await guardarControlWifi(proyecto, resultado.estado);
+    }
+    return resultado;
+  });
 }
 
 const INFRAESTRUCTURA = new Set(["node_modules", "__pycache__"]);

@@ -8,7 +8,7 @@ Harwiff es un entorno de diagnóstico Wi-Fi por proyecto. Guarda las lecturas de
 curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.6/install.sh | bash
 ```
 
-El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo y NetworkManager. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
+El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo, NetworkManager e iproute2. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
 
 ## Probar
 
@@ -31,9 +31,13 @@ Desde `harwiff >`, escribe `/proyectos` o `/proyectos ~/Proyectos`. Usa las flec
 
 Los dos listados revisan por defecto la propia carpeta y sus hijas inmediatas. `--profundidad 0` revisa solo la carpeta indicada y `--profundidad` admite hasta cinco niveles. Reconocen los proyectos con `.harwiff/harness.json` y los manifiestos anteriores en la raíz. Desde Bash, `--json` devuelve `ruta`, `proyectos` y `avisos`. Si tu carpeta se llama literalmente `proyectos`, ábrela con `harwiff ./proyectos`.
 
-## Diagnóstico real
+## Adaptador y alcance
 
-`/adaptador` lista los dispositivos reconocidos por NetworkManager, identifica si son USB o integrados cuando Linux lo permite y muestra la conexión activa. `/adaptador <número>` guarda la selección física. Ejecuta `/diagnostico` desde `harwiff >`.
+Desde `harwiff >`, guarda primero el alcance con `/alcance set --ssid "Wi-Fi del laboratorio" --canales 1,6,11`. Puedes repetir `--ssid` y `--bssid`. Debes indicar al menos un SSID o BSSID. Si configuras varias listas, la asociación debe coincidir con un valor de cada una.
+
+Usa `/adaptador listar` para consultar el inventario y `/adaptador usar <nombre>` para cargar un adaptador. `/adaptador` y `/adaptador <número>` también funcionan. `/alcance ver` vuelve a ejecutar el preflight y muestra el snapshot cuando pasa. La configuración se guarda en `control-wifi.json` junto al manifiesto.
+
+`/diagnostico` usa la selección guardada. Con `mock`, genera un informe sintético. Con un adaptador físico, Harwiff exige que esté libre, fuera de las rutas por defecto del host y asociado a una red que cumpla el alcance. El diagnóstico consulta la asociación que ya conoce NetworkManager y mantiene una reserva local hasta terminar.
 
 Harwiff descarga las imágenes fijadas la primera vez que hacen falta. Ejecuta el OpenSandbox incluido bajo un puerto de loopback con una clave efímera. `/config sandbox auto` elige un puerto libre y `/config sandbox <puerto>` fija uno. El colector lee el estado local del adaptador. El sandbox recibe solo indicadores depurados y aplica reglas fijas. La lectura no mide alcance a Internet ni resolución DNS. [OpenSandbox](https://open-sandbox.ai/getting-started/installation)
 

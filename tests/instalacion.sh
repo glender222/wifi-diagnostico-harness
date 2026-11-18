@@ -11,8 +11,11 @@ proyecto="$temporal/proyecto nuevo"
 printf '%s\n' '/salir' | "$ejecutable" "$proyecto" > "$temporal/arranque"
 grep -q 'Sin proyecto' "$temporal/arranque"
 test ! -e "$proyecto"
-printf '%s\n' "/proyecto $proyecto" '/diagnostico demo' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
+printf '%s\n' "/proyecto $proyecto" '/diagnostico demo' '/alcance set --ssid "Red de laboratorio"' \
+  '/adaptador usar mock' '/alcance ver' 'agent harwiff' 'Consulta informes' '/volver' '/auditoria' '/salir' \
   | "$ejecutable" "$proyecto" > "$temporal/salida"
+grep -q 'Adaptador seleccionado: mock' "$temporal/salida"
+grep -q '"preflightPassed": true' "$temporal/salida"
 grep -q 'Demo · Leí los informes guardados' "$temporal/salida"
 grep -q 'leer_informes · completo' "$temporal/salida"
 "$ejecutable" proyectos --json "$temporal" | grep -q '"nombre": "proyecto nuevo"'

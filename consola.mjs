@@ -1,28 +1,29 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, join, parse, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
-import { fileURLToPath } from "node:url";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
-import { ID_SESION, auditar, descubrirProyectos, directorios, guardarInforme, idsAuditoria, informesAgente, leerAuditoria, leerJson, localizarProyecto } from "./proyecto.mjs";
+import { ejecutar, entorno } from "./entorno.mjs";
+import {
+  ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarInforme, idsAuditoria,
+  informesAgente, inspeccionarControlWifi, leerAuditoria, leerControlWifi, leerJson, localizarProyecto, usarAdaptador,
+} from "./proyecto.mjs";
 
 const VERSION = "0.2.6";
 const NOMBRE_ENTORNO = "harwiff";
 const PROMPT_ENTORNO = `${NOMBRE_ENTORNO} >`;
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-const python = process.env.WIFI_PYTHON || "python3";
-const fuente = (archivo) => fileURLToPath(new URL(archivo, import.meta.url));
 const seguro = (texto) => String(texto).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const comandos = {
   "/ayuda": "Comandos del entorno",
   "/proyecto": "Crear o abrir un proyecto",
   "/proyectos": "Listar y abrir proyectos de una ruta",
-  "/adaptador": "Ver o elegir adaptador por número",
+  "/adaptador": "Listar adaptadores o usar uno por nombre",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
+  "/alcance": "Definir o ver el alcance autorizado",
   "/auditoria": "Listar ejecuciones o ver una por ID",
   "/config": "Ver configuración o fijar dominio y deployment de Foundry",
   "/sesiones": "Listar sesiones de trabajo del proyecto",
@@ -40,19 +41,6 @@ function disponibles(proyecto, agente) {
     : proyecto ? Object.keys(comandos).filter((comando) => comando !== "/detener" && comando !== "/volver")
       : ["/ayuda", "/proyecto", "/proyectos", "/salir"];
   return Object.fromEntries(nombres.map((comando) => [comando, comandos[comando]]));
-}
-
-function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000 } = {}) {
-  const { FOUNDRY_API_KEY, OPENSANDBOX_API_KEY, ...env } = process.env;
-  return new Promise((ok, fail) => {
-    const proceso = execFile(python, ["-B", fuente(script), ...args],
-      { env, timeout: tiempo, signal, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) fail(new Error(seguro(stderr.trim().replace(/^Error: /, "")) || "No se pudo completar la operación local."));
-        else ok(stdout.trim());
-      });
-    proceso.stdin.on("error", () => {});
-    proceso.stdin.end(entrada);
-  });
 }
 
 function resolverCarpeta(valor) {
@@ -83,12 +71,44 @@ function esRaiz(carpeta) {
 }
 
 function resumen(adaptadores) {
-  return adaptadores.map(({ interfaz, tipo, activo }, index) =>
-    `${index + 1}. ${interfaz} · ${tipo}${activo ? " · conexión activa" : ""}`).join("\n");
+  return adaptadores.map(({ name, tipo, activo, estado, lockedBySession }, index) =>
+    `${index + 1}. ${name} · ${tipo} · ${estado}${activo ? " · conexión activa" : ""}` +
+    (lockedBySession ? ` · propietario ${lockedBySession}` : "")).join("\n");
 }
 
-async function inventario() {
-  return JSON.parse(await ejecutar("entorno.py", ["adaptadores"], { tiempo: 10_000 }));
+const USO_ALCANCE = "Usa /alcance ver o /alcance set [--bssid <mac>] [--ssid <nombre>] [--canales <1,6,11>].";
+
+function argumentosAlcance(texto) {
+  const token = /\s*(?:"((?:[^"\\]|\\["\\])*)"|'([^']*)'|([^\s"']+))(?=\s|$)/gy;
+  const partes = [];
+  let consumidos = 0;
+  for (const coincidencia of texto.matchAll(token)) {
+    const [fragmento, doble, simple, palabra] = coincidencia;
+    partes.push({ valor: palabra ?? simple ?? doble.replace(/\\(["\\])/g, "$1"), citado: palabra === undefined });
+    consumidos += fragmento.length;
+  }
+  if (consumidos !== texto.length || partes.length % 2) throw new Error(USO_ALCANCE);
+
+  const scope = { allowedBssids: [], allowedSsids: [], allowedChannels: [] };
+  for (let i = 0; i < partes.length; i += 2) {
+    const [opcion, argumento] = [partes[i], partes[i + 1]];
+    if (opcion.citado || (!argumento.citado && argumento.valor.startsWith("--"))) throw new Error(USO_ALCANCE);
+    switch (opcion.valor) {
+      case "--bssid":
+        scope.allowedBssids.push(argumento.valor);
+        break;
+      case "--ssid":
+        scope.allowedSsids.push(argumento.valor);
+        break;
+      case "--canales":
+        if (scope.allowedChannels.length || !/^[0-9]+(?:,[0-9]+)*$/.test(argumento.valor)) throw new Error(USO_ALCANCE);
+        scope.allowedChannels = argumento.valor.split(",").map(Number);
+        break;
+      default:
+        throw new Error(USO_ALCANCE);
+    }
+  }
+  return scope;
 }
 
 function errorBloqueado(motivo) {
@@ -104,6 +124,7 @@ async function aplicar(destino) {
   let carpetaTrabajo;
   let ruta;
   let config;
+  let controlWifi;
   let interfaz;
   let agente;
   let preparado;
@@ -119,11 +140,13 @@ async function aplicar(destino) {
       : "Usa /proyecto y pulsa Enter para usar la carpeta de trabajo, o escribe otra ruta.",
   ];
   const app = (...args) => ejecutar("app.py", ["--proyecto", proyecto, ...args]);
+  const proyectoWifi = () => ({ raiz: proyecto, config });
   function actualizar() {
     interfaz?.render({
       proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente ? agente.mensajes : mensajes, comandos: disponibles(proyecto, agente),
+      controlWifi,
       promptEntorno: PROMPT_ENTORNO,
     });
   }
@@ -209,6 +232,7 @@ async function aplicar(destino) {
       ubicacion = await localizarProyecto(fisica);
     }
     const { raiz, archivo, config: nuevaConfig } = ubicacion;
+    const nuevoControl = await leerControlWifi(ubicacion);
 
     const nuevaCarpetaAgentes = join(raiz, "agentes");
     const nuevosAgentes = new Map();
@@ -222,6 +246,7 @@ async function aplicar(destino) {
     proyecto = raiz;
     ruta = archivo;
     config = nuevaConfig;
+    controlWifi = nuevoControl;
     agentesDir = nuevaCarpetaAgentes;
     agentes = nuevosAgentes;
     sesion = undefined;
@@ -431,17 +456,42 @@ async function aplicar(destino) {
     }
     switch (comando) {
       case "/adaptador": {
-        const invent = await inventario();
-        if (!args) {
-          mostrar(resumen(invent) || "No se detectó un adaptador Wi-Fi.");
-          mostrar(`Seleccionado: ${invent.find((item) => item.id === config.adaptador)?.interfaz ?? "ninguno o desconectado"} · /adaptador <número>`);
+        if (!args || args === "listar") {
+          const { adaptadores, aviso } = await entorno("adaptadores");
+          controlWifi = await leerControlWifi(proyectoWifi());
+          const seleccionado = adaptadores.find(({ id }) => id === controlWifi.adapter?.id);
+          mostrar(resumen(adaptadores));
+          if (aviso) mostrar(`Aviso: ${aviso}`);
+          mostrar(`Seleccionado: ${seleccionado?.name ?? controlWifi.adapter?.name ?? "ninguno o desconectado"} · /adaptador usar <nombre>`);
           break;
         }
-        const elegido = /^[1-9][0-9]*$/.test(args) ? invent[Number(args) - 1] : undefined;
-        if (!elegido) throw new Error("Elige un número de la lista de /adaptador.");
-        config = { ...config, adaptador: elegido.id };
-        await guardarJson(ruta, config);
-        mostrar(`Adaptador seleccionado: ${elegido.interfaz} · ${elegido.tipo}`);
+        let name = /^usar\s+(\S+)$/.exec(args)?.[1];
+        let id;
+        if (/^[1-9][0-9]*$/.test(args)) {
+          const { adaptadores } = await entorno("adaptadores");
+          const elegido = adaptadores[Number(args) - 1];
+          name = elegido?.name;
+          id = elegido?.id;
+        }
+        if (!name) throw new Error("Usa /adaptador listar, /adaptador usar <nombre> o /adaptador <número>.");
+        controlWifi = await usarAdaptador(proyectoWifi(), name, id);
+        mostrar(`Adaptador seleccionado: ${controlWifi.adapter.name} · Preflight: OK`);
+        break;
+      }
+      case "/alcance": {
+        if (args === "ver") {
+          const { estado, lockedBySession } = await inspeccionarControlWifi(proyectoWifi());
+          controlWifi = estado;
+          const adapter = estado.adapter && { name: estado.adapter.name, mode: estado.adapter.mode, lockedBySession };
+          mostrar(JSON.stringify({ adapter, scope: estado.scope, snapshot: estado.snapshot, preflight: estado.preflight }, null, 2));
+          break;
+        }
+        if (!/^set(?:\s|$)/.test(args)) throw new Error(USO_ALCANCE);
+        controlWifi = await guardarAlcance(proyectoWifi(), argumentosAlcance(args.slice(3).trim()));
+        mostrar("Alcance guardado.");
+        if (controlWifi.preflight) {
+          mostrar(controlWifi.preflight.ok ? "Preflight: OK" : controlWifi.preflight.errors.join(" "));
+        } else mostrar("Selecciona un adaptador con /adaptador usar <nombre>.");
         break;
       }
       case "/config": {
@@ -475,24 +525,28 @@ async function aplicar(destino) {
       }
       case "/diagnostico": {
         if (args && args !== "demo") throw new Error("Usa /diagnostico [demo].");
+        const actual = args === "demo" ? undefined : await leerControlWifi(proyectoWifi());
+        const adaptador = actual?.adapter;
+        const esDemo = args === "demo" || adaptador?.id === "mock";
         diagnosticoPendiente = new AbortController();
         const signal = diagnosticoPendiente.signal;
-        const esDemo = args === "demo";
         mostrar(esDemo ? "Preparando muestra sintética…" : "Ejecutando diagnóstico en OpenSandbox…");
         try {
           const id = await auditar(proyecto, {
             origen: "usuario", sesion, operacion: "diagnostico",
-            adaptador: esDemo ? undefined : config.adaptador, motor: esDemo ? "demo-local" : "opensandbox",
+            adaptador: adaptador?.id, motor: esDemo ? "demo-local" : "opensandbox",
           }, async (run) => {
-            if (!esDemo && !config.adaptador) throw errorBloqueado("Selecciona un adaptador con /adaptador.");
-            if (!esDemo && !(await inventario()).some((item) => item.id === config.adaptador)) {
-              throw errorBloqueado("El adaptador elegido no está disponible. Usa /adaptador.");
-            }
+            if (!esDemo && !adaptador) throw errorBloqueado("Selecciona un adaptador con /adaptador usar.");
             let informe;
             try {
-              const op = esDemo ? ["demo"] : ["diagnostico", "--adaptador", config.adaptador,
-                "--puerto", String(config.puertoSandbox || 0)];
-              informe = JSON.parse(await ejecutar("entorno.py", op, { signal }));
+              if (esDemo) informe = await entorno("demo", undefined, { signal });
+              else {
+                const resultado = await entorno("diagnostico", {
+                  id: adaptador.id, scope: actual.scope, runId: run, port: config.puertoSandbox || 0,
+                }, { signal, tiempo: 480_000 });
+                if (resultado.bloqueado) throw errorBloqueado(resultado.bloqueado);
+                informe = resultado.informe;
+              }
             } catch (error) {
               error.publico = error.message;
               throw error;

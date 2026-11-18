@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { conBloqueoProyecto } from "../entorno.mjs";
+import { buildScopeSnapshot, guardarAlcance, leerAuditoria, leerControlWifi, localizarProyecto } from "../proyecto.mjs";
 
 const consola = fileURLToPath(new URL("../consola.mjs", import.meta.url));
 const temporal = await mkdtemp(join(tmpdir(), "harwiff-descubrir-"));
@@ -26,6 +28,14 @@ function cli(...args) {
   return spawnSync(process.execPath, [consola, ...args], {
     cwd: raiz, encoding: "utf8", env: { ...process.env, WIFI_PYTHON: "/fixture/no-existe" },
   });
+}
+
+function consolaConEntrada(carpeta, ...comandos) {
+  const resultado = spawnSync(process.execPath, [consola, carpeta], {
+    cwd: raiz, encoding: "utf8", input: [...comandos, "/salir", ""].join("\n"),
+  });
+  assert.equal(resultado.status, 0, resultado.stderr);
+  return resultado.stdout;
 }
 
 try {
@@ -83,6 +93,64 @@ try {
   assert.equal(hogar.status, 0, hogar.stderr);
   assert.equal(JSON.parse(hogar.stdout).ruta, homedir());
   console.log("Descubrimiento, JSON y errores de ruta verificados.");
+
+  const proyecto = await localizarProyecto(actual);
+  const alcance = {
+    allowedBssids: ["AA:BB:CC:11:22:33"],
+    allowedSsids: ["  Área de pruebas  ", 'Red "B"'],
+    allowedChannels: [1, 6],
+    maxIterations: 8,
+  };
+  assert.match(consolaConEntrada(actual, "/adaptador usar mock"), /Define al menos un BSSID o SSID/);
+  assert.equal((await leerControlWifi(proyecto)).adapter, null);
+  const salida = consolaConEntrada(actual, "/adaptador listar",
+    String.raw`/alcance set --bssid aa:bb:cc:11:22:33 --bssid AA:BB:CC:11:22:33 --ssid "  Área de pruebas  " --ssid "Red \"B\"" --canales 1,6,6`,
+    "/adaptador usar mock", "/alcance ver", "/diagnostico");
+  assert.match(salida, /mock · simulado · disponible/);
+  assert.match(salida, /Adaptador seleccionado: mock · Preflight: OK/);
+  assert.match(salida, /"preflightPassed": true/);
+  assert.match(salida, /Informe guardado/);
+
+  const estado = await leerControlWifi(proyecto);
+  const snapshot = await buildScopeSnapshot(await localizarProyecto(actual));
+  assert.deepEqual(snapshot, {
+    projectId: estado.projectId,
+    adapter: { name: "mock", mode: "mock", lockedBySession: null },
+    scope: alcance,
+    preflightPassed: true,
+  });
+  for (const objeto of [snapshot, snapshot.adapter, snapshot.scope,
+    snapshot.scope.allowedBssids, snapshot.scope.allowedSsids, snapshot.scope.allowedChannels]) {
+    assert.ok(Object.isFrozen(objeto));
+  }
+  assert.throws(() => snapshot.scope.allowedSsids.push("otra red"), TypeError);
+  assert.match(consolaConEntrada(actual, "/alcance ver", "/alcance set --bssid invalido",
+    "/alcance set --canales 1", '/alcance set --ssid "sin cerrar', "/adaptador usar inexistente"), /BSSID inválido/);
+  assert.deepEqual(await leerControlWifi(proyecto), estado);
+  assert.match(consolaConEntrada(actual, "/alcance ver"), new RegExp(estado.projectId));
+  await conBloqueoProyecto(proyecto.raiz, async () => {
+    await assert.rejects(guardarAlcance(proyecto, { ...alcance, allowedSsids: ["Otra"] }), /Otra consola/);
+  });
+  assert.deepEqual(await leerControlWifi(proyecto), estado);
+
+  const rutaEstado = join(proyecto.raiz, "control-wifi.json");
+  await writeFile(rutaEstado, JSON.stringify({ ...estado, scope: { ...alcance, allowedBssids: [], allowedSsids: [] } }));
+  await assert.rejects(buildScopeSnapshot(proyecto), (error) =>
+    error.preflight?.ok === false && error.preflight.errors.some((motivo) => /al menos/.test(motivo)));
+  assert.match(consolaConEntrada(actual, "/alcance ver"), /"snapshot": null/);
+
+  const legado = await localizarProyecto(plano);
+  await writeFile(legado.archivo, JSON.stringify({ ...legado.config, adaptador: "a".repeat(20) }));
+  const migrado = await leerControlWifi(await localizarProyecto(plano));
+  assert.deepEqual(migrado.adapter, { id: "a".repeat(20), name: null, mode: "sandbox" });
+  assert.equal(migrado.snapshot, null);
+  assert.match(consolaConEntrada(plano, "/diagnostico", "/auditoria"), /diagnostico · bloqueado/);
+  const [ejecucion] = await readdir(join(legado.raiz, "auditoria"));
+  const auditoria = await leerAuditoria(legado.raiz, ejecucion);
+  assert.equal(auditoria.decision, "denegado");
+  assert.match(auditoria.motivo, /al menos un BSSID o SSID/);
+  await assert.rejects(readFile(join(legado.raiz, "informes", `${ejecucion}.json`)), { code: "ENOENT" });
+  console.log("Alcance, selección, bloqueo de configuración, migración y snapshot verificados.");
 } finally {
   await chmod(restringido, 0o700).catch(() => {});
   await rm(temporal, { recursive: true, force: true });

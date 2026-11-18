@@ -17,6 +17,7 @@ CAMPOS = (
     "GENERAL.TYPE,GENERAL.STATE,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,"
     "IP6.ADDRESS,IP6.GATEWAY,IP6.DNS"
 )
+BSSID = re.compile(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
 
 
 def nmcli(*args):
@@ -31,6 +32,23 @@ def nmcli(*args):
         ).stdout
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError("No se pudo consultar NetworkManager con nmcli.") from error
+
+
+def asociacion_actual(interfaz):
+    salida = nmcli("IN-USE,SSID-HEX,CHAN,FREQ,BSSID", "device", "wifi", "list",
+                   "ifname", interfaz, "--rescan", "no")
+    activas = [linea.split(":", 4) for linea in salida.splitlines() if linea.startswith("*:")]
+    if len(activas) != 1 or len(activas[0]) != 5:
+        return None
+    _, ssid_hex, canal, frecuencia, bssid = activas[0]
+    if (not BSSID.fullmatch(bssid) or not re.fullmatch(r"[1-9][0-9]{0,2}", canal)
+            or int(canal) > 233 or not re.fullmatch(r"[1-9][0-9]* MHz", frecuencia)):
+        return None
+    if ssid_hex in ("", "--"):
+        ssid_hex = ""
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{2}){0,32}", ssid_hex):
+        return None
+    return bssid.upper(), bytes.fromhex(ssid_hex), int(canal), frecuencia
 
 
 def senal_dbm(interfaz):

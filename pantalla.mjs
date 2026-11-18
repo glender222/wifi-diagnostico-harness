@@ -9,6 +9,19 @@ const tema = {
   selectedPrefix: acento, selectedText: acento, description: simple, scrollInfo: simple, noMatch: simple,
 };
 
+function resumenControlWifi(control) {
+  const adaptador = control?.adapter;
+  const alcance = control?.scope;
+  const filtros = [
+    [alcance?.allowedBssids.length, "BSSID"],
+    [alcance?.allowedSsids.length, "SSID"],
+    [alcance?.allowedChannels.length, "canal(es)"],
+  ].filter(([cantidad]) => cantidad).map(([cantidad, tipo]) => `${cantidad} ${tipo}`);
+  const preflight = control?.preflight;
+  const nombre = String(adaptador?.name ?? (adaptador ? "guardado" : "ninguno")).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+  return `Adaptador: ${nombre} | Alcance: ${filtros.join(", ") || "pendiente"} | Preflight: ${preflight ? (preflight.ok ? "OK" : "Bloqueado") : "Pendiente"}`;
+}
+
 class EditorConsola extends Editor {
   prefijo = undefined;
 
@@ -32,6 +45,7 @@ class EditorConsola extends Editor {
 export function pantalla(comandos, acciones) {
   const ui = new TuiAltScreen(new ProcessTerminal(), true);
   const encabezado = new Text("", 1);
+  const controlWifi = new Text("", 1);
   const historial = new Container();
   const viewport = new ScrollView(historial, { follow: "end", primary: true, scrollbar: "auto" });
   const fila = new Text("", 1);
@@ -62,7 +76,8 @@ export function pantalla(comandos, acciones) {
     },
   });
   ui.setLayoutRoot(new VStack([
-    encabezado, { component: viewport, grow: 1, basis: 0 },
+    encabezado, { component: controlWifi, visible: () => Boolean(estado && !estado.agente) },
+    { component: viewport, grow: 1, basis: 0 },
     { component: etiqueta, visible: () => Boolean(estado?.agente && !pregunta) },
     { component: editor, visible: () => !selector },
     { component: panel, visible: () => Boolean(selector) },
@@ -146,6 +161,7 @@ export function pantalla(comandos, acciones) {
     if (!nuevo.agentes.length) enFila = false;
     const contexto = nuevo.proyecto ? `${nuevo.proyecto}  ·  ${nuevo.cliente}` : "Sin proyecto";
     encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}`);
+    controlWifi.setText(resumenControlWifi(nuevo.controlWifi));
     editor.prefijo = pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno);
     etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}` : "");
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
