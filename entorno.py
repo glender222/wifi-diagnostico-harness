@@ -21,7 +21,7 @@ from tempfile import TemporaryDirectory
 
 from wifi import BSSID, analizar_aislado, asociacion_actual, nmcli, recolectar
 from broker_mock import ejecutar_mock
-from adaptador_core import inventario_perfil
+import adaptador_core as core
 
 IMAGEN = "python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89"
 EXECD = "opensandbox/execd@sha256:6cf7dba2f21f0b536e100563d841ac58a9f31c2b0a081b7ac76796a24d6f47e2"
@@ -40,7 +40,7 @@ def adaptadores(sysfs=Path("/sys/class/net")):
     estados = {}
     for linea in nmcli("DEVICE,TYPE,STATE", "device", "status").splitlines():
         partes = linea.split(":", 2)
-        if len(partes) == 3 and partes[1] == "wifi":
+        if len(partes) == 3 and partes[1] == "wifi" and core.NOMBRE.fullmatch(partes[0]):
             estados[partes[0]] = partes[2] == "connected"
     retorno = []
     for nombre, activo in sorted(estados.items()):
@@ -96,16 +96,7 @@ def interfaces_salida():
         for familia in ("-4", "-6"):
             salida = subprocess.run(["ip", "-j", familia, "route", "show", "table", "all", "default"],
                                     check=True, capture_output=True, text=True, timeout=3)
-            rutas = json.loads(salida.stdout)
-            if not isinstance(rutas, list):
-                raise ValueError
-            for ruta in rutas:
-                if ruta.get("type", "unicast") in {"blackhole", "unreachable", "prohibit", "throw"}:
-                    continue
-                saltos = ruta.get("nexthops", [ruta])
-                if not saltos or any(not isinstance(salto.get("dev"), str) or not salto["dev"] for salto in saltos):
-                    raise ValueError
-                interfaces.update(salto["dev"] for salto in saltos)
+            interfaces.update(core.rutas_por_defecto(salida.stdout))
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError) as error:
         raise RuntimeError("No se pudieron verificar las rutas por defecto IPv4 e IPv6.") from error
     return interfaces
@@ -157,17 +148,34 @@ def fisicos():
 def buscar_adaptador(nombre, identificador):
     if (identificador == "mock") or (identificador is None and nombre == "mock"):
         return MOCK
-    candidatos = [item for item in fisicos()
+    detectados = fisicos()
+    candidatos = [item for item in detectados
                   if (item["id"] == identificador if identificador is not None else item["name"] == nombre)]
-    if len(candidatos) != 1:
+    if len(candidatos) != 1 or sum(item["id"] == candidatos[0]["id"] for item in detectados) != 1:
         raise RuntimeError("El adaptador elegido no está disponible o es ambiguo. Usa /adaptador listar.")
     return candidatos[0]
 
 
+def relacion_phy(adaptador, rutas):
+    nombre = adaptador["name"]
+    if nombre in rutas:
+        raise RuntimeError("El adaptador forma parte de una ruta por defecto del host.")
+    avisos = []
+    dispositivos = core.topologia(core.SYS, avisos)
+    candidatos = [(phy, interfaz) for d in dispositivos for phy in d["phys"] for interfaz in phy["interfaces"]
+                  if interfaz["ifname"] == nombre and interfaz["legacyAdapterId"] == adaptador["id"]]
+    if len(candidatos) != 1 or avisos:
+        raise RuntimeError("No se pudo verificar el PHY del adaptador y su conectividad.")
+    phy, interfaz = candidatos[0]
+    hermanos = {x["ifname"] for x in phy["interfaces"]}
+    estado = core.conectividad(core.SYS, hermanos, rutas)
+    if estado["criticality"] != "noncritical":
+        raise RuntimeError("El radio comparte una ruta por defecto del host o su dependencia es indeterminada.")
+    return phy, interfaz
+
+
 def comprobar_fisico(adaptador, capacidades):
     interfaz = adaptador["name"]
-    if interfaz in interfaces_salida():
-        raise RuntimeError("El adaptador forma parte de una ruta por defecto del host.")
     capacidades.append("fuera-de-rutas-por-defecto")
     campos = dict(linea.split(":", 1) for linea in
                   nmcli("GENERAL.TYPE,GENERAL.STATE", "device", "show", interfaz).splitlines() if ":" in linea)
@@ -190,6 +198,27 @@ def informe_demo():
     return informe
 
 
+def ocupar_fisico(recursos, adaptador, propietario=None):
+    ocupado = recursos.enter_context(reserva_adaptador(adaptador["id"], propietario))
+    adaptador["lockedBySession"] = ocupado
+    if ocupado:
+        raise RuntimeError("El adaptador está ocupado por otra operación de Harwiff.")
+    phy, interfaz = relacion_phy(adaptador, interfaces_salida())
+    clave = core.clave_phy(phy)
+    if clave != adaptador["id"]:
+        ocupado = recursos.enter_context(reserva_adaptador(clave, propietario))
+        adaptador["lockedBySession"] = ocupado
+        if ocupado:
+            raise RuntimeError("El radio está ocupado por otra operación de Harwiff.")
+    return phy["phyId"], interfaz["interfaceId"], interfaz["ifindex"]
+
+
+def revalidar_fisico(adaptador, observado):
+    phy, interfaz = relacion_phy(adaptador, interfaces_salida())
+    if observado != (phy["phyId"], interfaz["interfaceId"], interfaz["ifindex"]):
+        raise RuntimeError("El adaptador o su radio cambió durante la operación.")
+
+
 def preflight_detalle(adapter_name, scope, adapter_id=None):
     capacidades = []
     adaptador = None
@@ -202,11 +231,10 @@ def preflight_detalle(adapter_name, scope, adapter_id=None):
             informe_demo()
             capacidades.append("informe-sintetico")
         else:
-            with reserva_adaptador(adaptador["id"]) as ocupado:
-                adaptador["lockedBySession"] = ocupado
-                if ocupado:
-                    raise RuntimeError("El adaptador está ocupado por otra operación de Harwiff.")
+            with ExitStack() as recursos:
+                identidad = ocupar_fisico(recursos, adaptador)
                 comprobar_fisico(adaptador, capacidades)
+                revalidar_fisico(adaptador, identidad)
     except (RuntimeError, ValueError) as error:
         errores.append(str(error))
     return {"preflight": {"ok": not errores, "errors": errores, "capabilities": capacidades},
@@ -215,6 +243,22 @@ def preflight_detalle(adapter_name, scope, adapter_id=None):
 
 def preflight(adapter_name, scope):
     return preflight_detalle(adapter_name, scope)["preflight"]
+
+
+def propietario_observado(clave):
+    try:
+        fd = os.open(RESERVAS / clave, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077:
+                lectura = os.read(fd, 64).decode("ascii", errors="replace")
+                if ID_EJECUCION.fullmatch(lectura):
+                    return lectura
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+    return "desconocido"
 
 
 def inventario():
@@ -227,17 +271,17 @@ def inventario():
         salidas = interfaces_salida() if detectados else set()
     except RuntimeError:
         salidas = None
+    locks = core.observar_reservas(RESERVAS)
     for adaptador in detectados:
         ocupado = None
         estado = "sin verificar"
-        try:
-            with reserva_adaptador(adaptador["id"]) as ocupado:
-                if ocupado:
-                    estado = "ocupado"
-                elif salidas is not None:
-                    estado = "ruta por defecto" if adaptador["name"] in salidas else "disponible"
-        except RuntimeError:
-            pass
+        clave = adaptador["id"]
+        reserva = core.reserva_observada(RESERVAS, {clave}, locks)
+        if reserva == "leased":
+            ocupado = propietario_observado(clave)
+            estado = "ocupado"
+        elif reserva == "free" and salidas is not None:
+            estado = "ruta por defecto" if adaptador["name"] in salidas else "disponible"
         dispositivos.append({**adaptador, "lockedBySession": ocupado, "estado": estado})
     return {"adaptadores": dispositivos}
 
@@ -266,18 +310,16 @@ def diagnostico_fisico(identificador, alcance, ejecucion, puerto):
             adaptador = buscar_adaptador(None, identificador)
             if adaptador["mode"] != "sandbox":
                 raise RuntimeError("Selecciona un adaptador físico para el diagnóstico real.")
-            ocupado = recursos.enter_context(reserva_adaptador(adaptador["id"], ejecucion))
-            if ocupado:
-                raise RuntimeError("El adaptador está ocupado por otra operación de Harwiff.")
+            identidad = ocupar_fisico(recursos, adaptador, ejecucion)
             comprobar_fisico(adaptador, [])
+            revalidar_fisico(adaptador, identidad)
             interfaz = adaptador["name"]
             asociacion = asociacion_autorizada(interfaz, scope)
             muestra = recolectar(interfaz)
             if (not muestra["conectada"] or asociacion != asociacion_autorizada(interfaz, scope)
                     or buscar_adaptador(interfaz, identificador)["name"] != interfaz):
                 raise DiagnosticoBloqueado("La asociación o el adaptador cambió durante la recolección.")
-            if interfaz in interfaces_salida():
-                raise DiagnosticoBloqueado("El adaptador pasó a formar parte de una ruta por defecto del host.")
+            revalidar_fisico(adaptador, identidad)
         except (RuntimeError, ValueError) as error:
             raise DiagnosticoBloqueado(str(error)) from error
         with sandbox_administrado(puerto) as (dominio, clave):
@@ -353,7 +395,7 @@ def main():
         if args.operacion == "adaptadores":
             resultado = inventario()
         elif args.operacion == "adaptadores-perfil":
-            resultado = inventario_perfil()
+            resultado = core.inventario_perfil(reservas=RESERVAS)
         elif args.operacion == "estado":
             resultado = {"docker": docker("info", timeout=4)}
         elif args.operacion == "demo":

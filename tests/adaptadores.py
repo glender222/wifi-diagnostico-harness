@@ -3,13 +3,14 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from adaptador_core import FuenteError, inventario_perfil
+from adaptador_core import FuenteError, consultar, identidad_heredada, inventario_perfil
 from entorno import (DiagnosticoBloqueado, adaptadores, diagnostico_fisico, informe_demo,
                      inventario, preflight, preflight_detalle, reserva_adaptador)
 from wifi import asociacion_actual
@@ -113,11 +114,96 @@ class PerfilTest(unittest.TestCase):
                 self.assertIn("adapter_disconnected", {aviso["code"] for aviso in nuevo["warnings"]})
 
 
+    def test_fuentes_declaradas_regulacion_y_reserva_solo_lectura(self):
+        iw = """Wiphy phy0
+	Supported interface modes:
+		 * managed
+		 * monitor
+	Band 1:
+		Frequencies:
+			* 2412 MHz [1] (20.0 dBm) (no IR)
+			* 5260 MHz [52] (radar detection)
+			* 5270 MHz [54] (disabled)
+	valid interface combinations:
+		 * #{ managed } <= 1, #{ AP, monitor } <= 1,
+		   total <= 2, #channels <= 1
+"""
+        with tempfile.TemporaryDirectory() as directorio:
+            raiz = Path(directorio)
+            sysfs = sys_fixture(raiz, [("pci0", "phy0", [("wlan0", 2), ("wlan1", 3)])])
+            rfkill = sysfs / "rfkill" / "rfkill0"
+            rfkill.mkdir()
+            for campo, valor in {"type": "wlan", "name": "phy0", "soft": "0", "hard": "1"}.items():
+                (rfkill / campo).write_text(valor)
+            fuentes = {
+                ("nmcli", "-t", "--escape", "no", "-f", "DEVICE,TYPE,STATE", "device", "status"):
+                    "wlan0:wifi:connected\nwlan1:wifi:disconnected",
+                ("iw", "dev"): "phy#0\n\tInterface wlan0\n\t\ttype managed",
+                ("iw", "phy", "phy0", "info"): iw,
+                ("iw", "reg", "get"): "global\ncountry PE: DFS-UNSET",
+                ("ip", "-j", "-4", "route", "show", "table", "all", "default"): "[]",
+                ("ip", "-j", "-6", "route", "show", "table", "all", "default"): '[{"nexthops":[{"dev":"wlan0"}]}]',
+                ("ethtool", "-i", "wlan0"): "driver: ejemplo\nfirmware-version: 1.2.3\nserial: privado",
+            }
+            reservas = raiz / "reservas"
+            with patch("adaptador_core.consultar", side_effect=lambda args, _: fuentes[tuple(args)]) as leer:
+                dto = inventario_perfil(sysfs, reservas)
+                self.assertEqual(leer.call_count, len(fuentes))
+                fisico = dto["devices"][0]
+                perfil = fisico["phys"][0]
+                cap = perfil["capabilities"]
+                self.assertEqual(dto["status"], "complete")
+                self.assertEqual(fisico["firmware"], "1.2.3")
+                self.assertNotIn("privado", json.dumps(dto))
+                self.assertEqual(perfil["connectivity"]["criticality"], "critical")
+                self.assertEqual(perfil["regulatory"]["country"], "PE")
+                self.assertTrue(perfil["rfkill"]["hardBlocked"])
+                self.assertFalse(perfil["rfkill"]["softBlocked"])
+                self.assertEqual(cap["monitor"]["declared"], "supported")
+                self.assertEqual(cap["monitor"]["verified"], "not_tested")
+                self.assertEqual(cap["injection"]["declared"], "unknown")
+                self.assertEqual([canal["flags"][0] for canal in cap["channels"]], ["no-ir", "dfs", "disabled"])
+                self.assertEqual(cap["interfaceCombinations"]["items"][0]["maxDifferentChannels"], 1)
+                self.assertEqual(perfil["reservation"]["state"], "free")
+                self.assertFalse(reservas.exists())
+                reservas.mkdir(mode=0o700)
+                dto = inventario_perfil(sysfs, reservas, raiz / "proc-no-disponible")
+                self.assertEqual(dto["devices"][0]["phys"][0]["reservation"]["state"], "unknown")
+                self.assertFalse(list(reservas.iterdir()))
+                fuentes[("iw", "phy", "phy0", "info")] = "Formato desconocido"
+                dto = inventario_perfil(sysfs, reservas)
+                perfil = dto["devices"][0]["phys"][0]
+                self.assertEqual(perfil["capabilities"]["monitor"]["declared"], "unknown")
+                self.assertEqual(perfil["capabilities"]["interfaceCombinations"]["status"], "unknown")
+                self.assertIn("parse_unsupported", [a["code"] for a in perfil["probe"]["warnings"]])
+
+    def test_consulta_limita_salida_tiempo_y_recolecta_hijos(self):
+        with self.assertRaises(FuenteError) as error:
+            consultar([sys.executable, "-c", "print('x' * 300_000)"], time.monotonic() + 2)
+        self.assertEqual(error.exception.codigo, "parse_unsupported")
+        with self.assertRaises(FuenteError) as error:
+            consultar([sys.executable, "-c", "import time; time.sleep(30)"], time.monotonic() + 0.1)
+        self.assertEqual(error.exception.codigo, "probe_timeout")
+        real = subprocess.Popen
+        hijos = []
+        def capturar(*args, **opciones):
+            hijos.append(real(*args, **opciones))
+            return hijos[-1]
+        with (patch("adaptador_core.subprocess.Popen", side_effect=capturar),
+              patch("adaptador_core.selectors.DefaultSelector.select", side_effect=KeyboardInterrupt)):
+            with self.assertRaises(KeyboardInterrupt):
+                consultar([sys.executable, "-c", "import time; time.sleep(30)"], time.monotonic() + 2)
+        self.assertIsNotNone(hijos[0].poll())
+
+
 class PreflightTest(unittest.TestCase):
     def setUp(self):
         temporal = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch("entorno.RESERVAS", Path(temporal) / "reservas"))
-        self.detectados = self.enterContext(patch("entorno.adaptadores", return_value=[FISICO]))
+        self.sysfs = sys_fixture(Path(temporal), [("pci0", "phy0", [("wlan1", 4), ("wlanhermana", 5)])])
+        self.enterContext(patch("adaptador_core.SYS", self.sysfs))
+        self.fisico = {**FISICO, "id": identidad_heredada(self.sysfs / "net" / "wlan1")}
+        self.detectados = self.enterContext(patch("entorno.adaptadores", return_value=[self.fisico]))
         self.docker = self.enterContext(patch("entorno.docker", return_value=True))
         self.enterContext(patch("entorno.nmcli", return_value="GENERAL.TYPE:wifi\nGENERAL.STATE:30 (disconnected)"))
         self.ip = self.enterContext(patch("entorno.subprocess.run", return_value=Mock(stdout="[]")))
@@ -146,6 +232,24 @@ class PreflightTest(unittest.TestCase):
         self.ip.side_effect = subprocess.TimeoutExpired("ip", 3)
         self.assertIn("verificar las rutas", preflight("wlan1", ALCANCE)["errors"][0])
 
+    def test_ruta_en_interfaz_hermana_y_tunel_bloquean_preflight(self):
+        for nombre in ("wlanhermana", "tun0"):
+            with self.subTest(nombre=nombre):
+                self.ip.side_effect = [Mock(stdout="[]"), Mock(stdout=json.dumps([{"dev": nombre}]))]
+                self.assertIn("ruta por defecto", preflight("wlan1", ALCANCE)["errors"][0])
+        self.docker.assert_not_called()
+
+    def test_ruta_critica_aparece_durante_recoleccion(self):
+        def recolectar(_):
+            self.ip.return_value = Mock(stdout='[{"dev":"wlanhermana"}]')
+            return {"conectada": True}
+        with (patch("entorno.asociacion_actual", return_value=ASOCIACION),
+              patch("entorno.recolectar", side_effect=recolectar),
+              patch("entorno.sandbox_administrado") as sandbox):
+            with self.assertRaisesRegex(DiagnosticoBloqueado, "ruta por defecto"):
+                diagnostico_fisico(self.fisico["id"], ALCANCE, EJECUCION, 0)
+            sandbox.assert_not_called()
+
     def test_fisico_desconectado_desaparecido_o_sin_docker(self):
         self.assertTrue(preflight("wlan1", ALCANCE)["ok"])
         self.docker.return_value = False
@@ -154,7 +258,7 @@ class PreflightTest(unittest.TestCase):
         self.assertIn("no está disponible", preflight("wlan1", ALCANCE)["errors"][0])
 
     def test_inventario_y_preflight_muestran_reserva_activa(self):
-        with reserva_adaptador(FISICO["id"], EJECUCION) as ocupado:
+        with reserva_adaptador(self.fisico["id"], EJECUCION) as ocupado:
             self.assertIsNone(ocupado)
             estado = inventario()["adaptadores"][1]
             self.assertEqual((estado["estado"], estado["lockedBySession"]), ("ocupado", EJECUCION))
@@ -170,7 +274,7 @@ class PreflightTest(unittest.TestCase):
             for asociacion in asociaciones:
                 with self.subTest(asociacion=asociacion), patch("entorno.asociacion_actual", return_value=asociacion):
                     with self.assertRaises(DiagnosticoBloqueado):
-                        diagnostico_fisico(FISICO["id"], ALCANCE, EJECUCION, 0)
+                        diagnostico_fisico(self.fisico["id"], ALCANCE, EJECUCION, 0)
             recolectar.assert_not_called()
             sandbox.assert_not_called()
         self.assertTrue(preflight("wlan1", ALCANCE)["ok"])
@@ -182,7 +286,7 @@ class PreflightTest(unittest.TestCase):
               patch("entorno.recolectar", return_value={"conectada": True}),
               patch("entorno.sandbox_administrado") as sandbox):
             with self.assertRaisesRegex(DiagnosticoBloqueado, "cambió durante la recolección"):
-                diagnostico_fisico(FISICO["id"], alcance, EJECUCION, 0)
+                diagnostico_fisico(self.fisico["id"], alcance, EJECUCION, 0)
             sandbox.assert_not_called()
 
     def test_reserva_durante_el_analisis_y_libera_tras_error(self):
@@ -190,7 +294,7 @@ class PreflightTest(unittest.TestCase):
 
         async def analizar(muestra_recibida, *_args, **_kwargs):
             self.assertEqual(muestra_recibida, muestra)
-            with reserva_adaptador(FISICO["id"]) as ocupado:
+            with reserva_adaptador(self.fisico["id"]) as ocupado:
                 self.assertEqual(ocupado, EJECUCION)
             raise RuntimeError("Error del sandbox")
 
@@ -199,7 +303,7 @@ class PreflightTest(unittest.TestCase):
               patch("entorno.sandbox_administrado", return_value=nullcontext(("loopback", "fixture"))),
               patch("entorno.analizar_aislado", side_effect=analizar)):
             with self.assertRaisesRegex(RuntimeError, "Error del sandbox") as error:
-                diagnostico_fisico(FISICO["id"], ALCANCE, EJECUCION, 0)
+                diagnostico_fisico(self.fisico["id"], ALCANCE, EJECUCION, 0)
             self.assertNotIsInstance(error.exception, DiagnosticoBloqueado)
         self.assertTrue(preflight("wlan1", ALCANCE)["ok"])
 
