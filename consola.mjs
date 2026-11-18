@@ -601,7 +601,7 @@ async function aplicar(destino) {
     if (creado) mostrar("Datos de Harwiff guardados en .harwiff/.");
     if (!tty) {
       const { proveedor, modelo } = llmProyecto();
-      mostrar(`Proveedor LLM · ${proveedor} · Modelo predeterminado ${modelo}`);
+      mostrar(["Proveedor LLM", proveedor, ...(modelo ? ["Modelo predeterminado " + modelo] : [])].join(" · "));
       mostrar(resumenControlWifi(controlWifi));
       for (const item of agentes.values()) {
         if (item.iniciado) mostrar(`Agente ${item.id} · ${item.estado}`);

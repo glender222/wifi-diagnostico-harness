@@ -29,6 +29,7 @@ grep -q 'Adaptador seleccionado: mock' "$temporal/salida"
 grep -q '"preflightPassed": true' "$temporal/salida"
 printf '%s\n' '/alcance set --ssid LAB_TEST_AP --canales 6' '/agente Revisar el fixture' '/salir' \
   | env -u OPENAI_API_KEY -u DBUS_SESSION_BUS_ADDRESS -u FOUNDRY_API_KEY "$ejecutable" "$proyecto" > "$temporal/sin-conexion"
+grep -qx 'Proveedor LLM · Sin modelo configurado' "$temporal/sin-conexion"
 grep -q 'Conecta un proveedor con /connect' "$temporal/sin-conexion"
 test ! -e "$proyecto/.harwiff/agentes"
 cp -- "$(dirname -- "$0")/fixtures/connect-openai.mjs" "$temporal/openai-fixture.mjs"
