@@ -10,7 +10,8 @@
     "harwiff": "./consola.mjs"
   },
   "scripts": {
-    "start": "node consola.mjs"
+    "start": "node consola.mjs",
+    "test:openai": "node tests/openai-real.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2",

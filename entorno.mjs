@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const python = process.env.WIFI_PYTHON || "python3";
 const fuente = (script) => fileURLToPath(new URL(script, import.meta.url));
-const { FOUNDRY_API_KEY, OPENSANDBOX_API_KEY, ...env } = process.env;
+const { FOUNDRY_API_KEY, OPENAI_API_KEY, OPENSANDBOX_API_KEY, ...env } = process.env;
 
 export function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000 } = {}) {
   return new Promise((ok, fail) => {

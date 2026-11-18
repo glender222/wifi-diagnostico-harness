@@ -6,18 +6,19 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, MODELO_DEMO, demo, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
-import { ejecutar, entorno } from "./entorno.mjs";
+import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
 import {
   ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarInforme, idsAuditoria,
   informesAgente, inspeccionarControlWifi, leerAuditoria, leerControlWifi, leerJson, localizarProyecto, usarAdaptador,
 } from "./proyecto.mjs";
-import { cargarSesionAutonoma, iniciarSesionAgente } from "./sesion-agente.mjs";
+import { listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
+import { cargarSesionAutonoma, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
 
 const VERSION = "0.2.6";
 const NOMBRE_ENTORNO = "harwiff";
 const PROMPT_ENTORNO = `${NOMBRE_ENTORNO} >`;
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-const seguro = (texto) => String(texto).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+const seguro = (texto) => ocultarClaveOpenAI(String(texto)).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const comandos = {
   "/ayuda": "Comandos del entorno",
   "/proyecto": "Crear o abrir un proyecto",
@@ -27,7 +28,7 @@ const comandos = {
   "/alcance": "Definir o ver el alcance autorizado",
   "/agente": "Iniciar una sesión sobre el escenario mock",
   "/auditoria": "Listar ejecuciones o ver una por ID",
-  "/config": "Ver configuración o fijar dominio y deployment de Foundry",
+  "/config": "Ver configuración, elegir proveedor o comprobar modelos",
   "/sesiones": "Listar sesiones de trabajo del proyecto",
   "/nueva": "Crear una sesión de trabajo",
   "/abrir": "Abrir una sesión de trabajo",
@@ -143,6 +144,13 @@ async function aplicar(destino) {
   ];
   const app = (...args) => ejecutar("app.py", ["--proyecto", proyecto, ...args]);
   const proyectoWifi = () => ({ raiz: proyecto, config });
+  async function actualizarConfig(cambiar) {
+    config = await conBloqueoProyecto(proyecto, async () => {
+      const nueva = cambiar(await leerJson(ruta));
+      await guardarJson(ruta, nueva);
+      return nueva;
+    });
+  }
   function actualizar() {
     interfaz?.render({
       proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente,
@@ -195,7 +203,7 @@ async function aplicar(destino) {
     while (!cerrando) {
       const entrada = interfaz ? await interfaz.leer() : (await lineas.next()).value;
       if (entrada === undefined || cerrando) break;
-      const texto = entrada.trim();
+      const texto = ocultarClaveOpenAI(entrada.trim());
       if (!texto) continue;
       if (tty && (texto.startsWith("/") || texto === "ls" || /^agent\s+harwiff(?:\s|$)/.test(texto))) {
         mostrar(`${agente ? "Tú" : NOMBRE_ENTORNO}  ${texto}`);
@@ -403,6 +411,7 @@ async function aplicar(destino) {
     }
     if (agente && texto === "/config") {
       mostrar(`Agente: ${agente.id} · Modo: ${agente.modo} · Estado: ${agente.estado}`);
+      if (agente.modelId) mostrar(`Modelo: ${agente.modelId}`);
       if (agente.modo === "azure-foundry") {
         mostrar(`Deployment: ${config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT ?? "pendiente"}`);
       }
@@ -466,10 +475,11 @@ async function aplicar(destino) {
     }
     switch (comando) {
       case "/agente": {
+        config = await leerJson(ruta);
         const item = await iniciarSesionAgente({ proyecto: proyectoWifi(), objetivo: args, alCambiar: actualizar });
         agentes.set(item.id, item);
         if (cerrando) item.controlador?.abort();
-        mostrar(`Sesión iniciada · ${item.id}${item.modo === "demo" ? " · Demo local · simulación" : " · Azure Foundry"}`, null);
+        mostrar(`Sesión iniciada · ${item.id} · ${etiquetaProveedor(item.modo)}${item.modelId ? ` · ${item.modelId}` : ""}`, null);
         if (!tty) {
           await item.trabajo;
           for (const mensaje of item.mensajes) salida(mensaje);
@@ -516,31 +526,56 @@ async function aplicar(destino) {
         break;
       }
       case "/config": {
+        config = await leerJson(ruta);
         if (!args) {
           mostrar(`Cliente: ${config.cliente} · OpenSandbox local: puerto ${config.puertoSandbox || "automático"}`);
-          if (config.cliente === "azure-foundry") {
+          const proveedor = proveedorAgente(config);
+          mostrar(`Proveedor de /agente: ${proveedor}${proveedor === "openai" ? ` · Modelo: ${config.llm.openaiModelId || "pendiente"}` : ""}`);
+          if (proveedor === "azure-foundry" || config.cliente === "azure-foundry") {
             mostrar(`Dominio: ${config.foundry?.host || "pendiente"} · Deployment: ${config.foundry?.deployment || "pendiente"}`);
           }
           break;
         }
         const [host, deployment, extra] = args.split(/\s+/);
+        if (host === "proveedor") {
+          if (extra || !PROVEEDORES_AGENTE.includes(deployment)) throw new Error("Usa /config proveedor <openai|azure-foundry|demo>.");
+          await actualizarConfig((actual) => ({ ...actual, llm: { ...actual.llm, proveedor: deployment } }));
+          mostrar(`Proveedor de /agente: ${deployment}`);
+          break;
+        }
+        if (host === "modelos") {
+          if (deployment) throw new Error("Usa /config modelos.");
+          const modelos = await listarModelosOpenAI();
+          mostrar(modelos.length ? `Modelos compatibles disponibles en OpenAI: ${modelos.join(", ")}`
+            : "La clave no tiene acceso a los modelos compatibles de Harwiff.");
+          break;
+        }
+        if (host === "modelo") {
+          if (extra || !deployment) throw new Error("Usa /config modelo <model-id>.");
+          if (proveedorAgente(config) !== "openai") throw new Error("Selecciona primero /config proveedor openai.");
+          await validarModeloOpenAI(deployment);
+          await actualizarConfig((actual) => {
+            if (proveedorAgente(actual) !== "openai") throw new Error("El proveedor de la sesión cambió. Vuelve a seleccionar OpenAI.");
+            return { ...actual, llm: { ...actual.llm, openaiModelId: deployment } };
+          });
+          mostrar(`Modelo OpenAI guardado: ${deployment}`);
+          break;
+        }
         if (host === "sandbox") {
           const puerto = deployment === "auto" ? 0 : Number(deployment);
           if (extra || !(puerto === 0 && deployment === "auto") &&
               !(Number.isInteger(puerto) && puerto >= 1024 && puerto <= 65535)) {
             throw new Error("Usa /config sandbox auto o /config sandbox <puerto entre 1024 y 65535>.");
           }
-          config = { ...config, puertoSandbox: puerto };
-          await guardarJson(ruta, config);
+          await actualizarConfig((actual) => ({ ...actual, puertoSandbox: puerto }));
           mostrar("Configuración de OpenSandbox guardada.");
           break;
         }
-        if (config.cliente !== "azure-foundry" || extra || !DOMINIO_AZURE.test(host) ||
+        if ((config.cliente !== "azure-foundry" && proveedorAgente(config) !== "azure-foundry") || extra || !DOMINIO_AZURE.test(host) ||
             !deployment || !DEPLOYMENT_AZURE.test(deployment)) {
           throw new Error("Usa /config <dominio Azure> <deployment> en un proyecto Azure Foundry.");
         }
-        config = { ...config, foundry: { host, deployment } };
-        await guardarJson(ruta, config);
+        await actualizarConfig((actual) => ({ ...actual, foundry: { host, deployment } }));
         mostrar("Configuración guardada.");
         break;
       }

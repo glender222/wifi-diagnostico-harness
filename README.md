@@ -59,6 +59,34 @@ Con Foundry configurado, el modelo elige la secuencia de herramientas de Pi. El 
 
 Cada sesión tiene ocho solicitudes al modelo y ocho intentos de herramienta. Los resultados, denegaciones y cierres parciales se pueden consultar al volver a abrir la sesión. La ejecución de esta fase usa el host y el escenario sintético.
 
+### Usar la API oficial de OpenAI
+
+Inicia Harwiff con `OPENAI_API_KEY` en el entorno. En Bash puedes leer la clave sin mostrarla ni incluirla en el historial de comandos.
+
+```bash
+read -rsp 'Clave de OpenAI: ' OPENAI_API_KEY
+export OPENAI_API_KEY
+printf '\n'
+npm start
+```
+
+Con un proyecto abierto en `harwiff >`, elige un modelo que aparezca en la lista. Este ejemplo usa `gpt-4.1-mini` si la cuenta tiene acceso.
+
+```text
+/config proveedor openai
+/config modelos
+/config modelo gpt-4.1-mini
+/alcance set --ssid LAB_TEST_AP --canales 6
+/adaptador usar mock
+/agente Revisa la postura de seguridad del AP de laboratorio y resume la evidencia del fixture
+```
+
+`/config modelos` consulta los IDs de la cuenta y muestra los compatibles del catálogo verificado. Harwiff comprueba el acceso al guardar el modelo y al iniciar la sesión. `/config proveedor demo` y `/config proveedor azure-foundry` eligen las otras opciones de `/agente`. La configuración del chat legado pertenece al cliente del proyecto. [Disponibilidad de modelos en OpenAI](https://developers.openai.com/api/docs/guides/rate-limits#model-availability)
+
+El resultado y la vista de la sesión incluyen el ID solicitado, los IDs devueltos y los tokens informados por Responses. Una medición parcial indica que alguna solicitud carece de cifras. Desde el repositorio, `node tests/openai.mjs` ejecuta la simulación. El fixture de `gpt-4.1-mini` reporta 101 tokens de entrada, 22 de salida y 123 en total, todos simulados.
+
+La prueba real voluntaria usa `npm run test:openai -- gpt-4.1-mini` o el ID compatible elegido. Con una clave y acceso, hace solicitudes facturables, usa un proyecto temporal y muestra el modelo y el consumo informado. Sin clave, la prueba se omite. [Streaming de Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
+
 ### Chat e informes guardados
 
 En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e inicia Harwiff con `FOUNDRY_API_KEY` en el entorno. El deployment debe admitir Chat Completions v1 y herramientas. El agente puede consultar informes guardados. Usa `/diagnostico` en el entorno para generar una lectura real. En proyectos previos de ChatGPT y OpenCode, el cliente externo conserva su flujo y `agent harwiff --demo` abre el agente local de prueba. [Chat Completions](https://learn.microsoft.com/en-us/azure/foundry/openai/latest)

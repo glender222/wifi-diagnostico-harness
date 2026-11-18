@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { ejecutarPi, guardarJson, modeloFoundry, MODELO_DEMO, simuladorMock } from "./bucle.mjs";
 import { conBloqueoProyecto, entorno } from "./entorno.mjs";
 import { authorize, cargarObjetivosMock, HERRAMIENTAS, parametrosAuditables } from "./policy.mjs";
+import { MENSAJES_OPENAI, ocultarClaveOpenAI, seguirOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { auditar, hashAlcance, ID_EJECUCION, leerControlWifi, leerJson, validarScopeSnapshot } from "./proyecto.mjs";
 
 const ESQUEMA = "harwiff-agent-session/v1";
@@ -19,6 +20,7 @@ const leerOpcional = (ruta) => leerJson(ruta).catch((error) => {
 });
 
 const MOTIVOS = {
+  ...MENSAJES_OPENAI,
   scope_changed: "El alcance cambió durante la sesión.",
   interrupted: "Sesión interrumpida. Se conservó la evidencia guardada.",
   tool_limit: "Límite de herramientas alcanzado. Resultado parcial.",
@@ -28,6 +30,14 @@ const MOTIVOS = {
   provider_error: "El modelo interrumpió la ejecución.",
   session_error: "No se pudo completar la sesión.",
 };
+
+export const PROVEEDORES_AGENTE = ["openai", "azure-foundry", "demo"];
+
+export function etiquetaProveedor(proveedor) {
+  if (proveedor === "openai") return "OpenAI";
+  if (proveedor === "azure-foundry") return "Azure Foundry";
+  return "Demo local · simulación";
+}
 
 class DecisionDenegada extends Error {
   constructor(code) {
@@ -48,11 +58,17 @@ class FinSesion extends Error {
 
 function lineaEvento(evento) {
   switch (evento.type) {
-    case "start": return `${evento.provider === "demo" ? "Demo local · simulación" : "Azure Foundry"} · ${evento.goal}`;
+    case "start": return `${etiquetaProveedor(evento.provider)}${evento.modelId ? ` · ${evento.modelId}` : ""} · ${evento.goal}`;
     case "tool_call": return `Herramienta · ${evento.tool}`;
     case "tool_result": return `${evento.tool} · ${evento.result.ok ? JSON.stringify(evento.result)
       : evento.result.code}${evento.auditId ? ` · auditoría ${evento.auditId}` : ""}`;
     case "response": return `Harwiff  ${evento.text}`;
+    case "usage": {
+      const { tokens, estado, modelosDevueltos } = evento.consumo;
+      const modelo = modelosDevueltos.length ? ` · modelo devuelto: ${modelosDevueltos.join(", ")}` : "";
+      return `Tokens OpenAI · ${tokens ? `entrada ${tokens.entrada}, salida ${tokens.salida}, total ${tokens.total} (${estado})`
+        : "no disponibles"}${modelo}`;
+    }
     case "end": return MOTIVOS[evento.reason] ?? "Sesión completada.";
     default: return "";
   }
@@ -63,7 +79,8 @@ function vistaSesion(dir, estado, eventos = []) {
   if (!mensajes.length) mensajes.push(estado.goal);
   if (estado.reason === "interrupted") mensajes.push(MOTIVOS.interrupted);
   return { id: estado.id, dir, modo: estado.provider, estado: estado.status, uso: estado.uso,
-    iniciado: true, autonoma: true, mensajes: mensajes.slice(-150).map(textoVisible), actividad: actividad(estado.lastEvent) };
+    modelId: estado.modelId, iniciado: true, autonoma: true,
+    mensajes: mensajes.slice(-150).map(textoVisible), actividad: actividad(estado.lastEvent) };
 }
 
 function actividad(evento) {
@@ -100,12 +117,26 @@ export async function cargarSesionAutonoma(dir, datos) {
   return otraConsola ? { ...item, actividad: "activa en otra consola" } : item;
 }
 
-function proveedor(config, bssidInicial, entornoLlm = process.env) {
+export function proveedorAgente(config, entornoLlm = process.env) {
+  const explicito = config.llm?.proveedor;
+  if (explicito !== undefined) {
+    if (!PROVEEDORES_AGENTE.includes(explicito)) throw new Error("Proveedor de agente inválido en el manifiesto.");
+    return explicito;
+  }
   if (config.foundry || config.cliente === "azure-foundry"
       || (entornoLlm.FOUNDRY_HOST && entornoLlm.FOUNDRY_DEPLOYMENT && entornoLlm.FOUNDRY_API_KEY)) {
-    return { provider: "azure-foundry", ...modeloFoundry(config, entornoLlm) };
+    return "azure-foundry";
   }
-  return { provider: "demo", modelo: MODELO_DEMO, streamFn: simuladorMock(bssidInicial) };
+  return "demo";
+}
+
+async function configurarModelo(config, bssidInicial, entorno, fetchFn) {
+  const provider = proveedorAgente(config, entorno);
+  if (provider === "openai") {
+    return { provider, ...await validarModeloOpenAI(config.llm.openaiModelId, { entorno, fetchFn }) };
+  }
+  if (provider === "azure-foundry") return { provider, ...modeloFoundry(config, entorno) };
+  return { provider, modelo: MODELO_DEMO, streamFn: simuladorMock(bssidInicial) };
 }
 
 async function prepararAlcance(proyecto) {
@@ -132,13 +163,15 @@ function contextoModelo({ snapshot: { adapter, scope }, capabilities, objetivos 
 }
 
 export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () => {}, streamFn,
-  broker = (solicitud, signal) => entorno("broker-mock", solicitud, { signal, tiempo: TIEMPO_BROKER }), entornoLlm }) {
-  const goal = typeof objetivo === "string" ? textoVisible(objetivo).trim() : "";
+  broker = (solicitud, signal) => entorno("broker-mock", solicitud, { signal, tiempo: TIEMPO_BROKER }),
+  entornoLlm = process.env, fetchOpenAI }) {
+  const ocultar = (texto) => ocultarClaveOpenAI(texto, entornoLlm);
+  const goal = typeof objetivo === "string" ? textoVisible(ocultar(objetivo)).trim() : "";
   if (!goal || goal.length > 2000) throw new Error("Usa /agente <objetivo> con entre 1 y 2000 caracteres.");
   const alcance = await prepararAlcance(proyecto);
   const objetivos = await cargarObjetivosMock(alcance.snapshot.scope);
   const inicial = alcance.snapshot.scope.allowedBssids.find((bssid) => objetivos.has(bssid));
-  const modelo = proveedor(proyecto.config, inicial, entornoLlm);
+  const modelo = await configurarModelo(proyecto.config, inicial, entornoLlm, fetchOpenAI);
   const id = `agente-${randomUUID()}`;
   const dir = join(proyecto.raiz, "agentes", id);
   await mkdir(join(proyecto.raiz, "agentes"), { recursive: true, mode: 0o700 });
@@ -147,7 +180,8 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
   const estado = {
     esquema: ESQUEMA, id, parentId: null, goal, status: "created", iteration: 0, toolAttempts: 0,
     adapterId: "mock", scopeId: alcance.scopeId, scopeRevision: alcance.revision, snapshot: alcance.snapshot,
-    provider: modelo.provider, lastEvent: null, uso: new Date().toISOString(),
+    provider: modelo.provider, modelId: modelo.provider === "openai" ? modelo.modelo.id : undefined,
+    lastEvent: null, uso: new Date().toISOString(),
   };
   const item = vistaSesion(dir, estado);
   const controlador = new AbortController();
@@ -158,7 +192,7 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
     await guardarJson(join(dir, "sesion.json"), estado);
     lista.resolve(item);
     await ejecutarSesion({ proyecto, dir, estado, alcance: { ...alcance, objetivos, evidencias: new Map(), sessionId: id },
-      modelo: { ...modelo, streamFn: streamFn ?? modelo.streamFn }, signal, broker, publicar });
+      modelo: { ...modelo, streamFn: streamFn ?? modelo.streamFn }, signal, broker, publicar, fetchOpenAI, entornoLlm, ocultar });
   }).catch((error) => {
     lista.reject(error);
     item.estado = "error";
@@ -177,7 +211,7 @@ export async function iniciarSesionAgente({ proyecto, objetivo, alCambiar = () =
   }
 }
 
-async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, broker, publicar }) {
+async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, broker, publicar, fetchOpenAI, entornoLlm, ocultar }) {
   const eventos = [];
   const rutaEstado = join(dir, "sesion.json");
   const limite = alcance.snapshot.scope.maxIterations;
@@ -185,6 +219,8 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
   const llamadas = new Map();
   const resultadosPi = new WeakMap();
   const idsHerramienta = new Set();
+  const seguimiento = estado.provider === "openai" ? seguirOpenAI(fetchOpenAI, entornoLlm) : null;
+  const metadatosModelo = () => seguimiento ? { modelId: estado.modelId, consumo: seguimiento.resumen() } : {};
 
   async function anotar(evento) {
     const entrada = { ...evento, fecha: new Date().toISOString() };
@@ -241,7 +277,11 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
     await auditarHerramienta(llamada, async (id) => {
       signal.throwIfAborted();
       if (!await vigente()) throw new DecisionDenegada("scope_changed");
-      const { params } = llamada.decision;
+      const params = nombre === "registrar_hallazgo" ? {
+        ...llamada.decision.params,
+        categoria: ocultar(llamada.decision.params.categoria),
+        detalle: ocultar(llamada.decision.params.detalle),
+      } : llamada.decision.params;
       llamada.autorizada = true;
       const evidencia = params.evidenceId && alcance.evidencias.get(params.evidenceId);
       llamada.evidenciaEntrada = evidencia;
@@ -328,7 +368,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
       llamadas.delete(toolCallId);
     } else if (evento.type === "message_end" && evento.message.role === "assistant") {
       for (const parte of evento.message.content) {
-        if (parte.type === "text" && parte.text) await anotar({ type: "response", text: textoVisible(parte.text) });
+        if (parte.type === "text" && parte.text) await anotar({ type: "response", text: textoVisible(ocultar(parte.text)) });
       }
     }
   }
@@ -337,6 +377,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
   try {
     await auditar(proyecto.raiz, {
       origen: "agente", sesion: estado.id, operacion: "sesion_mock", proveedor: estado.provider, scopeId: estado.scopeId,
+      modelId: estado.modelId,
     }, async (id) => {
       estado.turnId = id;
       rutaTurno = join(dir, "turnos", id);
@@ -344,7 +385,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
       const usuario = { role: "user", content: estado.goal, timestamp: Date.now() };
       await guardarJson(join(rutaTurno, "inicio.json"), { esquema: "wifi-turno/v1", usuario });
       estado.status = "running";
-      await anotar({ type: "start", goal: estado.goal, provider: estado.provider });
+      await anotar({ type: "start", goal: estado.goal, provider: estado.provider, modelId: estado.modelId });
       try {
         const mensajes = await ejecutarPi({
           prompts: [{
@@ -364,6 +405,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
           })),
           ...modelo, emitir, signal,
           hooks: {
+            ...seguimiento?.hooks,
             toolExecution: "sequential",
             maxRetries: 0,
             async prepareRequest() {
@@ -373,6 +415,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
               estado.iteration++;
               await anotar({ type: "request", iteration: estado.iteration });
               signal.throwIfAborted();
+              seguimiento?.nuevaSolicitud();
             },
             async beforeToolCall({ toolCall }) {
               const { decision } = obtenerLlamada(toolCall.id, toolCall.name);
@@ -385,7 +428,9 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
             async finishTurn({ message }) {
               signal.throwIfAborted();
               if (!await vigente()) throw new FinSesion("scope_changed");
-              if (message.stopReason === "error" || message.stopReason === "aborted") throw new FinSesion("provider_error");
+              if (message.stopReason === "error" || message.stopReason === "aborted") {
+                throw new FinSesion(seguimiento?.errorActual() ?? "provider_error");
+              }
               if (estado.iteration >= limite && message.stopReason !== "stop") {
                 motivo = "iteration_limit";
                 return { action: "end" };
@@ -404,7 +449,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
       const mensajes = [usuario, ...eventos.filter(({ type }) => type === "response").map(({ text, fecha }) => ({
         role: "assistant", content: [{ type: "text", text }], timestamp: Date.parse(fecha),
       }))];
-      await guardarJson(join(rutaTurno, "resultado.json"), { estado: "completo", motivo, mensajes });
+      await guardarJson(join(rutaTurno, "resultado.json"), { estado: "completo", motivo, mensajes, ...metadatosModelo() });
       return { evidencia: { referencia: `agentes/${estado.id}/turnos/${id}/resultado.json` } };
     }, signal);
     estado.status = "completed";
@@ -413,10 +458,14 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
     motivo = signal.aborted ? (signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled")
       : error instanceof FinSesion ? error.code : "session_error";
     if (rutaTurno) await guardarJson(join(rutaTurno, "resultado.json"), {
-      estado: estado.status === "cancelled" ? "cancelado" : "incompleto", motivo,
+      estado: estado.status === "cancelled" ? "cancelado" : "incompleto", motivo, ...metadatosModelo(),
     });
   }
   estado.reason = motivo;
+  if (seguimiento) {
+    estado.consumo = seguimiento.resumen();
+    await anotar({ type: "usage", consumo: estado.consumo });
+  }
   await anotar({ type: "end", reason: motivo });
 }
 

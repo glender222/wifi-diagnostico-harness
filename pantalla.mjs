@@ -2,6 +2,7 @@ import {
   CombinedAutocompleteProvider, Container, Editor, matchesKey, ProcessTerminal,
   ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
+import { ocultarClaveOpenAI } from "./proveedor-openai.mjs";
 
 const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
 const simple = (texto) => texto;
@@ -108,8 +109,9 @@ export function pantalla(comandos, acciones) {
       return;
     }
     if ((!texto && !pregunta) || !esperando) return;
-    if (!pregunta && texto) editor.addToHistory(texto);
-    resolverEntrada(texto);
+    const visible = ocultarClaveOpenAI(texto);
+    if (!pregunta && visible) editor.addToHistory(visible);
+    resolverEntrada(visible);
   };
   ui.addInputListener((dato) => {
     if (matchesKey(dato, "ctrl+c") || (matchesKey(dato, "ctrl+d") && !editor.getText())) {
@@ -153,7 +155,7 @@ export function pantalla(comandos, acciones) {
     if (cerrado || !nuevo) return;
     const siguiente = pregunta ? "pregunta" : JSON.stringify([nuevo.rutaProyecto, nuevo.agente]);
     if (alcance !== siguiente) {
-      if (alcance && alcance !== "pregunta") borradores.set(alcance, editor.getText());
+      if (alcance && alcance !== "pregunta") borradores.set(alcance, ocultarClaveOpenAI(editor.getText()));
       editor.setText(borradores.get(siguiente) ?? "");
       alcance = siguiente;
     }

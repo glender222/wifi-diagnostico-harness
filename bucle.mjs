@@ -68,7 +68,9 @@ export function modeloFoundry(config, entorno = process.env) {
 
 export async function ejecutarPi({ prompts, previos = [], herramientas, modelo, clave, hooks, emitir, signal, streamFn }) {
   const { runAgentLoop } = await import("./vendor/pi/agent-loop.ts");
-  const stream = streamFn ?? (await import("@earendil-works/pi-ai/api/openai-completions")).streamSimple;
+  const stream = streamFn ?? (modelo.api === "openai-responses"
+    ? (await import("@earendil-works/pi-ai/api/openai-responses")).streamSimple
+    : (await import("@earendil-works/pi-ai/api/openai-completions")).streamSimple);
   return runAgentLoop(prompts, { messages: previos, tools: herramientas }, {
     model: modelo, apiKey: clave, maxTokens: 2048, convertToLlm: (entradas) => entradas, ...hooks,
   }, emitir, signal, stream);
