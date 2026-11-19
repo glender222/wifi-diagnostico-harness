@@ -242,8 +242,10 @@ export async function directorios(ruta) {
   }
 }
 
-export async function auditar(proyecto, datos, trabajo, signal, detallesResultado) {
-  const id = `${Date.now()}-${randomUUID()}`;
+export const crearIdAuditoria = () => `${Date.now()}-${randomUUID()}`;
+
+export async function auditar(proyecto, datos, trabajo, signal, detallesResultado, id = crearIdAuditoria()) {
+  if (!ID_EJECUCION.test(id)) throw new Error("ID de auditoría inválido.");
   const raiz = join(proyecto, "auditoria", id);
   await mkdir(raiz, { recursive: true, mode: 0o700 });
   const inicio = new Date().toISOString();

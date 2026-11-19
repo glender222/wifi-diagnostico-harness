@@ -5,10 +5,12 @@ Harwiff es un entorno de diagnóstico Wi-Fi por proyecto. Guarda las lecturas de
 ## Instalar en Linux x86-64
 
 ```bash
-curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/download/v0.2.6/install.sh | bash
+curl -fsSL https://github.com/glender222/wifi-diagnostico-harness/releases/latest/download/install.sh | bash
 ```
 
 El instalador verifica el SHA-256 y coloca el comando en `~/.local/bin/harwiff`. Si esa carpeta no está en tu `PATH`, lanza `~/.local/bin/harwiff` o añade `~/.local/bin` al `PATH`. La release incluye Node.js, Python, el loop de Pi y el servidor y SDK de OpenSandbox. El diagnóstico real requiere Docker operativo, NetworkManager e iproute2. [GitHub Releases](https://github.com/glender222/wifi-diagnostico-harness/releases)
+
+Consulta `harwiff --version` para identificar la versión, el canal y el commit del paquete activo. Los artefactos de rama usan el canal `desarrollo`. Las compilaciones limpias etiquetadas con la versión correspondiente usan `estable`.
 
 ## Abrir un proyecto
 
@@ -28,7 +30,7 @@ Los proyectos nuevos guardan sus datos y reglas en `.harwiff/` y usan las depend
 
 - En **Capa 1** (`harwiff >`), elige el alcance y el adaptador. Los proyectos nuevos empiezan con el modelo pendiente. Usa `/connect` para conectar un proveedor y `/model` para elegir o cambiar el modelo del proyecto con las flechas y **Enter**. `/diagnostico demo` genera un informe sintético que aparece en `/auditoria`.
 - En **Capa 2**, `/agente <objetivo>` inicia una sesión sobre el escenario mock. Usa **Tab**, las flechas y **Enter** para abrir la sesión. **Esc** o `/salir` vuelven a Capa 1. `/detener` cancela el turno.
-- En Capa 1, `/salir` cierra Harwiff. Al reabrir la carpeta se recuperan los ajustes, las sesiones y los últimos seis registros de auditoría. El historial conversacional se carga al entrar en la sesión.
+- En Capa 1, `/salir` cierra Harwiff. Al reabrir la carpeta se recuperan los ajustes, las sesiones y los últimos seis registros de auditoría. El historial conversacional se carga al entrar en la sesión. Si una sesión tiene datos ilegibles, Harwiff abre el proyecto y muestra un aviso.
 
 Para gestionar las notas manuales de una sesión de trabajo, usa `/nueva`, `/abrir`, `/guardar` y `/contexto`. Escribe `/` para ver los comandos de la vista actual.
 
@@ -125,6 +127,8 @@ En un proyecto Azure Foundry, indica `/config <dominio Azure> <deployment>` e in
 - `auditoria/` contiene la solicitud previa y el resultado por ejecución. Un inicio sin resultado se muestra como pendiente de cierre. Cada llamada de la sesión mock incluye un ID local de correlación, parámetros normalizados, decisión `ALLOWED` o `DENIED`, motivo y referencias de evidencia. Los campos de texto libre se marcan como omitidos en la auditoría.
 - `informes/` contiene el JSON de cada diagnóstico con la referencia y SHA-256 en su registro. Los informes de sesiones existentes siguen disponibles como evidencia histórica.
 - `agentes/` contiene sesiones del agente con su historial y estado. `sesiones/` conserva las notas e informes de las sesiones de trabajo existentes.
+
+Cuando envías comandos por tubería, Harwiff continúa con las líneas siguientes tras un error, escribe el error en stderr y devuelve código 1 al terminar el lote. La salida normal sigue en stdout.
 
 ## Desarrollo
 

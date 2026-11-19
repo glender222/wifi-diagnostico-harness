@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as esperar } from "node:timers/promises";
@@ -9,7 +9,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { guardarJson, respuestaSimulada } from "../bucle.mjs";
 import { entorno } from "../entorno.mjs";
 import { leerHistorial } from "../historial-agente.mjs";
-import { guardarAlcance, leerAuditoria, leerJson, usarAdaptador } from "../proyecto.mjs";
+import { crearIdAuditoria, guardarAlcance, leerAuditoria, leerJson, usarAdaptador } from "../proyecto.mjs";
 import { cargarSesionAutonoma, enviarMensajeAgente, iniciarSesionAgente } from "../sesion-agente.mjs";
 
 const raiz = await mkdtemp(join(tmpdir(), "harwiff-interactivo-"));
@@ -218,10 +218,48 @@ try {
   eventosInterrumpidos.push({ type: "user", messageId: "pendiente", text: "Se cortó el proceso", fecha: new Date().toISOString() });
   await guardarJson(turnoInterrumpido, eventosInterrumpidos);
   await guardarJson(join(interrumpida.dir, "sesion.json"), { ...archivada, status: "running" });
+  const carpetaInterrumpida = join(interrumpida.dir, "turnos", archivada.turnId);
+  await rm(join(carpetaInterrumpida, "resultado.json"));
+  await rm(join(raiz, "auditoria", archivada.turnId, "resultado.json"));
   const consultable = await cargarSesionAutonoma(interrumpida.dir, await estado(interrumpida));
   assert.match(consultable.mensajes.join("\n"), /Se cortó el proceso · no enviado/);
   assert.equal(consultable.soloConsulta, true);
   await assert.rejects(enviar(consultable, "Siguiente"), /disponible para consulta/);
+  assert.equal((await leerAuditoria(raiz, archivada.turnId)).reason, "interrupted");
+  assert.equal((await leerJson(join(carpetaInterrumpida, "resultado.json"))).motivo, "interrupted");
+  assert.equal((await leerJson(turnoInterrumpido)).filter(({ type }) => type === "end").length, 1);
+
+  const entreTurnos = await iniciar({ streamFn: (modelo) => responder(modelo, "Turno anterior finalizado") });
+  await entreTurnos.trabajo;
+  const anterior = await estado(entreTurnos);
+  const dirAnterior = join(entreTurnos.dir, "turnos", anterior.turnId);
+  const eventosAnteriores = await readFile(join(dirAnterior, "eventos.json"), "utf8");
+  const resultadoAnterior = await readFile(join(dirAnterior, "resultado.json"), "utf8");
+  const nuevoId = crearIdAuditoria();
+  const auditNuevo = join(raiz, "auditoria", nuevoId);
+  await mkdir(auditNuevo);
+  await guardarJson(join(auditNuevo, "solicitud.json"), {
+    esquema: "harwiff-auditoria/v1", id: nuevoId, origen: "agente", sesion: anterior.id,
+    operacion: "sesion_mock", scopeId: anterior.scopeId, turnNumber: anterior.turnNumber + 1,
+  });
+  const sesionEntreTurnos = { ...anterior, admisionAbierta: true };
+  const rutaSesion = join(entreTurnos.dir, "sesion.json");
+  await guardarJson(rutaSesion, sesionEntreTurnos);
+  const reanudada = await cargarSesionAutonoma(entreTurnos.dir, await estado(entreTurnos));
+  assert.equal(reanudada.estado, "error");
+  assert.equal((await estado(entreTurnos)).turnId, nuevoId);
+  assert.equal((await leerAuditoria(raiz, nuevoId)).estado, "error");
+  assert.equal((await leerAuditoria(raiz, nuevoId)).reason, "interrupted");
+  assert.equal(await readFile(join(dirAnterior, "resultado.json"), "utf8"), resultadoAnterior);
+  assert.equal(await readFile(join(dirAnterior, "eventos.json"), "utf8"), eventosAnteriores);
+  const rutaEventosNuevo = join(entreTurnos.dir, "turnos", nuevoId, "eventos.json");
+  const eventosNuevo = await readFile(rutaEventosNuevo, "utf8");
+  assert.deepEqual(JSON.parse(eventosNuevo).filter(({ type }) => type === "end").map(({ reason }) => reason), ["interrupted"]);
+  // Simula otro corte después de reparar la auditoría y antes de guardar sesion.json.
+  await guardarJson(rutaSesion, sesionEntreTurnos);
+  await cargarSesionAutonoma(entreTurnos.dir, await estado(entreTurnos));
+  assert.equal((await estado(entreTurnos)).turnId, nuevoId);
+  assert.equal(await readFile(rutaEventosNuevo, "utf8"), eventosNuevo);
   console.log("Sesiones interactivas · steering, cierre, recuperación, evidencias y límites verificados.");
 } finally {
   await rm(raiz, { recursive: true, force: true });

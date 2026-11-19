@@ -46,6 +46,10 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum -c SHA256SUMS)
+          commit="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          tar -xOzf dist/harwiff-linux-x86_64.tar.gz harwiff/app/build-info.json |
+            jq -e --arg commit "$commit" --arg tag "$TAG" \
+              '.commit == $commit and ("v" + .version) == $tag and .canal == "estable" and .cambiosLocales == false'
           gh release upload "$TAG" dist/install.sh dist/harwiff-linux-x86_64.tar.gz dist/SHA256SUMS
           gh release edit "$TAG" --draft=false --latest
       - name: Instalar desde la URL pública

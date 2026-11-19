@@ -30,10 +30,14 @@ function cli(...args) {
   });
 }
 
-function consolaConEntrada(carpeta, ...comandos) {
-  const resultado = spawnSync(process.execPath, [consola, carpeta], {
+function lote(carpeta, ...comandos) {
+  return spawnSync(process.execPath, [consola, carpeta], {
     cwd: raiz, encoding: "utf8", input: [...comandos, "/salir", ""].join("\n"),
   });
+}
+
+function consolaConEntrada(carpeta, ...comandos) {
+  const resultado = lote(carpeta, ...comandos);
   assert.equal(resultado.status, 0, resultado.stderr);
   return resultado.stdout;
 }
@@ -101,7 +105,11 @@ try {
     allowedChannels: [1, 6],
     maxIterations: 8,
   };
-  assert.match(consolaConEntrada(actual, "/adaptador usar mock"), /Define al menos un BSSID o SSID/);
+  const sinAlcance = lote(actual, "/adaptador usar mock", "/config");
+  assert.equal(sinAlcance.status, 1);
+  assert.match(sinAlcance.stderr, /Define al menos un BSSID o SSID/);
+  assert.doesNotMatch(sinAlcance.stdout, /Error:/);
+  assert.match(sinAlcance.stdout, /Proveedor de \/agente:/);
   assert.equal((await leerControlWifi(proyecto)).adapter, null);
   const salida = consolaConEntrada(actual, "/adaptador listar",
     String.raw`/alcance set --bssid aa:bb:cc:11:22:33 --bssid AA:BB:CC:11:22:33 --ssid "  Área de pruebas  " --ssid "Red \"B\"" --canales 1,6,6`,
@@ -138,9 +146,17 @@ try {
   await writeFile(join(sesionGuardada, "sesion.json"), JSON.stringify({ esquema: "harwiff-agent-session/v1",
     id: agenteGuardado, status: "completed", provider: "openai", modelId: "gpt-6-luna", turnId: turnoGuardado }));
   await writeFile(join(sesionGuardada, "turnos", turnoGuardado, "eventos.json"), "{");
-  const indice = consolaConEntrada(actual);
-  assert.match(indice, /Agente agente-fixture · completed/);
-  assert.doesNotMatch(indice, /Error:/);
+  const roto = join(proyecto.raiz, "agentes", "agente-roto");
+  await mkdir(roto);
+  await writeFile(join(roto, "sesion.json"), '{"esquema":');
+  const indice = lote(actual, "/alcance ver");
+  assert.equal(indice.status, 0);
+  assert.match(indice.stdout, /Proyecto abierto/);
+  assert.match(indice.stdout, /Agente agente-fixture · completed/);
+  assert.match(indice.stdout, /"preflightPassed": true/);
+  assert.doesNotMatch(indice.stdout, /Error:/);
+  assert.match(indice.stderr, /Aviso: no se pudo leer la sesión agente-roto\./);
+  assert.equal(await readFile(join(roto, "sesion.json"), "utf8"), '{"esquema":');
 
   const estado = await leerControlWifi(proyecto);
   const snapshot = await buildScopeSnapshot(await localizarProyecto(actual));
@@ -155,8 +171,11 @@ try {
     assert.ok(Object.isFrozen(objeto));
   }
   assert.throws(() => snapshot.scope.allowedSsids.push("otra red"), TypeError);
-  assert.match(consolaConEntrada(actual, "/alcance ver", "/alcance set --bssid invalido",
-    "/alcance set --canales 1", '/alcance set --ssid "sin cerrar', "/adaptador usar inexistente"), /BSSID inválido/);
+  const comandosInvalidos = lote(actual, "/alcance ver", "/alcance set --bssid invalido",
+    "/alcance set --canales 1", '/alcance set --ssid "sin cerrar', "/adaptador usar inexistente");
+  assert.equal(comandosInvalidos.status, 1);
+  assert.match(comandosInvalidos.stderr, /BSSID inválido/);
+  assert.doesNotMatch(comandosInvalidos.stdout, /Error:/);
   assert.deepEqual(await leerControlWifi(proyecto), estado);
   assert.match(consolaConEntrada(actual, "/alcance ver"), new RegExp(estado.projectId));
   await conBloqueoProyecto(proyecto.raiz, async () => {
@@ -175,7 +194,10 @@ try {
   const migrado = await leerControlWifi(await localizarProyecto(plano));
   assert.deepEqual(migrado.adapter, { id: "a".repeat(20), name: null, mode: "sandbox" });
   assert.equal(migrado.snapshot, null);
-  assert.match(consolaConEntrada(plano, "/diagnostico", "/auditoria"), /diagnostico · bloqueado/);
+  const sinAdaptador = lote(plano, "/diagnostico", "/auditoria");
+  assert.equal(sinAdaptador.status, 1);
+  assert.match(sinAdaptador.stdout, /diagnostico · bloqueado/);
+  assert.match(sinAdaptador.stderr, /Define al menos un BSSID o SSID/);
   const [ejecucion] = await readdir(join(legado.raiz, "auditoria"));
   const auditoria = await leerAuditoria(legado.raiz, ejecucion);
   assert.equal(auditoria.decision, "denegado");

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
-import { basename, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
@@ -18,7 +20,25 @@ import {
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { cargarSesionAutonoma, enviarMensajeAgente, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
 
-const VERSION = "0.2.6";
+import paquete from "./package.json" with { type: "json" };
+
+async function versionInstalada() {
+  const info = await leerJson(new URL("./build-info.json", import.meta.url)).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  let commit = info?.commit;
+  if (!info) {
+    try {
+      commit = execFileSync("git", ["-C", dirname(fileURLToPath(import.meta.url)), "rev-parse", "HEAD"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 }).trim();
+    } catch { /* También se puede ejecutar desde un archivo de fuentes. */ }
+  }
+  const partes = [`Harwiff ${paquete.version}`, info?.canal ?? "fuente"];
+  if (/^[0-9a-f]{40}$/.test(commit)) partes.push(commit.slice(0, 12));
+  if (info?.cambiosLocales) partes.push("cambios locales");
+  return partes.join(" · ");
+}
+
 const NOMBRE_ENTORNO = "harwiff";
 const PROMPT_ENTORNO = `${NOMBRE_ENTORNO} >`;
 const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -198,6 +218,14 @@ async function aplicar(destino) {
     else mensajes = [...mensajes.slice(-149), limpio];
     actualizar();
   }
+  function mostrarError(error, destino = agente) {
+    const mensaje = "Error: " + error.message;
+    if (tty) mostrar(mensaje, destino);
+    else {
+      console.error(seguro(ocultar(mensaje)));
+      process.exitCode = 1;
+    }
+  }
   function volver() {
     agente = undefined;
     actualizar();
@@ -238,7 +266,7 @@ async function aplicar(destino) {
     try {
       carpetaParaInicializar = await abrirProyectoInicial();
     } catch (error) {
-      mostrar(`Error: ${error.message}`);
+      mostrarError(error);
     }
     if (tty && !cerrando) {
       const { pantalla } = await import("./pantalla.mjs");
@@ -278,7 +306,7 @@ async function aplicar(destino) {
       try {
         await procesar(texto);
       } catch (error) {
-        mostrar(`Error: ${error.message}`);
+        mostrarError(error);
       }
     }
   } finally {
@@ -575,17 +603,21 @@ async function aplicar(destino) {
       if (!ubicacion) throw new Error("El proyecto inicializado ya no está disponible.");
     }
     const { raiz, archivo, config: nuevaConfig } = ubicacion;
-    const [nuevoControl, actividad] = await Promise.all([
-      leerControlWifi(ubicacion), leerActividadProyecto(raiz),
-    ]);
+    const nuevoControl = await leerControlWifi(ubicacion);
 
     const nuevaCarpetaAgentes = join(raiz, "agentes");
     const nuevosAgentes = new Map();
+    const avisosSesiones = [];
     for (const id of await directorios(nuevaCarpetaAgentes)) {
       if (!ID_SESION.test(id)) continue;
-      const item = await cargarAgente(nuevaCarpetaAgentes, id, { soloResumen: true });
-      if (item) nuevosAgentes.set(id, item);
+      try {
+        const item = await cargarAgente(nuevaCarpetaAgentes, id, { soloResumen: true });
+        if (item) nuevosAgentes.set(id, item);
+      } catch {
+        avisosSesiones.push("Aviso: no se pudo leer la sesión " + id + ".");
+      }
     }
+    const actividad = await leerActividadProyecto(raiz);
     if (cerrando) return;
     carpetaTrabajo = fisica;
     proyecto = raiz;
@@ -606,6 +638,10 @@ async function aplicar(destino) {
       for (const item of agentes.values()) {
         if (item.iniciado) mostrar(`Agente ${item.id} · ${item.estado}`);
       }
+    }
+    for (const aviso of avisosSesiones) {
+      if (tty) mostrar(aviso);
+      else console.error(seguro(aviso));
     }
     if (actividad.length) mostrar(["Actividad reciente del proyecto", ...actividad].join("\n"));
     mostrar(proveedorAgente(config) ? "Escribe una consulta para iniciar el agente."
@@ -678,6 +714,7 @@ async function aplicar(destino) {
     if (!tty) {
       await item.trabajo;
       for (const mensaje of item.mensajes) salida(mensaje);
+      if (item.estado !== "completed") throw new Error(item.actividad || "La sesión no se completó.");
     }
   }
 
@@ -723,7 +760,9 @@ async function aplicar(destino) {
       item.estado = "lista";
     }, (error) => {
       item.estado = control.signal.aborted ? "detenida" : "interrumpida";
-      mostrar(control.signal.aborted ? "Turno detenido." : `Turno interrumpido. ${error.message}`, item);
+      const mensaje = control.signal.aborted ? "Turno detenido." : "Turno interrumpido. " + error.message;
+      if (tty) mostrar(mensaje, item);
+      else mostrarError(new Error(mensaje), item);
     }).finally(() => {
       item.controlador = undefined;
       item.trabajo = undefined;
@@ -785,6 +824,7 @@ async function aplicar(destino) {
         if (!tty) {
           await item.trabajo;
           for (const mensaje of item.mensajes.slice(previos)) salida(mensaje);
+          if (item.estado !== "completed") throw new Error(item.actividad || "La sesión no se completó.");
         }
       } else {
         await iniciarTurno(texto, item);
@@ -869,10 +909,7 @@ async function aplicar(destino) {
       if (args !== "openai") throw new Error("Usa /disconnect openai.");
       return desvincularOpenAI();
     }
-    if (!proyecto) {
-      mostrar("Usa /init para esta carpeta o /proyecto <ruta> para otra.");
-      return;
-    }
+    if (!proyecto) throw new Error("Usa /init para esta carpeta o /proyecto <ruta> para otra.");
     if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
     if (!texto.startsWith("/")) return iniciarAgenteProyecto(texto, true);
     switch (comando) {
@@ -1109,7 +1146,7 @@ try {
         for (const aviso of resultado.avisos) console.error(seguro(`Aviso: ${aviso.ruta} · ${aviso.motivo}`));
       }
     }
-  } else if (destino === "--version" && !extra.length) console.log(`Harwiff ${VERSION}`);
+  } else if (destino === "--version" && !extra.length) console.log(await versionInstalada());
   else if (["--help", "-h"].includes(destino) && !extra.length) console.log(`Uso: harwiff [carpeta-del-proyecto]\n${USO_LISTADO}`);
   else if (extra.length || destino?.startsWith("-")) throw new Error("Uso: harwiff [carpeta-del-proyecto]");
   else await aplicar(destino);

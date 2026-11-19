@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [mvp-entorno]
+    tags: ['v*']
 permissions:
   contents: read
 

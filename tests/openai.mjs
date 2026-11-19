@@ -360,7 +360,9 @@ try {
   const cliResult = spawnSync(process.execPath, ["--import", preload, cli, raiz], {
     input: comandos, encoding: "utf8", env: { ...process.env, ...entorno, WIFI_PYTHON: python },
   });
-  assert.equal(cliResult.status, 0, cliResult.stderr);
+  assert.equal(cliResult.status, 1, cliResult.stderr);
+  assert.match(cliResult.stderr, /Error:/);
+  assert.doesNotMatch(cliResult.stdout, /^Error:/m);
   assert.match(cliResult.stdout, /Modelos disponibles en tu proyecto OpenAI: gpt-4\.1-mini \(listado · pendiente de verificar\), whisper-1/);
   assert.match(cliResult.stdout, /Modelo OpenAI guardado: gpt-4\.1-mini/);
   assert.match(cliResult.stdout, /Alcance guardado/);

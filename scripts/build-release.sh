@@ -18,6 +18,18 @@ temporal="$(mktemp -d)"
 trap 'rm -rf -- "$temporal"' EXIT
 stage="$temporal/harwiff"
 mkdir -p -- "$stage/node" "$stage/app" "$stage/licenses"
+version="$(node -p 'require(process.argv[1]).version' "$raiz/package.json")"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+commit="$(git -C "$raiz" rev-parse HEAD)"
+canal=desarrollo
+cambios=false
+if [[ -n "$(git -C "$raiz" status --porcelain)" ]]; then
+  cambios=true
+elif [[ "$(git -C "$raiz" tag --points-at "$commit" --list "v$version")" == "v$version" ]]; then
+  canal=estable
+fi
+printf '{"version":"%s","commit":"%s","canal":"%s","cambiosLocales":%s}\n' \
+  "$version" "$commit" "$canal" "$cambios" > "$stage/app/build-info.json"
 curl -fsSL --retry 3 "https://nodejs.org/dist/v$version_node/$archivo_node" -o "$temporal/$archivo_node"
 (cd "$temporal" && printf '%s  %s\n' "$sha_node" "$archivo_node" | sha256sum -c -)
 tar -xJf "$temporal/$archivo_node" -C "$stage/node" --strip-components=1
@@ -39,7 +51,8 @@ cp -a -- "$raiz/vendor" "$stage/app/"
 (cd "$stage/app" && npm ci --omit=dev --ignore-scripts)
 cp -- "$raiz/scripts/harwiff" "$stage/harwiff"
 cp -- "$raiz/THIRD_PARTY.md" "$stage/licenses/THIRD_PARTY.md"
-cp -- "$raiz/scripts/install.sh" "$salida/install.sh"
+sed "s/@HARWIFF_VERSION@/v$version/" "$raiz/scripts/install.sh" > "$salida/install.sh"
+chmod +x "$salida/install.sh"
 "$stage/harwiff" --version
 tar -czf "$salida/$paquete" -C "$temporal" harwiff
 (cd "$salida" && sha256sum "$paquete" > SHA256SUMS)

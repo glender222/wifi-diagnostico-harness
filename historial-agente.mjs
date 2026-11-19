@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
+import { guardarJson } from "./bucle.mjs";
 import { HERRAMIENTAS } from "./policy.mjs";
-import { directorios, ID_EJECUCION, leerAuditoria, leerJson } from "./proyecto.mjs";
+import { directorios, idsAuditoria, ID_EJECUCION, leerAuditoria, leerJson } from "./proyecto.mjs";
 
 export const textoVisible = (valor) => String(valor).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const leerOpcional = (ruta) => leerJson(ruta).catch((error) => {
@@ -17,6 +18,131 @@ export async function leerHistorial(dir) {
       return { id, eventos, numero: eventos[0]?.turnNumber ?? 0 };
     }));
   return turnos.sort((a, b) => a.numero - b.numero);
+}
+
+function estadoDelCierre(motivo) {
+  if (["completed", "iteration_limit", "tool_limit"].includes(motivo)) return "completed";
+  return motivo === "cancelled" || motivo === "timeout" ? "cancelled" : "error";
+}
+
+export function resultadoTurno(eventos, estado, motivo, datos) {
+  const textos = new Map(eventos.filter(({ type }) => type === "user").map((evento) => [evento.messageId, evento.text]));
+  const mensajes = eventos.flatMap((evento) => {
+    const timestamp = Date.parse(evento.fecha);
+    if (evento.type === "user_state" && evento.status === "incorporated" && textos.has(evento.messageId)) {
+      return [{ role: "user", content: textos.get(evento.messageId), timestamp }];
+    }
+    if (evento.type === "response") return [{ role: "assistant", content: [{ type: "text", text: evento.text }], timestamp }];
+    return [];
+  });
+  return { estado: estado === "completed" ? "completo" : estado === "cancelled" ? "cancelado" : "incompleto",
+    status: estado, motivo, mensajes, ...datos };
+}
+
+async function auditoriaDelTurno(raiz, estado, id) {
+  if (!id) return;
+  const audit = await leerAuditoria(raiz, id).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  if (audit?.id === id && audit.esquema === "harwiff-auditoria/v1" && audit.origen === "agente"
+      && audit.operacion === "sesion_mock" && audit.sesion === estado.id && audit.scopeId === estado.scopeId) return audit;
+}
+
+async function auditoriaSiguiente(raiz, estado, anterior) {
+  const ids = await idsAuditoria(raiz);
+  const siguiente = anterior ? (estado.turnNumber ?? 0) + 1 : 1;
+  for (const id of ids.reverse()) {
+    if (id === anterior || (anterior && id.slice(0, 13) < anterior.slice(0, 13))) continue;
+    // Un registro incompleto ajeno a esta sesión nunca bloquea su recuperación.
+    const audit = await auditoriaDelTurno(raiz, estado, id).catch(() => undefined);
+    if (audit?.turnNumber === siguiente) return audit;
+  }
+}
+
+function cierreConfirmado(resultado, eventos, auditoria) {
+  if (resultado?.motivo && ["completed", "cancelled", "error"].includes(resultado.status)) {
+    return { status: resultado.status, reason: resultado.motivo };
+  }
+  const fin = eventos.find(({ type, reason }) => type === "end" && reason);
+  if (fin) return { status: estadoDelCierre(fin.reason), reason: fin.reason };
+  if (auditoria?.estado === "completo") return { status: "completed", reason: auditoria.reason ?? "completed" };
+  if (auditoria?.estado === "cancelado") return { status: "cancelled", reason: auditoria.reason ?? "cancelled" };
+  if (auditoria?.estado === "error" || auditoria?.estado === "bloqueado") {
+    return { status: "error", reason: auditoria.reason ?? "interrupted" };
+  }
+}
+
+// Se llama con el bloqueo de la sesión. Cada cierre se atribuye al ID de su turno.
+export async function recuperarTurno(dir, estado) {
+  const raiz = dirname(dirname(dir));
+  const turnos = await leerHistorial(dir);
+  const porId = new Map(turnos.map((turno) => [turno.id, turno]));
+  const carpetaTurno = (id) => join(dir, "turnos", id);
+  const anterior = estado.turnId;
+  let id = anterior;
+  let eventos = porId.get(id)?.eventos ?? [];
+  let resultado = id ? await leerOpcional(join(carpetaTurno(id), "resultado.json")) : undefined;
+  let auditoria = await auditoriaDelTurno(raiz, estado, id);
+  let cierre = cierreConfirmado(resultado, eventos, auditoria);
+  if (!id || cierre) {
+    // Antes se escribía solicitud.json antes de persistir el turnId.
+    const siguiente = await auditoriaSiguiente(raiz, estado, id);
+    if (siguiente) {
+      id = siguiente.id;
+      eventos = porId.get(id)?.eventos ?? [];
+      resultado = await leerOpcional(join(carpetaTurno(id), "resultado.json"));
+      auditoria = siguiente;
+      cierre = cierreConfirmado(resultado, eventos, auditoria);
+    }
+  }
+  cierre ??= { status: "error", reason: "interrupted" };
+  const fecha = new Date().toISOString();
+  const numero = auditoria?.turnNumber ?? porId.get(id)?.numero ?? estado.turnNumber;
+  const adicionales = new Map();
+  function agregar(turnoId, evento) {
+    if (!adicionales.has(turnoId)) adicionales.set(turnoId, []);
+    adicionales.get(turnoId).push({ fecha, ...evento });
+  }
+  const pendientes = new Map();
+  const resueltos = new Set();
+  for (const turno of turnos) for (const evento of turno.eventos) {
+    if (evento.type === "user") pendientes.set(evento.messageId, turno.id);
+    if (evento.type === "user_state") resueltos.add(evento.messageId);
+  }
+  for (const [messageId, turnoId] of pendientes) {
+    if (!resueltos.has(messageId)) agregar(turnoId, { type: "user_state", messageId, status: "not_sent" });
+  }
+  if (id && !eventos.some(({ type }) => type === "end")) {
+    agregar(id, { type: "end", reason: cierre.reason, turnNumber: numero });
+  }
+  if (id && !resultado) {
+    await mkdir(carpetaTurno(id), { recursive: true, mode: 0o700 });
+    const datos = {
+      modelId: auditoria?.modelId ?? estado.modelId, turnNumber: numero, budget: auditoria?.budget ?? estado.budget,
+      iteration: auditoria?.iteration ?? (id === anterior ? estado.iteration : 0),
+      toolAttempts: auditoria?.toolAttempts ?? (id === anterior ? estado.toolAttempts : 0),
+      consumo: auditoria?.consumo ?? eventos.findLast(({ type }) => type === "usage")?.consumo,
+    };
+    resultado = resultadoTurno([...eventos, ...(adicionales.get(id) ?? [])], cierre.status, cierre.reason, datos);
+    await guardarJson(join(carpetaTurno(id), "resultado.json"), resultado);
+  }
+  for (const [turnoId, nuevos] of adicionales) {
+    await guardarJson(join(carpetaTurno(turnoId), "eventos.json"), [...(porId.get(turnoId)?.eventos ?? []), ...nuevos]);
+  }
+  if (auditoria?.estado === "pendiente de cierre") {
+    const estadoAuditoria = { completed: "completo", cancelled: "cancelado", error: "error" };
+    await guardarJson(join(raiz, "auditoria", id, "resultado.json"), {
+      estado: estadoAuditoria[cierre.status], reason: cierre.reason, fin: fecha,
+      ...(cierre.status === "completed" && {
+        decision: "autorizado", evidencia: { referencia: "agentes/" + estado.id + "/turnos/" + id + "/resultado.json" },
+      }),
+      iteration: resultado?.iteration, toolAttempts: resultado?.toolAttempts, consumo: resultado?.consumo,
+    });
+  }
+  return { ...estado, ...cierre, turnId: id, turnNumber: numero, admisionAbierta: false,
+    ...(resultado && { iteration: resultado.iteration, toolAttempts: resultado.toolAttempts,
+      consumo: resultado.consumo, budget: resultado.budget }),
+    lastEvent: { type: "end", reason: cierre.reason } };
 }
 
 export function contextoHistorico(turnos, limpiar, resultados, modelo) {

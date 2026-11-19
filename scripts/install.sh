@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=v0.2.6
-base="${HARWIFF_RELEASE_BASE:-https://github.com/glender222/wifi-diagnostico-harness/releases/download/$version}"
+version="@HARWIFF_VERSION@"
+releases="https://github.com/glender222/wifi-diagnostico-harness/releases"
+if [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  predeterminada="$releases/download/$version"
+else
+  version=harwiff
+  predeterminada="$releases/latest/download"
+fi
+base="${HARWIFF_RELEASE_BASE:-$predeterminada}"
 bin="${HARWIFF_BIN_DIR:-$HOME/.local/bin}"
 datos="${HARWIFF_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/harwiff}"
 paquete=harwiff-linux-x86_64.tar.gz

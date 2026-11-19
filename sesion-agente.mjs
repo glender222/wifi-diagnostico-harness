@@ -3,11 +3,11 @@ import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { ejecutarPi, guardarJson, modeloFoundry, MODELO_DEMO } from "./bucle.mjs";
-import { contextoHistorico, leerHistorial, leerResultadoAuditado, textoVisible } from "./historial-agente.mjs";
+import { contextoHistorico, leerHistorial, leerResultadoAuditado, recuperarTurno, resultadoTurno, textoVisible } from "./historial-agente.mjs";
 import { conBloqueoProyecto, entorno, depurarInventario } from "./entorno.mjs";
 import { authorize, cargarObjetivosMock, HERRAMIENTAS, parametrosAuditables } from "./policy.mjs";
 import { MENSAJES_OPENAI, seguirOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
-import { auditar, hashAlcance, ID_EJECUCION, leerControlWifi, leerJson, validarScopeSnapshot } from "./proyecto.mjs";
+import { auditar, crearIdAuditoria, hashAlcance, ID_EJECUCION, leerControlWifi, leerJson, validarScopeSnapshot } from "./proyecto.mjs";
 
 const ESQUEMA = "harwiff-agent-session/v1";
 const ACTIVO = new Set(["created", "running"]);
@@ -165,29 +165,10 @@ export async function cargarSesionAutonoma(dir, datos, { soloResumen = false } =
     await conBloqueoProyecto(dir, async () => {
       estado = await leerJson(join(dir, "sesion.json"));
       if (!ACTIVO.has(estado.status) && !estado.admisionAbierta) return;
-      const turnos = await leerHistorial(dir);
-      const pendientes = new Set();
-      for (const { eventos } of turnos) for (const evento of eventos) {
-        if (evento.type === "user") pendientes.add(evento.messageId);
-        if (evento.type === "user_state") pendientes.delete(evento.messageId);
+      if (estado.id !== basename(dir) || (estado.turnId && !ID_EJECUCION.test(estado.turnId))) {
+        throw new Error("La sesión autónoma guardada tiene identificadores inválidos.");
       }
-      const ultimo = turnos.at(-1);
-      if (ultimo) {
-        const fecha = new Date().toISOString();
-        const cierre = [...pendientes].map((messageId) => ({ type: "user_state", messageId, status: "not_sent", fecha }));
-        cierre.push({ type: "end", reason: "interrupted", fecha });
-        const ruta = join(dir, "turnos", ultimo.id);
-        await guardarJson(join(ruta, "eventos.json"), [...ultimo.eventos, ...cierre]);
-        if (!ultimo.eventos.some(({ type }) => type === "end")) {
-          await guardarJson(join(ruta, "resultado.json"), {
-            estado: "incompleto", status: "error", motivo: "interrupted", modelId: estado.modelId,
-            iteration: estado.iteration, toolAttempts: estado.toolAttempts, budget: estado.budget,
-            consumo: ultimo.eventos.findLast(({ type }) => type === "usage")?.consumo,
-          });
-        }
-      }
-      estado = { ...estado, admisionAbierta: false, status: "error", reason: "interrupted",
-        lastEvent: { type: "end", reason: "interrupted" } };
+      estado = await recuperarTurno(dir, estado);
       await guardarJson(join(dir, "sesion.json"), estado);
     }).catch((error) => {
       if (error.code !== "LOCK_BUSY") throw error;
@@ -382,7 +363,7 @@ function prepararBuzon(ocultar) {
       sellado = true;
       const pendientes = cola.splice(0);
       const siguientes = diferidos.splice(0);
-      await finalizar(continuar ? pendientes : [...pendientes, ...siguientes]);
+      await finalizar(continuar ? pendientes : [...pendientes, ...siguientes], continuar && siguientes.length > 0);
       if (continuar && siguientes.length) {
         listo = Promise.withResolvers();
         listo.promise.catch(() => {});
@@ -715,11 +696,12 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
   const motivoFallo = (error) => signal.aborted ? (signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled")
     : error instanceof FinSesion ? error.code : "session_error";
   try {
+    estado.turnId = crearIdAuditoria();
+    await guardarJson(rutaEstado, estado);
     await auditar(proyecto.raiz, {
       origen: "agente", sesion: estado.id, operacion: "sesion_mock", proveedor: estado.provider, scopeId: estado.scopeId,
       modelId: estado.modelId, turnNumber: estado.turnNumber, budget: estado.budget,
     }, async (id) => {
-      estado.turnId = id;
       rutaTurno = join(dir, "turnos", id);
       await mkdir(rutaTurno, { recursive: true, mode: 0o700 });
       const usuario = entradas[0].mensaje;
@@ -808,7 +790,7 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
       reason: error ? motivoFallo(error) : motivo,
       iteration: estado.iteration, toolAttempts: estado.toolAttempts,
       ...metadatosModelo(),
-    }));
+    }), estado.turnId);
     estado.status = "completed";
   } catch (error) {
     estado.status = signal.aborted ? "cancelled" : "error";
@@ -820,29 +802,17 @@ async function ejecutarSesion({ proyecto, dir, estado, alcance, modelo, signal, 
     estado.consumo = seguimiento.resumen();
     await anotar({ type: "usage", consumo: estado.consumo });
   }
-  const siguientes = await buzon.cerrar(motivo === "completed" && !signal.aborted, async (sinTurno) => {
+  const siguientes = await buzon.cerrar(motivo === "completed" && !signal.aborted, async (sinTurno, admisionAbierta) => {
     for (const usuario of sinTurno) pendientes.set(usuario.id, usuario);
     const cierre = [...pendientes.keys()].map((messageId) => ({ type: "user_state", messageId, status: "not_sent" }));
-    const textos = new Map(eventos.filter(({ type }) => type === "user").map((evento) => [evento.messageId, evento.text]));
-    const mensajes = eventos.flatMap((evento) => {
-      const timestamp = Date.parse(evento.fecha);
-      if (evento.type === "user_state" && evento.status === "incorporated") {
-        return [{ role: "user", content: textos.get(evento.messageId), timestamp }];
-      }
-      if (evento.type === "response") return [{ role: "assistant", content: [{ type: "text", text: evento.text }], timestamp }];
-      return [];
-    });
-    await guardarJson(join(rutaTurno, "resultado.json"), {
-      estado: estado.status === "completed" ? "completo" : estado.status === "cancelled" ? "cancelado" : "incompleto",
-      status: estado.status, motivo, mensajes, iteration: estado.iteration, toolAttempts: estado.toolAttempts,
-      turnNumber: estado.turnNumber,
+    await guardarJson(join(rutaTurno, "resultado.json"), resultadoTurno(eventos, estado.status, motivo, {
+      iteration: estado.iteration, toolAttempts: estado.toolAttempts, turnNumber: estado.turnNumber,
       budget: estado.budget, modelId: estado.modelId, ...metadatosModelo(),
-    });
+    }));
+    estado.admisionAbierta = admisionAbierta;
     parciales.clear();
     await guardarEventos([...cierre, { type: "end", reason: motivo }]);
   });
-  estado.admisionAbierta = siguientes.length > 0;
-  await guardarJson(rutaEstado, estado);
   if (!siguientes.length) alCerrar();
   return siguientes;
 }

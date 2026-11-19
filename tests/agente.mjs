@@ -403,8 +403,10 @@ try {
   const datosInterrumpidos = { ...primera.datos, status: "running", reason: null };
   await guardarJson(join(conDenegacion.dir, "sesion.json"), datosInterrumpidos);
   const recuperada = await cargarSesionAutonoma(conDenegacion.dir, datosInterrumpidos);
-  assert.equal(recuperada.estado, "error");
-  assert.equal((await estado(conDenegacion)).reason, "interrupted");
+  assert.equal(recuperada.estado, "completed");
+  assert.equal((await estado(conDenegacion)).reason, "completed");
+  assert.deepEqual((await leer(join(primera.turno, "eventos.json"))).filter(({ type }) => type === "end")
+    .map(({ reason }) => reason), ["completed"]);
   assert.equal((await readdir(join(primera.turno, "evidencias"))).length, 2);
   console.log("Fase 2A · política, broker, secuencias Pi, presupuestos, revocación, cancelación, recuperación e inventario informativo verificados.");
 } finally {

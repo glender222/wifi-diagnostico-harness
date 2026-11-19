@@ -4,11 +4,29 @@ artefactos="${1:?Indica la URL de la release}"
 temporal="$(mktemp -d)"
 trap 'rm -rf -- "$temporal"' EXIT
 export HARWIFF_DATA_DIR="$temporal/data" HARWIFF_BIN_DIR="$temporal/bin"
-curl -fsSL "$artefactos/install.sh" | HARWIFF_RELEASE_BASE="$artefactos" bash
+curl -fsSL "$artefactos/install.sh" -o "$temporal/installer"
+HARWIFF_RELEASE_BASE="$artefactos" bash "$temporal/installer"
 ejecutable="$HARWIFF_BIN_DIR/harwiff"
-"$ejecutable" --version
 instalado="$(readlink -f "$HARWIFF_DATA_DIR/actual")"
 python="$instalado/python/bin/python3"
+version="$("$ejecutable" --version)"
+"$python" -B - "$instalado/app" "$version" "$temporal/installer" <<'VERSION_TEST'
+import json
+import re
+import sys
+from pathlib import Path
+app = Path(sys.argv[1])
+info = json.loads((app / "build-info.json").read_text())
+assert info["version"] == json.loads((app / "package.json").read_text())["version"]
+assert re.fullmatch(r"[a-f0-9]{40}", info["commit"])
+assert f'version="v{info["version"]}"' in Path(sys.argv[3]).read_text()
+assert info["canal"] in ("desarrollo", "estable")
+esperada = f'Harwiff {info["version"]} · {info["canal"]} · {info["commit"][:12]}'
+if info["cambiosLocales"]:
+    esperada += " · cambios locales"
+assert sys.argv[2] == esperada
+print(esperada)
+VERSION_TEST
 mkdir "$temporal/path-reducido"
 # Ejecuta el lector incluido y el DTO incluso con PATH sin utilidades de red.
 PATH="$temporal/path-reducido" "$python" -I -B "$instalado/app/wireless_linux.py" inventory \
@@ -57,10 +75,15 @@ grep -q 'Contexto de la sesión registro' "$temporal/salida"
 grep -q 'Mock · Simulado' "$temporal/salida"
 grep -q 'Adaptador seleccionado: mock' "$temporal/salida"
 grep -q '"preflightPassed": true' "$temporal/salida"
-printf '%s\n' '/alcance set --ssid LAB_TEST_AP --canales 6' '/agente Revisar el fixture' '/salir' \
-  | env -u OPENAI_API_KEY -u DBUS_SESSION_BUS_ADDRESS -u FOUNDRY_API_KEY "$ejecutable" "$proyecto" > "$temporal/sin-conexion"
+estado=0
+printf '%s\n' '/alcance set --ssid LAB_TEST_AP --canales 6' '/agente Revisar el fixture' '/config' '/salir' \
+  | env -u OPENAI_API_KEY -u DBUS_SESSION_BUS_ADDRESS -u FOUNDRY_API_KEY "$ejecutable" "$proyecto" \
+    > "$temporal/sin-conexion" 2> "$temporal/error-conexion" || estado=$?
+test "$estado" -eq 1
 grep -qx 'Proveedor LLM · Sin modelo configurado' "$temporal/sin-conexion"
-grep -q 'Conecta un proveedor con /connect' "$temporal/sin-conexion"
+grep -q 'Proveedor de /agente: sin configurar' "$temporal/sin-conexion"
+grep -q 'Conecta un proveedor con /connect' "$temporal/error-conexion"
+! grep -q '^Error:' "$temporal/sin-conexion"
 test ! -e "$proyecto/.harwiff/agentes"
 cp -- "$(dirname -- "$0")/fixtures/connect-openai.mjs" "$temporal/openai-fixture.mjs"
 printf '%s\n' '/model gpt-4.1-mini' '/agente Revisar el fixture' '/salir' \
@@ -79,7 +102,6 @@ grep -q 'Adaptador: mock' "$temporal/reapertura"
 grep -Eq 'Agente agente-.* · completed' "$temporal/reapertura"
 destino_previo="$(readlink "$HARWIFF_DATA_DIR/actual")"
 mkdir "$temporal/danado"
-curl -fsSL "$artefactos/install.sh" -o "$temporal/installer"
 printf 'archivo dañado\n' > "$temporal/danado/harwiff-linux-x86_64.tar.gz"
 curl -fsSL "$artefactos/SHA256SUMS" -o "$temporal/danado/SHA256SUMS"
 if HARWIFF_RELEASE_BASE="file://$temporal/danado" bash "$temporal/installer"; then
