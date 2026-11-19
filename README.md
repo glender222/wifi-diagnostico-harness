@@ -2,7 +2,7 @@
 
 **Diagnóstico Wi‑Fi de solo lectura desde la terminal.** Abre un proyecto, inspecciona sus adaptadores y conserva cada informe con su registro de auditoría. Puedes empezar con una muestra sintética y conectar un proveedor cuando quieras usar el agente.
 
-[Instalar](#instalación) · [Primera prueba](#primera-prueba-sin-docker) · [Agente](#conversar-con-el-agente) · [Diagnóstico físico](#diagnóstico-físico) · [Descargas](https://github.com/glender222/wifi-diagnostico-harness/releases/latest)
+[Sitio de Harwiff](https://glendervargas.me/wifi-diagnostico-harness/) · [Instalar](#instalación) · [Primera prueba](#primera-prueba-sin-docker) · [Agente](#conversar-con-el-agente) · [Diagnóstico físico](#diagnóstico-físico) · [Descargas](https://github.com/glender222/wifi-diagnostico-harness/releases/latest)
 
 ![Menú de Harwiff en el proyecto Laboratorio, con adaptador simulado, alcance y modelo configurados](docs/capturas/menu.png)
 

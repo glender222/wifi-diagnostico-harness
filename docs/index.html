@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090d17">
+  <meta name="description" content="Descarga Harwiff, un entorno de diagnóstico Wi-Fi de solo lectura para Linux. Instálalo y prueba una muestra sintética desde tu terminal.">
+  <title>Harwiff — Diagnóstico Wi-Fi desde tu terminal</title>
+  <link rel="stylesheet" href="estilos.css">
+  <link rel="icon" href="assets/icono.png" type="image/png">
+  <script src="instalar.js" defer></script>
+</head>
+<body>
+  <a class="salto" href="#contenido">Saltar al contenido</a>
+  <header class="cabecera">
+    <nav class="ancho barra" aria-label="Navegación principal">
+      <a class="marca" href="./"><span class="senal" aria-hidden="true"></span>Harwiff</a>
+      <div class="navegacion">
+        <a href="#instalar">Instalar</a>
+        <a href="#guia">Guía rápida</a>
+        <a href="#documentacion">Documentación</a>
+      </div>
+      <a class="boton boton-github" href="https://github.com/glender222/wifi-diagnostico-harness">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="contenido">
+    <section class="portada" aria-labelledby="titulo">
+      <div class="ancho portada-interior">
+        <img class="arte" src="assets/estelas-de-red.webp" width="1040" height="1300" alt="" fetchpriority="high">
+        <div class="portada-texto">
+          <p class="plataforma"><span aria-hidden="true"></span> v1.0.0 <span class="separador" aria-hidden="true">/</span> Linux x86-64</p>
+          <h1 id="titulo">Diagnóstico Wi-Fi<br><em>desde tu terminal.</em></h1>
+          <p class="introduccion">Inspecciona tus adaptadores en modo de solo lectura y guarda cada diagnóstico con su evidencia.</p>
+          <div class="acciones">
+            <a class="boton principal" href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/install.sh">Descargar instalador</a>
+            <a class="boton secundario" href="#guia">Ver guía rápida</a>
+          </div>
+          <div class="instalador" id="instalar">
+            <div class="instalador-titulo">
+              <h2>Instalar por terminal</h2>
+              <button class="copiar" type="button" data-copy="comando" hidden>Copiar</button>
+            </div>
+            <pre><code id="comando">curl -fsSLo harwiff-install.sh \
+  https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/install.sh \
+  &amp;&amp; bash harwiff-install.sh</code></pre>
+            <p class="solo-lector" id="estado-copia" role="status"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="paquete">
+      <div class="ancho paquete-interior">
+        <p>Paquete autónomo para <strong>Linux x86-64 con glibc</strong></p>
+        <div class="paquete-enlaces">
+          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/harwiff-linux-x86_64.tar.gz">Paquete .tar.gz</a>
+          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/SHA256SUMS">SHA-256</a>
+          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/tag/v1.0.0">Release</a>
+        </div>
+      </div>
+    </div>
+
+    <section class="guia ancho" id="guia" aria-labelledby="titulo-guia">
+      <div>
+        <h2 id="titulo-guia">Tu primera lectura</h2>
+        <p>Prueba la muestra sintética sin Docker, adaptador USB ni credenciales.</p>
+        <pre class="inicio-comando"><code>mkdir -p ~/laboratorio-wifi
+cd ~/laboratorio-wifi
+harwiff</code></pre>
+        <ol class="pasos">
+          <li>Elige <strong>Inicializar esta carpeta</strong>.</li>
+          <li>Abre <strong>Diagnóstico → Generar muestra sintética</strong>.</li>
+          <li>Entra en <strong>Ver en Auditoría</strong> para leer el informe.</li>
+        </ol>
+        <p class="atajos"><kbd>↑</kbd><kbd>↓</kbd> Mover <kbd>Enter</kbd> Abrir <kbd>Esc</kbd> Volver</p>
+      </div>
+      <figure class="captura">
+        <a href="capturas/menu.png">
+          <img src="capturas/menu.png" width="884" height="475" alt="Menú de Harwiff con proyectos, adaptadores, alcance y auditoría" loading="lazy">
+        </a>
+        <figcaption>Menú del proyecto Laboratorio. <a href="capturas/menu.png">Ampliar captura</a></figcaption>
+      </figure>
+    </section>
+
+    <section class="documentacion" id="documentacion" aria-labelledby="titulo-doc">
+      <div class="ancho documentacion-interior">
+        <div>
+          <h2 id="titulo-doc">Documentación</h2>
+          <p>Consulta los requisitos y dónde encontrar lo que genera Harwiff.</p>
+          <a class="enlace-doc" href="https://github.com/glender222/wifi-diagnostico-harness#readme">Leer la guía completa en GitHub</a>
+        </div>
+        <div class="temas">
+          <details open>
+            <summary>Inventario y diagnóstico físico</summary>
+            <p><strong>Adaptadores</strong> muestra los radios e interfaces detectados por Linux. Para una lectura física configura el alcance en Harwiff y usa Docker, NetworkManager e iproute2. El preflight protege la conexión principal antes de seleccionar un adaptador.</p>
+          </details>
+          <details>
+            <summary>Conversar con el agente</summary>
+            <p>Define el alcance de laboratorio, selecciona <code>mock</code> y conecta OpenAI API o Azure AI Foundry desde <strong>Modelo y ajustes</strong>. Ve a <strong>Agentes → Nueva conversación</strong>. El agente trabaja sobre un escenario simulado.</p>
+            <a href="capturas/agente.png">Ver captura del agente</a>
+          </details>
+          <details>
+            <summary>Informes y auditoría</summary>
+            <p>Los informes e historiales se guardan en la carpeta <code>.harwiff/</code> del proyecto. En <strong>Auditoría</strong> puedes abrir el resultado, sus referencias y el JSON del registro.</p>
+            <a href="capturas/auditoria.png">Ver captura de auditoría</a>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="pie">
+    <div class="ancho pie-interior">
+      <a class="marca" href="./"><span class="senal" aria-hidden="true"></span>Harwiff</a>
+      <div>
+        <a href="https://github.com/glender222/wifi-diagnostico-harness">Repositorio</a>
+        <a href="https://github.com/glender222/wifi-diagnostico-harness/releases">Versiones</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
