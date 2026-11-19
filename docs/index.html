@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#090d17">
-  <meta name="description" content="Harwiff reúne observación de redes Wi-Fi, defensa y ejercicios simulados con agentes desde la terminal de Linux.">
-  <title>Harwiff — Seguridad de redes con agentes</title>
-  <link rel="stylesheet" href="estilos.css?v=2">
+  <meta name="description" content="Seguridad de agentes de IA. Harwiff es el primer producto, enfocado en infraestructura de red desde la terminal de Linux.">
+  <title>Harwiff — Seguridad de agentes de IA</title>
+  <link rel="stylesheet" href="estilos.css?v=3">
   <link rel="icon" href="assets/icono.png" type="image/png">
   <script src="instalar.js" defer></script>
   <script src="red.js" defer></script>
@@ -35,8 +35,9 @@
         <button class="control-red" id="control-red" type="button" hidden>Pausar red</button>
         <div class="portada-texto">
           <p class="plataforma"><span aria-hidden="true"></span> v1.0.0 <span class="separador" aria-hidden="true">/</span> Linux x86-64</p>
-          <h1 id="titulo">Seguridad de redes<br><em>con agentes.</em></h1>
-          <p class="introduccion">Observa tu red Wi-Fi en modo de solo lectura y explora escenarios de seguridad simulados con agentes.</p>
+          <h1 id="titulo">Seguridad de<br><em>agentes de IA.</em></h1>
+          <h2 class="producto">Infraestructura de red</h2>
+          <p class="introduccion">Observa infraestructura Wi-Fi en modo de solo lectura. En laboratorio, define el alcance del agente y audita sus operaciones simuladas.</p>
           <div class="acciones">
             <a class="boton principal" href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/install.sh">Descargar instalador</a>
             <a class="boton secundario" href="#guia">Ver guía rápida</a>
@@ -97,11 +98,11 @@ harwiff</code></pre>
         </div>
         <div class="temas">
           <details open>
-            <summary>Defensa e inventario de red</summary>
+            <summary>Infraestructura Wi-Fi</summary>
             <p><strong>Adaptadores</strong> muestra los radios e interfaces detectados por Linux. Para una lectura física configura el alcance en Harwiff y usa Docker, NetworkManager e iproute2. El preflight protege la conexión principal antes de seleccionar un adaptador.</p>
           </details>
           <details>
-            <summary>Laboratorio con agentes</summary>
+            <summary>Agentes y alcance</summary>
             <p>Define el alcance de laboratorio, selecciona <code>mock</code> y conecta OpenAI API o Azure AI Foundry desde <strong>Modelo y ajustes</strong>. Ve a <strong>Agentes → Nueva conversación</strong>. El agente trabaja sobre un escenario simulado.</p>
             <a href="capturas/agente.png">Ver captura del agente</a>
           </details>

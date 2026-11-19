@@ -39,7 +39,7 @@ a:focus-visible, button:focus-visible, summary:focus-visible {
 }
 
 .ancho {
-  width: min(calc(100% - 5.5rem), 76rem);
+  width: min(calc(100% - 5.5rem), 100rem);
   margin-inline: auto;
 }
 
@@ -142,10 +142,10 @@ a:focus-visible, button:focus-visible, summary:focus-visible {
 .red-visual {
   position: absolute;
   z-index: -1;
-  inset: 0 -.75rem 0 auto;
-  width: 61%;
+  inset: 0 calc((100% - 100vw) / 2) 0 auto;
+  width: 67%;
   height: 100%;
-  mask-image: linear-gradient(90deg, transparent, #000 23%, #000 91%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 24%);
   pointer-events: none;
 }
 
@@ -175,7 +175,7 @@ a:focus-visible, button:focus-visible, summary:focus-visible {
 .control-red:hover { color: var(--texto); }
 
 
-.portada-texto { max-width: min(54%, 40rem); }
+.portada-texto { max-width: min(54%, 46rem); }
 
 .plataforma {
   display: flex;
@@ -205,15 +205,20 @@ h1, h2 {
 
 h1 {
   margin-bottom: 1.3rem;
-  font-size: clamp(3.9rem, 6.55vw, 6.8rem);
+  font-size: clamp(4.1rem, 7.55vw, 8rem);
   line-height: .94;
 }
 
 h1 em { color: var(--hielo); font-style: normal; }
 h2 { font-size: clamp(2.35rem, 5vw, 3.5rem); line-height: 1; margin-bottom: 1rem; }
 
+.producto {
+  margin: .15rem 0 .65rem;
+  font-size: clamp(1.65rem, 2vw, 2.1rem);
+}
+
 .introduccion {
-  max-width: 26rem;
+  max-width: 30rem;
   color: var(--secundario);
   font-size: 1.09rem;
   margin-bottom: 1.55rem;
