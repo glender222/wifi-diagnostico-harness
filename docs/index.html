@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#090d17">
-  <meta name="description" content="Descarga Harwiff, un entorno de diagnóstico Wi-Fi de solo lectura para Linux. Instálalo y prueba una muestra sintética desde tu terminal.">
-  <title>Harwiff — Diagnóstico Wi-Fi desde tu terminal</title>
+  <meta name="description" content="Harwiff reúne observación de redes Wi-Fi, defensa y ejercicios simulados con agentes desde la terminal de Linux.">
+  <title>Harwiff — Seguridad de redes con agentes</title>
   <link rel="stylesheet" href="estilos.css">
   <link rel="icon" href="assets/icono.png" type="image/png">
   <script src="instalar.js" defer></script>
+  <script src="red.js" defer></script>
 </head>
 <body>
   <a class="salto" href="#contenido">Saltar al contenido</a>
@@ -27,11 +28,15 @@
   <main id="contenido">
     <section class="portada" aria-labelledby="titulo">
       <div class="ancho portada-interior">
-        <img class="arte" src="assets/estelas-de-red.webp" width="1040" height="1300" alt="" fetchpriority="high">
+        <div class="red-visual" aria-hidden="true">
+          <img class="arte" src="assets/estelas-de-red.webp" width="1040" height="1300" alt="" fetchpriority="high">
+          <canvas></canvas>
+        </div>
+        <button class="control-red" id="control-red" type="button" hidden>Pausar red</button>
         <div class="portada-texto">
           <p class="plataforma"><span aria-hidden="true"></span> v1.0.0 <span class="separador" aria-hidden="true">/</span> Linux x86-64</p>
-          <h1 id="titulo">Diagnóstico Wi-Fi<br><em>desde tu terminal.</em></h1>
-          <p class="introduccion">Inspecciona tus adaptadores en modo de solo lectura y guarda cada diagnóstico con su evidencia.</p>
+          <h1 id="titulo">Seguridad de redes<br><em>con agentes.</em></h1>
+          <p class="introduccion">Observa tu red Wi-Fi en modo de solo lectura y explora escenarios de seguridad simulados con agentes.</p>
           <div class="acciones">
             <a class="boton principal" href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/install.sh">Descargar instalador</a>
             <a class="boton secundario" href="#guia">Ver guía rápida</a>
@@ -63,7 +68,7 @@
 
     <section class="guia ancho" id="guia" aria-labelledby="titulo-guia">
       <div>
-        <h2 id="titulo-guia">Tu primera lectura</h2>
+        <h2 id="titulo-guia">Tu primer laboratorio</h2>
         <p>Prueba la muestra sintética sin Docker, adaptador USB ni credenciales.</p>
         <pre class="inicio-comando"><code>mkdir -p ~/laboratorio-wifi
 cd ~/laboratorio-wifi
@@ -92,11 +97,11 @@ harwiff</code></pre>
         </div>
         <div class="temas">
           <details open>
-            <summary>Inventario y diagnóstico físico</summary>
+            <summary>Defensa e inventario de red</summary>
             <p><strong>Adaptadores</strong> muestra los radios e interfaces detectados por Linux. Para una lectura física configura el alcance en Harwiff y usa Docker, NetworkManager e iproute2. El preflight protege la conexión principal antes de seleccionar un adaptador.</p>
           </details>
           <details>
-            <summary>Conversar con el agente</summary>
+            <summary>Laboratorio con agentes</summary>
             <p>Define el alcance de laboratorio, selecciona <code>mock</code> y conecta OpenAI API o Azure AI Foundry desde <strong>Modelo y ajustes</strong>. Ve a <strong>Agentes → Nueva conversación</strong>. El agente trabaja sobre un escenario simulado.</p>
             <a href="capturas/agente.png">Ver captura del agente</a>
           </details>
