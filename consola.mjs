@@ -109,6 +109,28 @@ function resumen(adaptadores) {
     (lockedBySession ? ` · propietario ${lockedBySession}` : "")).join("\n");
 }
 
+const ESTADOS_AGENTE = {
+  created: "Preparando", running: "Trabajando", trabajando: "Trabajando", completed: "Finalizada",
+  lista: "Lista", cancelled: "Cancelada", detenida: "Cancelada", interrupted: "Interrumpida",
+  interrumpida: "Interrumpida", error: "Error",
+};
+
+function estadoAgente(item) {
+  return item.soloConsulta && item.actividad === "activa en otra consola"
+    ? "Activa en otra consola" : ESTADOS_AGENTE[item.estado] ?? item.estado;
+}
+
+function actividadAgente(item) {
+  return (item?.operaciones ?? []).map(({ tool, auditId, llamadaId, result, autorizacion }) => ({
+    value: auditId ?? llamadaId,
+    label: tool.replaceAll("_", " "),
+    description: !result ? "En curso" : result.code === "cancelled" ? "Cancelada" :
+      autorizacion?.decision === "DENIED" && autorizacion.motivo !== "broker_error" ? "Denegada" :
+        !result.ok ? "Error" : result.inventarioEstado === "partial" ? "Parcial" :
+          result.inventarioEstado === "unavailable" ? "Sin datos" : "Completada",
+  }));
+}
+
 const USO_ALCANCE = "Usa /alcance ver o /alcance set [--bssid <mac>] [--ssid <nombre>] [--canales <1,6,11>].";
 
 function argumentosAlcance(texto) {
@@ -172,6 +194,9 @@ async function aplicar(destino) {
   let sesion;
   let cerrando = false;
   let diagnosticoPendiente;
+  let carpetaParaInicializar;
+  let adaptadorAusente;
+  const objetivosPendientes = new Map();
   let agentes = new Map();
   const envios = new WeakMap();
   const cargasHistorial = new WeakMap();
@@ -199,14 +224,76 @@ async function aplicar(destino) {
       : proveedor === "azure-foundry" ? config.foundry?.deployment ?? process.env.FOUNDRY_DEPLOYMENT : undefined;
     return { proveedor: etiquetaProveedor(proveedor), modelo: proveedor ? modelo || "pendiente" : undefined };
   }
+  function hayTrabajo() {
+    return Boolean(diagnosticoPendiente) || [...agentes.values()].some((item) => item.trabajo || envios.has(item));
+  }
+
+  function adaptadorVisible() {
+    const adaptador = controlWifi?.adapter;
+    if (!adaptador) return "Pendiente";
+    if (adaptador.id === "mock") return "mock (simulado)";
+    return (adaptador.name ?? "Adaptador guardado") + (adaptador.id === adaptadorAusente ? " (desconectado)" : "");
+  }
+
+  function tieneAlcance() {
+    const scope = controlWifi?.scope;
+    return Boolean(scope?.allowedSsids.length || scope?.allowedBssids.length);
+  }
+
+  function resumenAlcance() {
+    const scope = controlWifi?.scope;
+    if (!tieneAlcance()) return "Pendiente";
+    return [
+      [scope.allowedSsids.length, "SSID", "SSID"],
+      [scope.allowedBssids.length, "BSSID", "BSSID"],
+      [scope.allowedChannels.length, "canal", "canales"],
+    ].filter(([total]) => total).map(([total, singular, plural]) => `${total} ${total === 1 ? singular : plural}`).join(", ");
+  }
+
+  function menuPrincipal() {
+    if (!proyecto) return [
+      { value: "abrirProyecto", label: "Abrir proyecto" },
+      { value: "crearProyecto", label: "Crear proyecto" },
+      ...(carpetaParaInicializar ? [{ value: "inicializar", label: "Inicializar esta carpeta",
+        description: seguro(ocultar(carpetaParaInicializar)) }] : []),
+      { value: "salir", label: "Salir" },
+    ];
+    return [
+      { value: "agentes", label: "Agentes" },
+      { value: "diagnostico", label: "Diagnóstico" },
+      { value: "adaptador", label: "Adaptadores", description: adaptadorVisible() },
+      { value: "alcance", label: "Alcance", description: resumenAlcance() },
+      { value: "ajustes", label: "Modelo y ajustes", description: llmProyecto().modelo ?? "Pendiente" },
+      { value: "auditoria", label: "Auditoría" },
+      { value: "sesiones", label: "Sesiones de trabajo", description: sesion },
+      { value: "proyectos", label: "Proyectos" },
+      { value: "salir", label: "Salir" },
+    ].map((opcion) => ({ ...opcion, description: opcion.description && seguro(ocultar(opcion.description)) }));
+  }
+
+  function resumenPantalla() {
+    if (agente) return [
+      (agente.autonoma || agente.modo === "demo") && "Simulado",
+      agente.historialPendiente ? "Cargando historial" : estadoAgente(agente),
+      agente.soloConsulta && "Solo consulta",
+      agente.modelId,
+    ].filter(Boolean).join(" | ");
+    const activos = [...agentes.values()].filter((item) => item.trabajo || envios.has(item)).length;
+    return [
+      activos ? `${activos} ${activos === 1 ? "agente" : "agentes"} trabajando` : "",
+      controlWifi?.preflight?.ok === false ? "Preflight bloqueado" : "",
+    ].filter(Boolean).join(" | ");
+  }
+
   function actualizar() {
     interfaz?.render({
-      proyecto: carpetaTrabajo ? seguro(basename(carpetaTrabajo)) : undefined, rutaProyecto: proyecto, cliente: config?.cliente === "demo" ? undefined : config?.cliente,
+      proyecto: carpetaTrabajo ? seguro(ocultar(basename(carpetaTrabajo))) : undefined, rutaProyecto: proyecto, cliente: config?.cliente === "demo" ? undefined : config?.cliente,
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente?.autonoma ? agente.avisos ?? [] : agente ? agente.mensajes : mensajes,
       transcript: agente?.transcript, ...(config && llmProyecto()),
       autonoma: agente?.autonoma, soloConsulta: agente?.soloConsulta, comandos: disponibles(proyecto, agente),
-      controlWifi,
+      controlWifi, menu: menuPrincipal(), estadoResumen: seguro(ocultar(resumenPantalla())),
+      actividad: actividadAgente(agente),
       promptEntorno: PROMPT_ENTORNO,
     });
   }
@@ -220,7 +307,10 @@ async function aplicar(destino) {
   }
   function mostrarError(error, destino = agente) {
     const mensaje = "Error: " + error.message;
-    if (tty) mostrar(mensaje, destino);
+    if (tty) {
+      mostrar(mensaje, destino);
+      if (!destino) interfaz?.notificar(mensaje.replace(" con /alcance set", ""));
+    }
     else {
       console.error(seguro(ocultar(mensaje)));
       process.exitCode = 1;
@@ -262,7 +352,6 @@ async function aplicar(destino) {
   try {
     process.on("SIGTERM", cerrar);
     process.on("SIGINT", cerrar);
-    let carpetaParaInicializar;
     try {
       carpetaParaInicializar = await abrirProyectoInicial();
     } catch (error) {
@@ -270,7 +359,7 @@ async function aplicar(destino) {
     }
     if (tty && !cerrando) {
       const { pantalla } = await import("./pantalla.mjs");
-      interfaz = pantalla(comandos, { salir: cerrar, volver, ocultar,
+      interfaz = pantalla(comandos, { salir: cerrar, volver, ocultar, limpiar: (texto) => seguro(ocultar(texto)),
         entrar(id) {
           const item = agentes.get(id);
           void enfocar(id).catch((error) => mostrar(`Error: ${error.message}`, item));
@@ -281,7 +370,12 @@ async function aplicar(destino) {
         },
       });
       actualizar();
-      if (carpetaParaInicializar) {
+      if (mensajes.some((mensaje) => mensaje.startsWith("Aviso: no se pudo leer la sesión"))) {
+        interfaz.notificar("Algunas sesiones guardadas son ilegibles.");
+      }
+      const errorInicial = mensajes.find((mensaje) => mensaje.startsWith("Error:"));
+      if (errorInicial) interfaz.notificar(errorInicial);
+      if (carpetaParaInicializar && destino) {
         const decision = await interfaz.elegir(`Inicializar proyecto en ${seguro(carpetaParaInicializar)}`, [
           { value: "inicializar", label: "Inicializar aquí" },
           { value: "cancelar", label: "Ahora no" },
@@ -298,6 +392,14 @@ async function aplicar(destino) {
     while (!cerrando) {
       const entrada = interfaz ? await interfaz.leer() : (await lineas.next()).value;
       if (entrada === undefined || cerrando) break;
+      if (typeof entrada === "object") {
+        try {
+          await navegar(entrada.accion);
+        } catch (error) {
+          mostrarError(error);
+        }
+        continue;
+      }
       const texto = ocultar(entrada.trim());
       if (!texto) continue;
       if (tty && (texto.startsWith("/") || texto === "ls" || /^agent\s+harwiff(?:\s|$)/.test(texto))) {
@@ -353,10 +455,13 @@ async function aplicar(destino) {
     try {
       const resultado = await comprobarHerramientasOpenAI(id, { entorno });
       estados.set(id, "verificado · Responses y function calling");
-      mostrar(`OpenAI Responses y function calling verificados · ${resultado.modeloDevuelto ?? resultado.modelId} · ${resultado.herramienta}`);
+      const verificacion = `OpenAI Responses y function calling verificados · ${resultado.modeloDevuelto ?? resultado.modelId} · ${resultado.herramienta}`;
+      mostrar(verificacion);
       const { tokens } = resultado;
-      mostrar(tokens ? `Tokens de conectividad · entrada ${tokens.entrada}, salida ${tokens.salida}, total ${tokens.total}`
-        : "OpenAI no informó tokens para la prueba de conectividad.");
+      const consumo = tokens ? `Tokens de conectividad · entrada ${tokens.entrada}, salida ${tokens.salida}, total ${tokens.total}`
+                : "OpenAI no informó tokens para la prueba de conectividad.";
+      mostrar(consumo);
+      return verificacion + "\n" + consumo;
     } catch (error) {
       if (error.code === "openai_tools_unsupported") estados.set(id, "incompatible");
       throw error;
@@ -379,6 +484,10 @@ async function aplicar(destino) {
   }
 
   async function configurarFoundry() {
+    if (!interfaz.enComandos() && !process.env.FOUNDRY_API_KEY) {
+      return interfaz.mostrarDetalle("Define FOUNDRY_API_KEY en el entorno desde el que ejecutas Harwiff.",
+        "Falta la credencial de Azure AI Foundry");
+    }
     const existente = config.foundry ?? {};
     const hostActual = existente.host ?? process.env.FOUNDRY_HOST ?? "";
     const deploymentActual = existente.deployment ?? process.env.FOUNDRY_DEPLOYMENT ?? "";
@@ -411,7 +520,9 @@ async function aplicar(destino) {
       hooks: { maxRetries: 0, finishTurn: () => ({ action: "end" }) },
     }).catch(() => { throw new Error("No se pudo completar la prueba de Azure AI Foundry."); });
     if (!llamada) throw new Error("Azure AI Foundry no devolvió la llamada de prueba. Revisa acceso, cuota y deployment.");
-    mostrar(`Azure AI Foundry · function calling verificado · ${modelo.modelo.id}`);
+    const texto = `Azure AI Foundry · function calling verificado · ${modelo.modelo.id}`;
+    mostrar(texto);
+    return texto;
   }
 
   async function menuFoundry() {
@@ -425,8 +536,12 @@ async function aplicar(destino) {
     ]);
     if (opcion === "usar") await elegirModelo("azure-foundry/" + modelo.id);
     if (opcion === "modelo") await configurarFoundry();
-    if (opcion === "credencial") mostrar("Azure AI Foundry usa FOUNDRY_API_KEY del entorno.");
-    if (opcion === "probar") await probarFoundry();
+    if (opcion === "credencial") {
+      const texto = "Azure AI Foundry usa FOUNDRY_API_KEY del entorno.";
+      if (interfaz.enComandos()) mostrar(texto);
+      else await interfaz.mostrarDetalle(texto, "Origen de la credencial");
+    }
+    if (opcion === "probar") await mostrarPruebaConexion(probarFoundry);
     if (opcion === "desconectar") {
       await actualizarConfig((actual) => {
         const { foundry, ...resto } = actual;
@@ -437,16 +552,26 @@ async function aplicar(destino) {
     }
   }
 
+  async function mostrarPruebaConexion(probar) {
+    if (interfaz.enComandos()) return probar();
+    const resultado = await interfaz.consultar("Probando conexión con el proveedor…", probar, { cancelable: false });
+    if (resultado) await interfaz.mostrarDetalle(resultado, "Conexión verificada");
+  }
+
   async function conectarOpenAI() {
     const entrada = await interfaz.preguntarSecreto("API key de OpenAI · entrada oculta · Esc cancela >");
     if (!entrada || cerrando) return;
     const entorno = credenciales.conClave(entrada);
-    const ids = await listarModelosOpenAI({ entorno });
+    const ids = interfaz.enComandos() ? await listarModelosOpenAI({ entorno }) :
+      await interfaz.consultar("Verificando la credencial…", () => listarModelosOpenAI({ entorno }), { cancelable: false });
     if (cerrando) return;
     const fuente = await credenciales.guardar(entrada);
     verificaciones.clear();
     mostrar("OpenAI API conectado · Credencial: " + fuente);
-    if (fuente === "memoria de Harwiff") mostrar("Secret Service no disponible. La clave se elimina al cerrar Harwiff.");
+    if (fuente === "memoria de Harwiff") {
+      mostrar("Secret Service no disponible. La clave se elimina al cerrar Harwiff.");
+      interfaz.notificar("Credencial en memoria hasta cerrar Harwiff");
+    } else interfaz.notificar("Credencial guardada en " + fuente);
     if (proveedorAgente(config) !== "openai" || !ids.includes(config.llm?.openaiModelId)) {
       await elegirModelo("", { conexion: { fuente, entorno }, ids, soloOpenAI: true });
     }
@@ -464,7 +589,9 @@ async function aplicar(destino) {
       let errorOpenAI;
       if (conexion.fuente) {
         try {
-          ids ??= await listarModelosOpenAI(conexion);
+          ids ??= interfaz && !interfaz.enComandos()
+            ? await interfaz.consultar("Cargando catálogo de modelos…", () => listarModelosOpenAI(conexion), { cancelable: false })
+            : await listarModelosOpenAI(conexion);
           for (const id of ids) opciones.push({ value: valorModeloOpenAI(id), label: id,
             description: "OpenAI · " + estadoModelo(id, conexion.entorno) });
           if (!ids.length) errorOpenAI = new Error("La API de OpenAI no devolvió modelos para este proyecto.");
@@ -478,7 +605,10 @@ async function aplicar(destino) {
         if (foundry) opciones.push({ value: "azure-foundry/" + foundry, label: foundry, description: "Azure AI Foundry" });
       }
       if (!opciones.length) throw errorOpenAI ?? new Error("Conecta un proveedor con /connect.");
-      if (errorOpenAI) mostrar("OpenAI · " + errorOpenAI.message);
+      if (errorOpenAI) {
+        mostrar("OpenAI · " + errorOpenAI.message);
+        if (interfaz && !interfaz.enComandos()) interfaz.notificar("Catálogo parcial · " + errorOpenAI.message);
+      }
       if (!interfaz) {
         mostrar(opciones.map(({ value, description }) => value + " · " + description).join("\n"));
         return false;
@@ -543,8 +673,11 @@ async function aplicar(destino) {
     ]);
     if (opcion === "modelo") return elegirModelo("", { conexion, soloOpenAI: true });
     if (opcion === "credencial") return conectarOpenAI();
-    if (opcion === "probar") return probarOpenAI(id, conexion);
-    if (opcion === "desconectar") return desvincularOpenAI();
+    if (opcion === "probar") return mostrarPruebaConexion(() => probarOpenAI(id, conexion));
+    if (opcion === "desconectar") {
+      await desvincularOpenAI();
+      interfaz.notificar("Credencial de OpenAI desvinculada");
+    }
   }
 
   async function abrirProyectoInicial() {
@@ -574,8 +707,10 @@ async function aplicar(destino) {
   }
 
   async function seleccionarProyecto(carpeta, { cliente = "demo", soloAbrir = false, crearCarpeta = true } = {}) {
-    if ([...agentes.values()].some((item) => item.trabajo || envios.has(item))) {
-      throw new Error("Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
+    if (hayTrabajo()) {
+      throw new Error(interfaz && !interfaz.enComandos()
+        ? "Hay trabajo en curso. Espera a que termine o detén el turno desde las acciones del agente."
+        : "Espera a que termine el agente o usa /detener antes de cambiar de proyecto.");
     }
     const existente = await (soloAbrir ? lstat : stat)(carpeta).catch((error) => {
       if (error.code === "ENOENT") return undefined;
@@ -624,12 +759,14 @@ async function aplicar(destino) {
     ruta = archivo;
     config = nuevaConfig;
     controlWifi = nuevoControl;
+    adaptadorAusente = undefined;
     agentesDir = nuevaCarpetaAgentes;
     agentes = nuevosAgentes;
     sesion = undefined;
     agente = undefined;
     mensajes = [];
     mostrar((creado ? "Proyecto creado" : "Proyecto abierto") + " · " + carpetaTrabajo);
+    if (creado) interfaz?.notificar("Proyecto creado");
     if (creado) mostrar("Datos de Harwiff guardados en .harwiff/.");
     if (!tty) {
       const { proveedor, modelo } = llmProyecto();
@@ -643,6 +780,7 @@ async function aplicar(destino) {
       if (tty) mostrar(aviso);
       else console.error(seguro(aviso));
     }
+    if (avisosSesiones.length) interfaz?.notificar("Algunas sesiones guardadas son ilegibles.");
     if (actividad.length) mostrar(["Actividad reciente del proyecto", ...actividad].join("\n"));
     mostrar(proveedorAgente(config) ? "Escribe una consulta para iniciar el agente."
       : "Configura el modelo del proyecto con /connect o /model para iniciar el agente.");
@@ -716,6 +854,7 @@ async function aplicar(destino) {
       for (const mensaje of item.mensajes) salida(mensaje);
       if (item.estado !== "completed") throw new Error(item.actividad || "La sesión no se completó.");
     }
+    return item;
   }
 
   async function iniciarTurno(texto, item) {
@@ -792,6 +931,569 @@ async function aplicar(destino) {
     return envio;
   }
 
+  async function detalleOperacion(id = "") {
+    const item = agente;
+    await cargarHistorialAgente(item);
+    if (agente !== item) return;
+    const modoMenu = interfaz && !interfaz.enComandos() && !id;
+    do {
+      const opciones = item.operaciones;
+      const auditadas = opciones.filter(({ auditId }) => auditId);
+      if (modoMenu) {
+        if (!opciones.length) return interfaz.mostrarDetalle("Todavía no hay operaciones.", "Operaciones");
+        id = await interfaz.elegir("Detalles de operaciones", () => actividadAgente(item), undefined, { id: "operaciones" });
+      } else {
+        if (!auditadas.length) throw new Error("Todavía no hay operaciones con auditoría en esta sesión.");
+        id ||= interfaz && await interfaz.elegir("Detalles de operaciones", auditadas.map(({ tool, auditId, autorizacion }) => ({
+          value: auditId, label: tool, description: (autorizacion?.decision ?? "") + " · " + auditId,
+        })));
+      }
+      if (!id) return;
+      const operacion = item.operaciones.find(({ auditId, llamadaId }) => auditId === id || llamadaId === id);
+      if (!operacion) throw new Error("Ese ID no corresponde a una operación de esta sesión.");
+      if (!operacion.auditId && modoMenu) {
+        await interfaz.mostrarDetalle(operacion.tool + " · En curso. El registro estará disponible al terminar.", "Operación");
+        continue;
+      }
+      if (!operacion.auditId) throw new Error("Ese ID no corresponde a una operación auditada.");
+      const registro = await leerAuditoria(proyecto, operacion.auditId);
+      const detalle = seguro(ocultar([
+        "Herramienta · " + operacion.tool + " · " + registro.autorizacion?.decision + " · " + registro.autorizacion?.motivo,
+        "Parámetros · " + JSON.stringify(operacion.parametros ?? registro.parametrosNormalizados ?? {}),
+        "Auditoría · " + operacion.auditId,
+        "Resultado · " + JSON.stringify(operacion.result),
+        "Evidencias · " + JSON.stringify(registro.referenciasEvidencia ?? []),
+      ].join("\n")));
+      if (interfaz) await interfaz.mostrarDetalle(detalle);
+      else mostrar(detalle);
+    } while (modoMenu);
+  }
+
+  async function ejecutarDiagnostico(demo, cancelacion, seleccion) {
+    const actual = demo ? undefined : await leerControlWifi(proyectoWifi());
+    const adaptador = actual?.adapter;
+    if (seleccion && (adaptador?.id !== seleccion.id || actual.revision !== seleccion.revision)) {
+      throw new Error("El adaptador o el alcance cambiaron. Reabre Diagnóstico para confirmar la selección actual.");
+    }
+    const esDemo = demo || adaptador?.id === "mock";
+    diagnosticoPendiente = new AbortController();
+    const signal = cancelacion ? AbortSignal.any([diagnosticoPendiente.signal, cancelacion]) : diagnosticoPendiente.signal;
+    if (!interfaz || interfaz.enComandos()) mostrar(esDemo ? "Preparando muestra sintética…" : "Ejecutando diagnóstico en OpenSandbox…");
+    try {
+      const id = await auditar(proyecto, {
+        origen: "usuario", sesion, operacion: "diagnostico",
+        adaptador: adaptador?.id, motor: esDemo ? "demo-local" : "opensandbox",
+      }, async (run) => {
+        if (!esDemo && !adaptador) throw errorBloqueado("Selecciona un adaptador con /adaptador usar.");
+        let informe;
+        try {
+          if (esDemo) informe = await entorno("demo", undefined, { signal });
+          else {
+            const resultado = await entorno("diagnostico", {
+              id: adaptador.id, scope: actual.scope, runId: run, port: config.puertoSandbox || 0,
+            }, { signal, tiempo: 480_000 });
+            if (resultado.bloqueado) throw errorBloqueado(resultado.bloqueado);
+            informe = resultado.informe;
+          }
+        } catch (error) {
+          error.publico = error.message;
+          throw error;
+        }
+        return { evidencia: await guardarInforme(proyecto, run, informe) };
+      }, signal);
+      if (!interfaz || interfaz.enComandos()) mostrar(`Informe guardado: informes/${id}.json · /auditoria ${id}`);
+      return id;
+    } finally {
+      diagnosticoPendiente = undefined;
+    }
+  }
+
+  async function confirmarSalida() {
+    if (!hayTrabajo() || await interfaz.elegir("Hay trabajo en curso. Salir cancela las operaciones activas.", [
+      { value: "seguir", label: "Seguir en Harwiff" },
+      { value: "salir", label: "Cancelar trabajo y salir" },
+    ]) === "salir") cerrar();
+  }
+
+  async function ayudaMenu() {
+    const opcion = await interfaz.elegir("Ayuda", [
+      { value: "teclado", label: "Teclado" },
+      { value: "comandos", label: "Consola de comandos" },
+    ]);
+    if (opcion === "teclado") await interfaz.mostrarDetalle([
+      "Flechas · mover el foco o recorrer un detalle",
+      "Enter · abrir, confirmar o enviar",
+      "Esc · volver al nivel anterior",
+      "Tab · abrir las acciones de la conversación",
+      "Ctrl+J · nueva línea en un campo de texto",
+      "Re Pág / Av Pág · recorrer el historial",
+      "Ctrl+Fin · seguir las respuestas nuevas",
+      "Ctrl+C · cancelar un diálogo o solicitar la salida",
+    ].join("\n"), "Teclado");
+    if (opcion === "comandos") interfaz.comandos();
+  }
+
+  async function explorarProyectos() {
+    let base = carpetaTrabajo ? dirname(carpetaTrabajo) : carpetaInicial;
+    let profundidad = 1;
+    for (;;) {
+      const resultado = await interfaz.consultar("Buscando proyectos…", () => descubrirProyectos(base, profundidad));
+      if (!resultado) return;
+      const opciones = resultado.proyectos.map(({ ruta, nombre }) => ({
+        value: ruta, label: nombre, description: ruta === carpetaTrabajo ? "Proyecto actual" : ruta,
+      }));
+      const titulo = ["Abrir proyecto / " + resultado.ruta, !opciones.length && "No hay proyectos en esta carpeta.",
+        resultado.avisos.length && resultado.avisos.length + " avisos de lectura."].filter(Boolean).join("\n");
+      const opcion = await interfaz.elegir(titulo, [
+        ...opciones, { value: "ruta", label: "Buscar en otra carpeta" },
+        ...(resultado.avisos.length ? [{ value: "avisos", label: "Ver avisos" }] : []),
+      ], carpetaTrabajo, { id: "abrir-proyecto" });
+      if (!opcion) return;
+      if (opcion === "avisos") {
+        await interfaz.mostrarDetalle(resultado.avisos.map(({ ruta, motivo }) => ruta + " · " + motivo).join("\n"), "Avisos de lectura");
+        continue;
+      }
+      if (opcion === "ruta") {
+        const datos = await interfaz.formulario("Buscar proyectos", [
+          { id: "ruta", label: "Carpeta" },
+          { id: "profundidad", label: "Profundidad", ayuda: "Profundidad de búsqueda, de 0 a 5" },
+        ], { ruta: base, profundidad: String(profundidad) });
+        if (datos) {
+          if (!datos.ruta.trim() || !/^[0-5]$/.test(datos.profundidad.trim())) {
+            interfaz.notificar("Indica una carpeta y una profundidad de 0 a 5.");
+            continue;
+          }
+          base = resolverCarpeta(datos.ruta.trim());
+          profundidad = Number(datos.profundidad);
+        }
+        continue;
+      }
+      await seleccionarProyecto(opcion, { soloAbrir: true });
+      return;
+    }
+  }
+
+  async function crearProyectoMenu() {
+    const carpeta = await interfaz.preguntar("Carpeta del proyecto", esRaiz(carpetaInicial) ? "" : carpetaInicial);
+    if (!carpeta?.trim()) return;
+    const cliente = await interfaz.elegir("Crear o abrir proyecto", [
+      { value: "demo", label: "Proyecto local" },
+      { value: "azure-foundry", label: "Proyecto Azure Foundry" },
+    ]);
+    if (cliente) await seleccionarProyecto(resolverCarpeta(carpeta.trim()), { cliente });
+  }
+
+  async function menuProyectos() {
+    for (;;) {
+      const antes = proyecto;
+      const opcion = await interfaz.elegir("Proyectos", [
+        { value: "abrir", label: "Abrir proyecto" },
+        { value: "crear", label: "Crear proyecto" },
+      ], undefined, { id: "proyectos" });
+      if (!opcion) return;
+      try {
+        if (opcion === "abrir") await explorarProyectos();
+        if (opcion === "crear") await crearProyectoMenu();
+        if (antes !== proyecto) return;
+      } catch (error) {
+        mostrarError(error);
+      }
+    }
+  }
+
+  async function elegirAdaptador() {
+    controlWifi = await leerControlWifi(proyectoWifi());
+    actualizar();
+    const guardado = controlWifi.adapter;
+    await panelAdaptadores(interfaz, seguro(guardado?.name ?? (guardado ? "adaptador guardado" : "ninguno")), async (name, id, observado) => {
+      try {
+        controlWifi = await usarAdaptador(proyectoWifi(), name, id, observado);
+      } catch (error) {
+        if (guardado?.id === id && error.code === "adapter_disconnected") {
+          adaptadorAusente = id;
+          actualizar();
+        }
+        throw error;
+      }
+      adaptadorAusente = undefined;
+      mostrar("Adaptador seleccionado: " + controlWifi.adapter.name + " · Preflight: OK");
+      interfaz.notificar("Adaptador seleccionado · Preflight correcto");
+    }, {
+      alLeer(perfil) {
+        if (!guardado || guardado.id === "mock") return;
+        const presente = perfil.devices.some(({ phys }) => phys.some(({ interfaces }) =>
+          interfaces.some(({ legacyAdapterId, ifname }) => legacyAdapterId === guardado.id && (!guardado.name || ifname === guardado.name))));
+        if (presente || perfil.status === "complete") adaptadorAusente = presente ? undefined : guardado.id;
+        actualizar();
+        return presente ? "" : perfil.status === "complete" ? " · desconectado" : " · presencia sin confirmar";
+      },
+    });
+  }
+
+  async function editarAlcance() {
+    const scope = controlWifi.scope;
+    let valores = {
+      ssids: scope?.allowedSsids.join("\n") ?? "",
+      bssids: scope?.allowedBssids.join("\n") ?? "",
+      canales: scope?.allowedChannels.join(", ") ?? "",
+    };
+    for (;;) {
+      valores = await interfaz.formulario("Editar alcance autorizado", [
+        { id: "ssids", label: "SSID", ayuda: "SSID autorizados · uno por línea · Ctrl+J añade una línea" },
+        { id: "bssids", label: "BSSID", ayuda: "BSSID autorizados · uno por línea · Ctrl+J añade una línea" },
+        { id: "canales", label: "Canales", ayuda: "Canales permitidos · separados por comas" },
+      ], valores);
+      if (!valores) return;
+      try {
+        const canales = valores.canales.trim();
+        if (canales && !/^\d+(?:\s*,\s*\d+)*$/.test(canales)) throw new Error("Separa los números de canal con comas.");
+        controlWifi = await guardarAlcance(proyectoWifi(), {
+          allowedSsids: valores.ssids.split("\n").filter(Boolean),
+          allowedBssids: valores.bssids.split(/\r?\n/).map((texto) => texto.trim()).filter(Boolean),
+          allowedChannels: canales ? canales.split(",").map(Number) : [],
+        });
+        interfaz.notificar(controlWifi.preflight?.ok === false ? "Alcance guardado · Preflight bloqueado" : "Alcance guardado");
+        actualizar();
+        return;
+      } catch (error) {
+        mostrarError(error);
+      }
+    }
+  }
+
+  async function menuAlcance() {
+    controlWifi = await leerControlWifi(proyectoWifi());
+    for (;;) {
+      const opcion = await interfaz.elegir("Alcance autorizado · " + resumenAlcance(), [
+        { value: "editar", label: "Editar alcance" },
+        { value: "detalle", label: "Ver valores guardados" },
+        { value: "revisar", label: "Comprobar preflight" },
+      ], undefined, { id: "alcance" });
+      if (!opcion) return;
+      if (opcion === "editar") await editarAlcance();
+      if (opcion === "detalle") {
+        const scope = controlWifi.scope;
+        await interfaz.mostrarDetalle(tieneAlcance() ? [
+          "SSID · " + (scope.allowedSsids.join(", ") || "Sin filtro"),
+          "BSSID · " + (scope.allowedBssids.join(", ") || "Sin filtro"),
+          "Canales · " + (scope.allowedChannels.join(", ") || "Sin filtro"),
+        ].join("\n") : "Define los SSID o BSSID autorizados en Editar alcance.", "Alcance autorizado");
+      }
+      if (opcion === "revisar") {
+        const resultado = await interfaz.consultar("Comprobando preflight…", () => inspeccionarControlWifi(proyectoWifi()),
+          { cancelable: false });
+        if (!resultado) return;
+        controlWifi = resultado.estado;
+        actualizar();
+        const verificacion = controlWifi.preflight;
+        await interfaz.mostrarDetalle(verificacion?.ok ? "Preflight correcto" :
+          verificacion?.errors?.join("\n") || "Selecciona un adaptador en Adaptadores.", "Preflight");
+      }
+    }
+  }
+
+  async function menuDiagnostico() {
+    controlWifi = await leerControlWifi(proyectoWifi());
+    const adaptador = controlWifi.adapter;
+    const revision = controlWifi.revision;
+    const opciones = [
+      ...(adaptador ? [{ value: "actual", label: adaptador.id === "mock" ? "Ejecutar en modo simulado" : "Ejecutar en modo físico",
+        description: adaptadorVisible() }] : [{ value: "adaptador", label: "Elegir adaptador" }]),
+      { value: "demo", label: "Generar muestra sintética" },
+    ];
+    const modo = await interfaz.elegir("Diagnóstico", opciones, undefined, { id: "diagnostico" });
+    if (!modo) return;
+    if (modo === "adaptador") return elegirAdaptador();
+    const simulado = modo === "demo" || adaptador?.id === "mock";
+    const id = await interfaz.consultar(simulado ? "Generando muestra sintética…" : "Ejecutando diagnóstico físico en OpenSandbox…",
+      (signal) => ejecutarDiagnostico(modo === "demo", signal, modo === "actual" ? { id: adaptador.id, revision } : undefined));
+    if (!id) {
+      if (!cerrando) interfaz.notificar("Diagnóstico cancelado");
+      return;
+    }
+    interfaz.notificar("Informe guardado");
+    const opcion = await interfaz.elegir("Informe guardado", [{ value: "auditoria", label: "Ver en Auditoría" }]);
+    if (opcion) await detalleAuditoria(id);
+  }
+
+  async function detalleAuditoria(id) {
+    const registro = await leerAuditoria(proyecto, id);
+    const resumen = [
+      "Operación · " + registro.operacion, "Resultado · " + registro.estado, "Fecha · " + registro.inicio, "ID · " + id,
+      registro.motor && "Motor · " + registro.motor,
+      registro.motivo && "Motivo · " + registro.motivo,
+      registro.evidencia && "Evidencia · " + JSON.stringify(registro.evidencia, null, 2),
+    ].filter(Boolean).join("\n");
+    const opciones = [
+      { value: "resumen", label: "Ver resumen", description: registro.estado },
+      { value: "json", label: "Ver registro JSON" },
+    ];
+    for (;;) {
+      const opcion = await interfaz.elegir("Auditoría / " + registro.operacion, opciones, undefined, { id: "auditoria/" + id });
+      if (!opcion) return;
+      await interfaz.mostrarDetalle(opcion === "json" ? JSON.stringify(registro, null, 2) : resumen,
+        opcion === "json" ? "Registro JSON" : "Resumen de auditoría");
+    }
+  }
+
+  async function menuAuditoria() {
+    const ids = (await idsAuditoria(proyecto)).reverse();
+    if (!ids.length) return interfaz.mostrarDetalle("Aquí aparecerán diagnósticos, turnos y cambios de configuración.", "Sin registros de auditoría");
+    const registros = [];
+    for (;;) {
+      registros.push(...await Promise.all(ids.slice(registros.length, registros.length + 30).map(async (id) => {
+        try {
+          const registro = await leerAuditoria(proyecto, id);
+          return { value: id, label: registro.operacion, description: registro.estado + " · " + registro.inicio.slice(0, 16).replace("T", " ") + " UTC" };
+        } catch {
+          return { value: id, label: "Registro ilegible", description: id };
+        }
+      })));
+      for (;;) {
+        const opcion = await interfaz.elegir("Auditoría", [
+          ...registros, ...(registros.length < ids.length ? [{ value: "anteriores", label: "Cargar anteriores" }] : []),
+        ], undefined, { id: "auditoria" });
+        if (!opcion) return;
+        if (opcion === "anteriores") break;
+        try {
+          await detalleAuditoria(opcion);
+        } catch (error) {
+          mostrarError(error);
+        }
+      }
+    }
+  }
+
+  async function guardarPuertoSandbox(valor) {
+    const puerto = valor === "auto" ? 0 : Number(valor);
+    if (valor !== "auto" && !(Number.isInteger(puerto) && puerto >= 1024 && puerto <= 65535)) {
+      throw new Error(interfaz && !interfaz.enComandos() ? "Elige Automático o un puerto entre 1024 y 65535." :
+        "Usa /config sandbox auto o /config sandbox <puerto entre 1024 y 65535>.");
+    }
+    await actualizarConfig((actual) => ({ ...actual, puertoSandbox: puerto }));
+  }
+
+  async function editarSandbox() {
+    const opcion = await interfaz.elegir("Puerto local de OpenSandbox", [
+      { value: "auto", label: "Automático" },
+      { value: "fijo", label: "Puerto fijo" },
+    ], config.puertoSandbox ? "fijo" : "auto");
+    if (!opcion) return;
+    const puerto = opcion === "auto" ? "auto" : await interfaz.preguntar("Puerto entre 1024 y 65535", String(config.puertoSandbox || ""));
+    if (puerto === undefined) return;
+    await guardarPuertoSandbox(puerto.trim());
+    interfaz.notificar("Configuración de OpenSandbox guardada");
+  }
+
+  async function menuAjustes() {
+    for (;;) {
+      config = await leerJson(ruta);
+      const { proveedor, modelo } = llmProyecto();
+      const opcion = await interfaz.elegir("Modelo y ajustes", [
+        { value: "modelo", label: "Modelo para sesiones nuevas", description: modelo ?? "Pendiente" },
+        { value: "proveedor", label: "Conexiones de proveedor", description: proveedor },
+        { value: "sandbox", label: "Puerto de OpenSandbox", description: String(config.puertoSandbox || "Automático") },
+      ], undefined, { id: "ajustes" });
+      if (!opcion) return;
+      try {
+        if (opcion === "modelo") {
+          const conexion = await credenciales.resolver();
+          let foundry = false;
+          try { foundry = Boolean(modeloFoundry(config)); } catch { /* Sin deployment disponible. */ }
+          if (!conexion.fuente && !foundry) {
+            interfaz.notificar("Conecta un proveedor para elegir modelo.");
+            await conectarProveedor();
+          } else await elegirModelo("", { conexion });
+        }
+        if (opcion === "proveedor") await conectarProveedor();
+        if (opcion === "sandbox") await editarSandbox();
+      } catch (error) {
+        mostrarError(error);
+      }
+    }
+  }
+
+  async function menuSesiones() {
+    const carpeta = join(proyecto, "sesiones");
+    for (;;) {
+      const directorio = await lstat(carpeta).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      if (directorio && !directorio.isDirectory()) throw new Error("La carpeta de sesiones de trabajo no es válida.");
+      const ids = directorio ? (await app("sesiones")).split("\n").filter(Boolean) : [];
+      const opcion = await interfaz.elegir(ids.length ? "Sesiones de trabajo" : "Sesiones de trabajo · sin sesiones", [
+        { value: "+nueva", label: "Crear sesión de trabajo" },
+        { value: "+contexto", label: "Consultar contexto del proyecto" },
+        ...ids.map((id) => ({ value: id, label: id, description: id === sesion ? "Abierta" : undefined })),
+      ], sesion, { id: "sesiones" });
+      if (!opcion) return;
+      if (opcion === "+contexto") {
+        const informes = await informesAgente(proyecto);
+        await interfaz.mostrarDetalle(informes.length ? JSON.stringify(informes, null, 2) : "Todavía no hay informes.", "Contexto del proyecto");
+        continue;
+      }
+      if (opcion === "+nueva") {
+        const datos = await interfaz.formulario("Crear sesión de trabajo", [
+          { id: "nombre", label: "Nombre" }, { id: "objetivo", label: "Objetivo" },
+        ], { nombre: "", objetivo: "Revisar la conectividad Wi-Fi" });
+        if (!datos) continue;
+        if (!ID_SESION.test(datos.nombre)) {
+          interfaz.notificar("Usa de 1 a 64 letras minúsculas, números, guiones o guiones bajos.");
+          continue;
+        }
+        if (!directorio) {
+          await mkdir(carpeta, { mode: 0o700 }).catch((error) => {
+            if (error.code !== "EEXIST") throw error;
+          });
+          if (!(await lstat(carpeta)).isDirectory()) throw new Error("La carpeta de sesiones de trabajo no es válida.");
+        }
+        await app("nueva", datos.nombre, "--objetivo", datos.objetivo || "Revisar la conectividad Wi-Fi");
+        sesion = datos.nombre;
+      } else {
+        await app("abrir", opcion);
+        sesion = opcion;
+      }
+      actualizar();
+      for (;;) {
+        const accion = await interfaz.elegir("Sesión de trabajo / " + sesion, [
+          { value: "contexto", label: "Consultar contexto" }, { value: "nota", label: "Guardar nota" },
+        ], undefined, { id: "sesion-trabajo" });
+        if (!accion) break;
+        if (accion === "contexto") await interfaz.mostrarDetalle(await app("abrir", sesion), "Notas e informes");
+        if (accion === "nota") {
+          const nota = await interfaz.preguntar("Nota de trabajo · Ctrl+J añade una línea");
+          if (nota?.trim()) {
+            await ejecutar("app.py", ["--proyecto", proyecto, "guardar", sesion], { entrada: nota.trim() });
+            interfaz.notificar("Nota guardada");
+          }
+        }
+      }
+    }
+  }
+
+  async function nuevoAgente() {
+    const dir = proyecto;
+    const texto = await interfaz.preguntar("¿Qué quieres revisar con el agente?", objetivosPendientes.get(dir), {
+      alCancelar(borrador) {
+        if (borrador.trim()) objetivosPendientes.set(dir, borrador);
+        else objetivosPendientes.delete(dir);
+      },
+    });
+    if (texto === undefined) return;
+    const objetivo = texto.trim();
+    if (!objetivo) return;
+    objetivosPendientes.set(dir, objetivo);
+    controlWifi = await leerControlWifi(proyectoWifi());
+    config = await leerJson(ruta);
+    const proveedor = proveedorAgente(config);
+    const conexion = proveedor === "azure-foundry" ? undefined : await credenciales.resolver();
+    let configurado = Boolean(conexion?.fuente);
+    if (proveedor !== "openai" && !configurado) {
+      try { configurado = Boolean(modeloFoundry(config)); } catch { /* Requiere conexión. */ }
+    }
+    const falta = !tieneAlcance() ? ["Define el alcance autorizado", "Editar alcance", menuAlcance] :
+      controlWifi.adapter?.id !== "mock" ? ["La conversación usa el escenario simulado", "Elegir adaptador mock", elegirAdaptador] :
+        !configurado ? ["Falta conectar un proveedor", "Abrir modelo y ajustes", menuAjustes] : undefined;
+    if (falta) {
+      const [motivo, label, abrir] = falta;
+      const opcion = await interfaz.elegir(motivo, [{ value: "configurar", label }, { value: "volver", label: "Volver" }]);
+      if (opcion === "configurar") await abrir();
+      interfaz.notificar("Borrador conservado en Nueva conversación");
+      return;
+    }
+    const item = await iniciarAgenteProyecto(objetivo, true);
+    if (item) objetivosPendientes.delete(dir);
+  }
+
+  async function menuAgentes() {
+    for (;;) {
+      const haySesiones = [...agentes.values()].some(({ iniciado }) => iniciado);
+      const opcion = await interfaz.elegir(haySesiones ? "Agentes" : "Agentes · sin conversaciones", () => [
+        { value: "+nueva", label: "Nueva conversación", description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined },
+        ...[...agentes.values()].filter(({ iniciado }) => iniciado)
+          .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
+          .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) })),
+      ], undefined, { id: "agentes" });
+      if (!opcion) return;
+      try {
+        if (opcion === "+nueva") await nuevoAgente();
+        else await enfocar(opcion);
+        if (agente) return;
+      } catch (error) {
+        mostrarError(error);
+        if (agente) return;
+      }
+    }
+  }
+
+  async function detalleTurnos() {
+    await cargarHistorialAgente(agente);
+    const turnos = new Map();
+    for (const bloque of agente.transcript ?? []) {
+      if (bloque.tipo !== "detalle" || !bloque.turno) continue;
+      if (!turnos.has(bloque.turno)) turnos.set(bloque.turno, []);
+      turnos.get(bloque.turno).push(bloque.text);
+    }
+    if (!turnos.size) return interfaz.mostrarDetalle("Todavía no hay turnos registrados.", "Detalle de turnos");
+    for (;;) {
+      const turno = await interfaz.elegir("Detalle de turnos", [...turnos.keys()].reverse().map((value) => ({
+        value, label: new Date(Number(value.split("-")[0])).toISOString().slice(0, 19).replace("T", " ") + " UTC",
+      })), undefined, { id: "turnos" });
+      if (!turno) return;
+      await interfaz.mostrarDetalle(turno + "\n\n" + turnos.get(turno).join("\n"), "Detalle del turno");
+    }
+  }
+
+  async function menuAccionesAgente() {
+    for (;;) {
+      const opcion = await interfaz.elegir("Acciones del agente", () => [
+        { value: "operaciones", label: "Operaciones", description: String(agente.operaciones?.length ?? 0) },
+        { value: "turnos", label: "Detalle de turnos" },
+        ...(agente.controlador ? [{ value: "detener", label: "Detener turno" }] : []),
+        { value: "volver", label: "Volver a Agentes" },
+        { value: "ayuda", label: "Ayuda" },
+      ], undefined, { id: "acciones-agente" });
+      if (!opcion) return;
+      if (opcion === "operaciones") await detalleOperacion();
+      if (opcion === "turnos") await detalleTurnos();
+      if (opcion === "detener") {
+        agente.controlador?.abort();
+        return;
+      }
+      if (opcion === "volver") {
+        volver();
+        return menuAgentes();
+      }
+      if (opcion === "ayuda") {
+        await ayudaMenu();
+        if (interfaz.enComandos()) return;
+      }
+    }
+  }
+
+  async function navegar(accion) {
+    interfaz.notificar("");
+    switch (accion) {
+      case "salir": return confirmarSalida();
+      case "ayuda": return ayudaMenu();
+      case "abrirProyecto": return explorarProyectos();
+      case "crearProyecto": return crearProyectoMenu();
+      case "inicializar": return seleccionarProyecto(carpetaParaInicializar, { crearCarpeta: false });
+      case "proyectos": return menuProyectos();
+      case "agentes": return menuAgentes();
+      case "accionesAgente": return menuAccionesAgente();
+      case "regresarAgentes":
+        volver();
+        return menuAgentes();
+      case "adaptador": return elegirAdaptador();
+      case "alcance": return menuAlcance();
+      case "diagnostico": return menuDiagnostico();
+      case "ajustes": return menuAjustes();
+      case "auditoria": return menuAuditoria();
+      case "sesiones": return menuSesiones();
+    }
+  }
+
   async function procesar(texto) {
     if (texto === "/ayuda") {
       mostrar(Object.entries(disponibles(proyecto, agente)).map(([nombre, ayuda]) => `${nombre}  ${ayuda}`).join("\n"));
@@ -833,28 +1535,7 @@ async function aplicar(destino) {
       return;
     }
     if (agente?.autonoma && (texto === "/detalle" || texto.startsWith("/detalle "))) {
-      const item = agente;
-      await cargarHistorialAgente(item);
-      if (agente !== item) return;
-      const opciones = item.operaciones.filter(({ auditId }) => auditId);
-      if (!opciones.length) throw new Error("Todavía no hay operaciones con auditoría en esta sesión.");
-      const id = texto.slice("/detalle".length).trim() || (interfaz && await interfaz.elegir("Detalles de operaciones",
-        opciones.map(({ tool, auditId, autorizacion }) => ({ value: auditId, label: tool,
-          description: `${autorizacion?.decision ?? ""} · ${auditId}` }))));
-      if (!id) return;
-      const operacion = opciones.find(({ auditId }) => auditId === id);
-      if (!operacion) throw new Error("Ese ID no corresponde a una operación de esta sesión.");
-      const registro = await leerAuditoria(proyecto, operacion.auditId);
-      const detalle = seguro(ocultar([
-        `Herramienta · ${operacion.tool} · ${registro.autorizacion?.decision} · ${registro.autorizacion?.motivo}`,
-        `Parámetros · ${JSON.stringify(operacion.parametros ?? registro.parametrosNormalizados ?? {})}`,
-        `Auditoría · ${operacion.auditId}`,
-        `Resultado · ${JSON.stringify(operacion.result)}`,
-        `Evidencias · ${JSON.stringify(registro.referenciasEvidencia ?? [])}`,
-      ].join("\n")));
-      if (interfaz) await interfaz.mostrarDetalle(detalle);
-      else mostrar(detalle);
-      return;
+      return detalleOperacion(texto.slice("/detalle".length).trim());
     }
     if (agente) throw new Error("Usa Esc o /volver para usar los comandos del proyecto.");
     if (texto === "ls") texto = "/sesiones";
@@ -931,14 +1612,7 @@ async function aplicar(destino) {
         await iniciarAgenteProyecto(args);
         break;
       case "/adaptador": {
-        if (!args && interfaz) {
-          controlWifi = await leerControlWifi(proyectoWifi());
-          await panelAdaptadores(interfaz, seguro(controlWifi.adapter?.name ?? "ninguno"), async (name, id, observado) => {
-            controlWifi = await usarAdaptador(proyectoWifi(), name, id, observado);
-            mostrar("Adaptador seleccionado: " + controlWifi.adapter.name + " · Preflight: OK");
-          });
-          break;
-        }
+        if (!args && interfaz) return elegirAdaptador();
         const detalle = /^detalle\s+(\S+)$/.exec(args)?.[1];
         if (detalle) {
           const texto = seguro(await detalleAdaptador(detalle));
@@ -1020,12 +1694,8 @@ async function aplicar(destino) {
           break;
         }
         if (host === "sandbox") {
-          const puerto = deployment === "auto" ? 0 : Number(deployment);
-          if (extra || !(puerto === 0 && deployment === "auto") &&
-              !(Number.isInteger(puerto) && puerto >= 1024 && puerto <= 65535)) {
-            throw new Error("Usa /config sandbox auto o /config sandbox <puerto entre 1024 y 65535>.");
-          }
-          await actualizarConfig((actual) => ({ ...actual, puertoSandbox: puerto }));
+          if (extra) throw new Error("Usa /config sandbox auto o /config sandbox <puerto entre 1024 y 65535>.");
+          await guardarPuertoSandbox(deployment);
           mostrar("Configuración de OpenSandbox guardada.");
           break;
         }
@@ -1037,42 +1707,9 @@ async function aplicar(destino) {
         mostrar("Configuración guardada.");
         break;
       }
-      case "/diagnostico": {
+      case "/diagnostico":
         if (args && args !== "demo") throw new Error("Usa /diagnostico [demo].");
-        const actual = args === "demo" ? undefined : await leerControlWifi(proyectoWifi());
-        const adaptador = actual?.adapter;
-        const esDemo = args === "demo" || adaptador?.id === "mock";
-        diagnosticoPendiente = new AbortController();
-        const signal = diagnosticoPendiente.signal;
-        mostrar(esDemo ? "Preparando muestra sintética…" : "Ejecutando diagnóstico en OpenSandbox…");
-        try {
-          const id = await auditar(proyecto, {
-            origen: "usuario", sesion, operacion: "diagnostico",
-            adaptador: adaptador?.id, motor: esDemo ? "demo-local" : "opensandbox",
-          }, async (run) => {
-            if (!esDemo && !adaptador) throw errorBloqueado("Selecciona un adaptador con /adaptador usar.");
-            let informe;
-            try {
-              if (esDemo) informe = await entorno("demo", undefined, { signal });
-              else {
-                const resultado = await entorno("diagnostico", {
-                  id: adaptador.id, scope: actual.scope, runId: run, port: config.puertoSandbox || 0,
-                }, { signal, tiempo: 480_000 });
-                if (resultado.bloqueado) throw errorBloqueado(resultado.bloqueado);
-                informe = resultado.informe;
-              }
-            } catch (error) {
-              error.publico = error.message;
-              throw error;
-            }
-            return { evidencia: await guardarInforme(proyecto, run, informe) };
-          }, signal);
-          mostrar(`Informe guardado: informes/${id}.json · /auditoria ${id}`);
-        } finally {
-          diagnosticoPendiente = undefined;
-        }
-        break;
-      }
+        return ejecutarDiagnostico(args === "demo");
       case "/auditoria":
         if (args) mostrar(JSON.stringify(await leerAuditoria(proyecto, args), null, 2));
         else {

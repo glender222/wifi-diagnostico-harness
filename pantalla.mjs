@@ -1,12 +1,13 @@
 import {
   CombinedAutocompleteProvider, Container, decodeKittyPrintable, Editor, isKeyRelease, matchesKey, Markdown, ProcessTerminal,
-  ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
+  HStack, ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
 
 import { resumenControlWifi } from "./proyecto.mjs";
 
-const acento = (texto) => `\x1b[96m${texto}\x1b[39m`;
 const simple = (texto) => texto;
+const sinColor = Object.hasOwn(process.env, "NO_COLOR");
+const acento = sinColor ? simple : (texto) => `\x1b[96m${texto}\x1b[39m`;
 const fuerte = (texto) => `\x1b[1m${texto}\x1b[22m`;
 const temaMarkdown = {
   heading: fuerte, link: acento, linkUrl: simple, code: acento, codeBlock: simple, codeBlockBorder: simple,
@@ -16,6 +17,114 @@ const temaMarkdown = {
 const tema = {
   selectedPrefix: acento, selectedText: acento, description: simple, scrollInfo: simple, noMatch: simple,
 };
+const temaMenu = {
+  ...tema,
+  selectedText: (texto) => acento(texto.replace(/^→ /, "> ")),
+  noMatch: () => "Sin coincidencias",
+};
+const dimensionesValidas = ({ width, height }) => width >= 60 && height >= 16;
+
+// Recalcula la ventana visible cuando cambia el tamaño. La selección usa el ID del elemento.
+class ListaMenu {
+  capturesViewportInput = true;
+
+  constructor(opciones, filas, callbacks) {
+    this.opciones = opciones;
+    this.filas = filas;
+    this.callbacks = callbacks;
+    this.filtro = "";
+    this.seleccion = callbacks.activa;
+    this.actualizarLista();
+  }
+
+  setItems(opciones) {
+    if (opciones.length === this.opciones.length && opciones.every((item, i) => {
+      const anterior = this.opciones[i];
+      return anterior.value === item.value && anterior.label === item.label && anterior.description === item.description;
+    })) return;
+    this.opciones = opciones;
+    this.actualizarLista(true);
+  }
+
+  actualizarLista(forzar = false) {
+    const filas = this.filas();
+    if (!forzar && this.lista && filas === this.maxVisible) return;
+    this.maxVisible = filas;
+    const lista = new SelectList(this.opciones, filas, temaMenu, {
+      minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 30,
+      truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth, "..."),
+    });
+    lista.setFilter(this.filtro);
+    const indice = this.opciones.filter(({ value }) => value.toLowerCase().startsWith(this.filtro.toLowerCase()))
+      .findIndex(({ value }) => value === this.seleccion);
+    lista.setSelectedIndex(indice);
+    lista.onSelectionChange = ({ value }) => {
+      this.seleccion = value;
+      this.callbacks.cambiar?.(value);
+    };
+    lista.onSelect = this.callbacks.elegir;
+    lista.onCancel = this.callbacks.cancelar;
+    this.lista = lista;
+  }
+
+  setFilter(filtro) {
+    this.filtro = filtro;
+    this.lista.setFilter(filtro);
+    this.seleccion = this.lista.getSelectedItem()?.value;
+  }
+
+  render(width) {
+    this.actualizarLista();
+    return this.lista.render(width);
+  }
+
+  handleInput(dato) {
+    this.lista.handleInput(dato);
+  }
+
+  invalidate() {
+    this.lista.invalidate();
+  }
+}
+
+function zonaTexto(opciones) {
+  const contenido = new Container();
+  const estilos = sinColor ? { scrollbarTrackStyle: simple, scrollbarThumbStyle: simple } : {};
+  return { contenido, bloques: new Map(), vista: new ScrollView(contenido, { ...opciones, ...estilos }) };
+}
+
+function actualizarBloques(zona, bloques, limpiar) {
+  const proximos = new Map();
+  for (const bloque of bloques) {
+    const texto = limpiar(bloque.text);
+    const anterior = zona.bloques.get(bloque.id);
+    const componente = anterior?.componente ?? (bloque.markdown
+      ? new Markdown(texto, 1, 0, temaMarkdown) : new Text(texto, 1));
+    if (anterior && anterior.texto !== texto) componente.setText(texto);
+    proximos.set(bloque.id, { componente, texto });
+  }
+  const componentes = [...proximos.values()].map(({ componente }) => componente);
+  const hijos = zona.contenido.children;
+  if (hijos.length !== componentes.length || componentes.some((item, i) => hijos[i] !== item)) {
+    zona.contenido.clear();
+    for (const componente of componentes) zona.contenido.addChild(componente);
+  }
+  zona.bloques = proximos;
+}
+
+class Linea {
+  texto = "";
+
+  setText(texto) {
+    this.texto = texto;
+  }
+
+  render(width) {
+    return this.texto ? [truncateToWidth(" " + this.texto, width, "...")] : [];
+  }
+
+  invalidate() {}
+}
 
 class EditorConsola extends Editor {
   prefijo = undefined;
@@ -39,14 +148,21 @@ class EditorConsola extends Editor {
 
 export function pantalla(comandos, acciones) {
   const ui = new TuiAltScreen(new ProcessTerminal(), true);
-  const encabezado = new Text("", 1);
+  const encabezado = new Linea();
   const controlWifi = new Text("", 1);
-  const historial = new Container();
-  const viewport = new ScrollView(historial, { follow: "end", primary: true, scrollbar: "auto" });
+  const estadoVisible = new Linea();
+  const principal = new Container();
+  const conversacion = new HStack([], { gap: 3 });
+  const actividad = new Text("", 0, 0);
+  const registro = zonaTexto({ follow: "end", primary: true, scrollbar: "auto" });
+  const inspector = zonaTexto({ primary: true, scrollbar: "auto" });
   const fila = new Text("", 1);
   const etiqueta = new Text("", 1);
+  const tituloCampo = new Text("", 1, 0);
   const panel = new Container();
-  const campoSecreto = new Text("", 1);
+  const campoSecreto = new Text("", 1, 0);
+  const aviso = new Text("", 1, 0);
+  const pie = { render: (width) => [truncateToWidth(" " + ayudaTeclado(width), width, "")], invalidate() {} };
   const editor = new EditorConsola(ui, { borderColor: acento, selectList: tema }, { paddingX: 1 });
   const completar = new CombinedAutocompleteProvider(
     Object.entries(comandos).map(([name, description]) => ({ name: name.slice(1), description })), process.cwd(),
@@ -71,45 +187,85 @@ export function pantalla(comandos, acciones) {
       return completar.applyCompletion(lineas, fila, columna, item, prefijo);
     },
   });
+  const visible = (condicion = () => true) => (terminal) =>
+    (compatibilidad || dimensionesValidas(terminal)) && condicion(terminal);
+  const menuRaizVisible = () => !compatibilidad && !estado?.agente && !selector && !detalle && !pregunta && !secreto;
   ui.setLayoutRoot(new VStack([
-    encabezado, { component: controlWifi, visible: () => Boolean(estado && !estado.agente) },
-    { component: viewport, grow: 1, basis: 0 },
-    { component: etiqueta, visible: () => Boolean(estado?.agente && !pregunta) },
-    { component: editor, visible: () => !selector && !secreto && !detalle },
-    { component: campoSecreto, visible: () => Boolean(secreto) },
-    { component: panel, visible: () => Boolean(selector || detalle) },
-    { component: fila, visible: () => Boolean(!selector && !detalle && estado?.agentes.length) },
+    { component: new Text("Terminal pequeña. Se requieren 60×16.", 0),
+      visible: (terminal) => !compatibilidad && !dimensionesValidas(terminal) },
+    { component: encabezado, visible: visible() },
+    { component: controlWifi, visible: visible(() => compatibilidad && !estado?.agente) },
+    { component: estadoVisible, visible: visible(() => !compatibilidad && !detalle && !selector && !pregunta && !secreto) },
+    { component: principal, visible: visible(menuRaizVisible) },
+    { component: registro.vista, grow: 1, basis: 0, visible: visible(() => compatibilidad && !estado?.agente && !detalle) },
+    { component: conversacion, grow: 1, basis: 0,
+      visible: visible(() => Boolean(estado?.agente && !detalle && (compatibilidad || (!selector && !pregunta && !secreto)))) },
+    { component: panel, visible: visible(() => Boolean(selector || detalle)) },
+    { component: inspector.vista, grow: 1, basis: 0, visible: visible(() => Boolean(detalle)) },
+    { component: new Text("", 0), grow: 1, basis: 0,
+      visible: visible(() => !compatibilidad && (!estado?.agente || selector || pregunta || secreto) && !detalle) },
+    { component: etiqueta, visible: visible(() => Boolean(compatibilidad && estado?.agente && !pregunta)) },
+    { component: tituloCampo, visible: visible(() => Boolean(!compatibilidad && pregunta)) },
+    { component: editor, visible: visible(() => !selector && !secreto && !detalle &&
+      Boolean(compatibilidad || pregunta || (estado?.agente && !estado.soloConsulta))) },
+    { component: campoSecreto, visible: visible(() => Boolean(secreto)) },
+    { component: fila, visible: visible(() => Boolean(compatibilidad && !selector && !detalle && estado?.agentes.length)) },
+    { component: aviso, maxSize: 2, visible: visible(() => Boolean(!compatibilidad && avisoTexto && !detalle && !secreto)) },
+    { component: pie, visible: visible(() => !compatibilidad) },
   ]));
   let selector;
   let detalle;
   let consulta;
   let filtroSelector;
+  let refrescarSelector;
   const filtroVisible = new Text("", 1);
   let esperando;
   let cerrado = false;
   let enFila = false;
   let indice = 0;
   let estado;
-  let bloquesVisibles = new Map();
-  let vistaHistorial;
+  let compatibilidad = false;
+  let avisoTexto = "";
+  let listaRaiz;
+  let opcionesRaiz;
+  let claveRaiz;
+  let claveChat;
   let pregunta;
+  let alCancelarPregunta;
   let secreto;
   let alcance;
   const borradores = new Map();
+  const chats = new Map();
+  const selecciones = new Map();
+
+  function ayudaTeclado(ancho) {
+    if (consulta) return consulta.cancelable ? "Esc cancelar" : "Espera a que termine la operación";
+    if (detalle) return ancho < 80 ? "Flechas leer   Esc volver" : "↑↓ leer   Esc volver";
+    if (selector || menuRaizVisible()) {
+      const mover = ancho < 80 ? "Flechas mover" : "↑↓ mover";
+      return `${mover}   Enter abrir   ${selector ? "Esc volver" : "? ayuda"}`;
+    }
+    if (pregunta || secreto) return "Enter aceptar   Esc volver";
+    const seguir = claveChat && !chats.get(claveChat).vista.isFollowingEnd ? "Ctrl+Fin seguir   " : "";
+    return (estado?.soloConsulta ? "" : "Enter enviar   ") + seguir + "Tab acciones   Esc volver";
+  }
   function resolverEntrada(texto) {
     const resolver = esperando;
     esperando = undefined;
+    if (pregunta && texto === undefined) alCancelarPregunta?.(acciones.ocultar(editor.getText()));
     pregunta = undefined;
+    alCancelarPregunta = undefined;
     secreto = undefined;
     selector = undefined;
     detalle = undefined;
     filtroSelector = undefined;
+    refrescarSelector = undefined;
     panel.clear();
     resolver?.(texto);
     render(estado);
   }
   editor.onSubmit = (texto) => {
-    if (pregunta && !estado?.agente && texto.trim() === "/salir") {
+    if (compatibilidad && pregunta && !estado?.agente && texto.trim() === "/salir") {
       acciones.salir();
       return;
     }
@@ -125,7 +281,6 @@ export function pantalla(comandos, acciones) {
     resolverEntrada(visible);
   };
   function capturarSecreto(dato) {
-    if (isKeyRelease(dato)) return;
     if (matchesKey(dato, "escape")) {
       resolverEntrada(undefined);
       return;
@@ -144,8 +299,16 @@ export function pantalla(comandos, acciones) {
     render(estado);
   }
   ui.addInputListener((dato) => {
+    if (isKeyRelease(dato)) return { consume: true };
+    if (!compatibilidad && !dimensionesValidas({ width: ui.terminal.columns, height: ui.terminal.rows }) &&
+        !matchesKey(dato, "ctrl+c")) {
+      return { consume: true };
+    }
     if (matchesKey(dato, "ctrl+c") || (matchesKey(dato, "ctrl+d") && !secreto && !editor.getText())) {
-      acciones.salir();
+      if (compatibilidad) acciones.salir();
+      else if (consulta) consulta.controlador?.abort();
+      else if (selector || detalle || pregunta || secreto) resolverEntrada(undefined);
+      else if (esperando) resolverEntrada({ accion: "salir" });
       return { consume: true };
     }
     if (secreto) {
@@ -153,18 +316,23 @@ export function pantalla(comandos, acciones) {
       return { consume: true };
     }
     if (consulta) {
-      if (matchesKey(dato, "escape")) consulta.abort();
+      if (matchesKey(dato, "escape")) consulta.controlador?.abort();
       return { consume: true };
     }
     if (detalle) {
-      if (!isKeyRelease(dato) && (matchesKey(dato, "escape") || matchesKey(dato, "enter"))) {
+      if (matchesKey(dato, "escape") || matchesKey(dato, "enter")) {
         resolverEntrada(undefined);
+        return { consume: true };
+      }
+      if (matchesKey(dato, "up") || matchesKey(dato, "down")) {
+        inspector.vista.scrollBy(matchesKey(dato, "up") ? -1 : 1);
+        ui.requestRender();
         return { consume: true };
       }
       return undefined;
     }
     if (selector) {
-      if (filtroSelector !== undefined && !isKeyRelease(dato)) {
+      if (filtroSelector !== undefined) {
         const caracter = decodeKittyPrintable(dato) ?? dato;
         if (matchesKey(dato, "backspace")) filtroSelector = filtroSelector.slice(0, -1);
         else if (matchesKey(dato, "ctrl+u")) filtroSelector = "";
@@ -178,17 +346,40 @@ export function pantalla(comandos, acciones) {
       return undefined;
     }
     if (pregunta && matchesKey(dato, "escape")) {
-      editor.setText("");
       resolverEntrada(undefined);
       return { consume: true };
     }
-    if (matchesKey(dato, "escape") && (enFila || (estado?.agente && !editor.capturesViewportInput))) {
+    if (!compatibilidad && !pregunta) {
+      if (menuRaizVisible() && (dato === "/" || matchesKey(dato, "/"))) {
+        compatibilidad = true;
+        render(estado);
+        return undefined;
+      }
+      if (esperando && menuRaizVisible() && (dato === "?" || matchesKey(dato, "?"))) {
+        resolverEntrada({ accion: "ayuda" });
+        return { consume: true };
+      }
+      if (esperando && estado?.agente && matchesKey(dato, "tab") && !editor.capturesViewportInput) {
+        resolverEntrada({ accion: "accionesAgente" });
+        return { consume: true };
+      }
+      if (esperando && estado?.agente && matchesKey(dato, "escape") && !editor.capturesViewportInput) {
+        resolverEntrada({ accion: "regresarAgentes" });
+        return { consume: true };
+      }
+    }
+    if (compatibilidad && !estado?.agente && !pregunta && !enFila && !editor.getText() && matchesKey(dato, "escape")) {
+      compatibilidad = false;
+      render(estado);
+      return { consume: true };
+    }
+    if (compatibilidad && matchesKey(dato, "escape") && (enFila || (estado?.agente && !editor.capturesViewportInput))) {
       if (enFila) enFila = false;
       else acciones.volver();
       render(estado);
       return { consume: true };
     }
-    if (matchesKey(dato, "tab") && !editor.getText() && !pregunta && estado?.agentes.length) {
+    if (compatibilidad && matchesKey(dato, "tab") && !editor.getText() && !pregunta && estado?.agentes.length) {
       enFila = !enFila;
       render(estado);
       return { consume: true };
@@ -218,59 +409,102 @@ export function pantalla(comandos, acciones) {
       alcance = siguiente;
     }
     estado = nuevo;
+    refrescarSelector?.();
     if (!nuevo.agentes.length) enFila = false;
     const contexto = nuevo.proyecto ? [nuevo.proyecto, nuevo.cliente].filter(Boolean).join("  ·  ") : "Sin proyecto";
     const llm = !nuevo.agente && nuevo.proveedor ? `  ·  ${nuevo.proveedor}${nuevo.modelo ? ` / ${nuevo.modelo}` : ""}` : "";
-    encabezado.setText(`${acento("Harwiff")}  ·  ${contexto}${llm}`);
+    encabezado.setText(compatibilidad ? `${acento("Harwiff")}  ·  ${contexto}${llm}` :
+      `${fuerte("Harwiff")} / ${nuevo.proyecto ?? "Sin proyecto"}${nuevo.agente ? " / Agente" : ""}`);
     controlWifi.setText(resumenControlWifi(nuevo.controlWifi));
-    editor.prefijo = pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno);
+    estadoVisible.setText(nuevo.estadoResumen ?? "");
+    tituloCampo.setText(pregunta ?? "");
+    aviso.setText(avisoTexto);
+    editor.prefijo = compatibilidad ? pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno) : pregunta ? ">" : "Mensaje >";
     etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}${nuevo.soloConsulta ? "  ·  Solo consulta" : ""}` : "");
-    if (secreto) campoSecreto.setText(`${secreto.titulo} ${"•".repeat(Math.min(32, secreto.valor.length))}`);
+    if (secreto) campoSecreto.setText(`${secreto.titulo} ${(ui.terminal.columns < 80 ? "*" : "•").repeat(Math.min(32, secreto.valor.length))}`);
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
-    const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
-      const reciente = actividad ? ` · ${truncateToWidth(actividad, 28, "…")}` : "";
-      const texto = `${id} · ${estado}${reciente}`;
-      return enFila && n === indice ? acento(`[${texto}]`) : texto;
-    });
-    fila.setText(`Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : "   ·   Tab"}`);
-    const vista = JSON.stringify([nuevo.rutaProyecto, nuevo.agente, Boolean(detalle)]);
-    if (vistaHistorial !== vista) {
-      historial.clear();
-      bloquesVisibles.clear();
-      if (detalle) viewport.scrollToStart();
-      else viewport.scrollToEnd();
-      vistaHistorial = vista;
+    if (compatibilidad) {
+      const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
+        const reciente = actividad ? ` · ${truncateToWidth(actividad, 28, "…")}` : "";
+        const texto = `${id} · ${estado}${reciente}`;
+        return enFila && n === indice ? acento(`[${texto}]`) : texto;
+      });
+      fila.setText(`Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : "   ·   Tab"}`);
     }
-    const proximos = new Map();
-    const bloques = detalle ? [{ id: "detalle", text: detalle }] :
-      [...(nuevo.transcript ?? []), ...nuevo.mensajes.map((text, indice) => ({ id: `aviso/${indice}`, text }))];
-    for (const bloque of bloques) {
-      const anterior = bloquesVisibles.get(bloque.id);
-      const componente = anterior?.componente ??
-        (bloque.markdown ? new Markdown(bloque.text, 1, 0, temaMarkdown) : new Text(bloque.text, 1));
-      if (anterior && anterior.text !== bloque.text) componente.setText(bloque.text);
-      proximos.set(bloque.id, { componente, text: bloque.text });
+    if (detalle) {
+      actualizarBloques(inspector, [{ id: "detalle", text: detalle }], acciones.limpiar);
     }
-    const componentes = [...proximos.values()].map(({ componente }) => componente);
-    if (historial.children.length !== componentes.length || componentes.some((item, i) => historial.children[i] !== item)) {
-      historial.clear();
-      for (const componente of componentes) historial.addChild(componente);
+    const mensajes = nuevo.mensajes.map((text, n) => ({ id: `aviso/${n}`, text }));
+    if (nuevo.agente) {
+      const clave = JSON.stringify([nuevo.rutaProyecto, nuevo.agente]);
+      if (!chats.has(clave)) chats.set(clave, zonaTexto({ follow: "end", primary: true, scrollbar: "auto" }));
+      const zona = chats.get(clave);
+      if (claveChat !== clave) {
+        claveChat = clave;
+        conversacion.clear();
+        conversacion.addChild(zona.vista, { grow: 1, basis: 0 });
+        conversacion.addChild(actividad, { basis: 34, visible: ({ width }) => !compatibilidad && width >= 120 });
+      }
+      const bloques = compatibilidad ? nuevo.transcript ?? [] : (nuevo.transcript ?? [])
+        .filter(({ tipo }) => tipo === "mensaje")
+        .map((bloque) => {
+          let texto = bloque.text;
+          if (bloque.entrega === "queued") texto = texto.replace(/ · en cola$/, " · En cola");
+          if (bloque.entrega === "not_sent") texto = texto.replace(/ · no enviado$/, " · No enviado");
+          if (bloque.entrega === "incorporated") texto += " · Incorporado";
+          if (bloque.markdown) texto = texto.replace(/^\*\*Harwiff\*\*/, "**Agente**");
+          return { ...bloque, text: texto };
+        });
+      actualizarBloques(zona, [...bloques, ...mensajes], acciones.limpiar);
+      actividad.setText(nuevo.actividad.length ? `Actividad\n${nuevo.actividad.slice(-5).map(({ label, description }) =>
+        `${label} · ${description}`).join("\n")}` : "Actividad\nSin operaciones");
+    } else if (compatibilidad) {
+      actualizarBloques(registro, mensajes, acciones.limpiar);
     }
-    bloquesVisibles = proximos;
-    ui.setFocus(selector ?? (enFila || secreto || detalle ? null : editor));
+    if (menuRaizVisible()) {
+      const firma = JSON.stringify(nuevo.menu);
+      const clave = nuevo.rutaProyecto ?? "sin-proyecto";
+      if (firma !== opcionesRaiz || clave !== claveRaiz) {
+        claveRaiz = clave;
+        opcionesRaiz = firma;
+        listaRaiz = new ListaMenu(nuevo.menu, () => Math.max(2, ui.terminal.rows - 7), {
+          activa: selecciones.get(clave),
+          elegir: ({ value }) => {
+            if (esperando) resolverEntrada({ accion: value });
+          },
+          cambiar: (value) => selecciones.set(clave, value),
+        });
+        principal.clear();
+        principal.addChild(listaRaiz);
+      }
+    }
+    const ocupaEditor = !enFila && !secreto && !detalle && (compatibilidad || pregunta || (nuevo.agente && !nuevo.soloConsulta));
+    ui.setFocus(selector ?? (menuRaizVisible() ? listaRaiz : ocupaEditor ? editor : null));
     ui.requestRender();
   }
 
   ui.start();
-  return {
+  const interfaz = {
     render,
+    enComandos: () => compatibilidad,
+    comandos() {
+      compatibilidad = true;
+      render(estado);
+    },
+    notificar(texto) {
+      avisoTexto = acciones.limpiar(texto);
+      render(estado);
+    },
     leer() {
       return cerrado ? Promise.resolve(undefined) : new Promise((resuelve) => { esperando = resuelve; });
     },
-    preguntar(texto) {
+    preguntar(texto, inicial = "", { alCancelar } = {}) {
       if (cerrado) return Promise.resolve(undefined);
-      pregunta = texto;
+      pregunta = acciones.limpiar(texto);
+      alCancelarPregunta = alCancelar;
       render(estado);
+      editor.setText(acciones.limpiar(inicial));
+      ui.requestRender();
       return new Promise((resuelve) => { esperando = resuelve; });
     },
     preguntarSecreto(titulo) {
@@ -282,17 +516,39 @@ export function pantalla(comandos, acciones) {
         render(estado);
       });
     },
-    elegir(titulo, opciones, activa, { filtrar = false } = {}) {
+    elegir(titulo, opciones, activa, { filtrar = false, id } = {}) {
       if (cerrado) return Promise.resolve(undefined);
       return new Promise((resuelve) => {
         esperando = resuelve;
         enFila = false;
-        selector = new SelectList(opciones, Math.max(2, Math.min(8, ui.terminal.rows - 8)), tema);
-        const indice = opciones.findIndex((opcion) => opcion.value === activa);
-        if (indice >= 0) selector.setSelectedIndex(indice);
-        selector.onSelect = ({ value }) => resolverEntrada(value);
-        selector.onCancel = () => resolverEntrada(undefined);
-        panel.addChild(new Text(titulo, 1));
+        const opcionesDinamicas = typeof opciones === "function";
+        const filasVisibles = () => (opcionesDinamicas ? opciones() : opciones).map(({ value, label, description }) => ({
+          value, label: acciones.limpiar(label), description: description && acciones.limpiar(description),
+        }));
+        const visibles = filasVisibles();
+        const clave = !compatibilidad && id && JSON.stringify([estado.rutaProyecto, estado.agente, id]);
+        const seleccion = clave && selecciones.get(clave) || activa;
+        const elegir = ({ value }) => {
+          if (clave) selecciones.set(clave, value);
+          resolverEntrada(value);
+        };
+        const cancelar = () => resolverEntrada(undefined);
+        const cabecera = new Text(acciones.limpiar(titulo), 1, compatibilidad ? 1 : 0);
+        if (compatibilidad) {
+          selector = new SelectList(visibles, Math.max(2, Math.min(8, ui.terminal.rows - 8)), tema);
+          const indice = visibles.findIndex(({ value }) => value === seleccion);
+          if (indice >= 0) selector.setSelectedIndex(indice);
+          selector.onSelect = elegir;
+          selector.onCancel = cancelar;
+        } else {
+          selector = new ListaMenu(visibles, () => Math.max(2, ui.terminal.rows - cabecera.render(ui.terminal.columns).length -
+            (filtrar ? 6 : 5)), {
+            activa: seleccion, elegir, cancelar,
+            cambiar: (value) => { if (clave) selecciones.set(clave, value); },
+          });
+          if (opcionesDinamicas) refrescarSelector = () => selector.setItems(filasVisibles());
+        }
+        panel.addChild(cabecera);
         if (filtrar) {
           filtroSelector = "";
           filtroVisible.setText("Filtrar por ID");
@@ -302,21 +558,39 @@ export function pantalla(comandos, acciones) {
         render(estado);
       });
     },
+    async formulario(titulo, campos, valores = {}) {
+      const borrador = { ...valores };
+      for (;;) {
+        const opcion = await interfaz.elegir(titulo, [
+          ...campos.map(({ id, label }) => ({ value: id, label,
+            description: borrador[id]?.replaceAll("\n", ", ") || "Sin definir" })),
+          { value: "guardar", label: "Guardar" },
+          { value: "cancelar", label: "Cancelar" },
+        ], undefined, { id: titulo });
+        if (!opcion || opcion === "cancelar") return;
+        if (opcion === "guardar") return borrador;
+        const campo = campos.find(({ id }) => id === opcion);
+        const entrada = await interfaz.preguntar(campo.ayuda ?? campo.label, borrador[opcion] ?? "");
+        if (entrada !== undefined) borrador[opcion] = entrada;
+      }
+    },
     mostrarDetalle(texto, titulo = "Detalles de operación · Esc vuelve a la sesión") {
       if (cerrado) return Promise.resolve();
       return new Promise((resuelve) => {
         esperando = resuelve;
         detalle = texto;
-        panel.addChild(new Text(titulo, 1));
+        inspector.vista.scrollToStart();
+        panel.addChild(new Text(acciones.limpiar(titulo), 1));
         render(estado);
       });
     },
-    async consultar(texto, tarea) {
+    async consultar(texto, tarea, { cancelable = true } = {}) {
       if (cerrado) return;
       const controlador = new AbortController();
-      consulta = controlador;
+      consulta = { cancelable, controlador: cancelable ? controlador : undefined };
       detalle = texto;
-      panel.addChild(new Text("Esc cancela la consulta", 1));
+      inspector.vista.scrollToStart();
+      if (compatibilidad) panel.addChild(new Text("Esc cancela la consulta", 1));
       render(estado);
       try {
         const resultado = await tarea(controlador.signal);
@@ -331,10 +605,11 @@ export function pantalla(comandos, acciones) {
     cerrar() {
       if (cerrado) return;
       cerrado = true;
-      consulta?.abort();
+      consulta?.controlador?.abort();
       secreto = undefined;
       esperando?.(undefined);
       ui.stop();
     },
   };
+  return interfaz;
 }

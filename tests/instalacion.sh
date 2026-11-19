@@ -27,6 +27,32 @@ if info["cambiosLocales"]:
 assert sys.argv[2] == esperada
 print(esperada)
 VERSION_TEST
+mkdir -- "$temporal/tui"
+"$python" -B - "$ejecutable" "$(dirname -- "$0")/terminal.py" "$temporal/tui" <<'TUI_TEST'
+from pathlib import Path
+from runpy import run_path
+import sys
+
+ejecutable, pruebas, carpeta = map(Path, sys.argv[1:])
+terminal = run_path(str(pruebas))["terminal"]
+
+with terminal(carpeta, ejecutable=ejecutable, filas=24, columnas=80) as (proceso, esperar, escribir):
+    esperar("> Abrir proyecto")
+    escribir(b"\x1b[B\x1b[B\r")
+    esperar("> Agentes")
+    escribir(b"\x1b[B\r")
+    esperar("Generar muestra sintética")
+    escribir(b"\x1b[B\r")
+    esperar("Ver en Auditoría")
+    assert len(list((carpeta / ".harwiff" / "informes").glob("*.json"))) == 1
+    escribir(b"\x1b")
+    esperar("> Diagnóstico")
+    escribir(b"\x03")
+    esperar("\x1b[?1049l")
+    assert proceso.wait(timeout=5) == 0
+
+print("Menú y diagnóstico sintético verificados desde el comando instalado.")
+TUI_TEST
 mkdir "$temporal/path-reducido"
 # Ejecuta el lector incluido y el DTO incluso con PATH sin utilidades de red.
 PATH="$temporal/path-reducido" "$python" -I -B "$instalado/app/wireless_linux.py" inventory \

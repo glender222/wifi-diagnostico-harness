@@ -71,57 +71,79 @@ export async function detalleAdaptador(nombre) {
   return [resumen(fila), capacidades(fila), restricciones(fila, perfil)].join("\n\n");
 }
 
-export async function panelAdaptadores(interfaz, seleccionado, usar) {
+export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer } = {}) {
   let perfil;
+  let estadoGuardado = "";
   for (;;) {
-    perfil ??= await interfaz.consultar("Cargando inventario de adaptadores…",
-      (signal) => entorno("adaptadores-perfil", undefined, { signal }));
+    if (!perfil) {
+      perfil = await interfaz.consultar("Cargando inventario de adaptadores…",
+        (signal) => entorno("adaptadores-perfil", undefined, { signal }));
+      if (perfil) estadoGuardado = alLeer?.(perfil) ?? "";
+    }
     if (!perfil) return;
     const filas = radios(perfil);
-    const opciones = filas.map((fila, indice) => {
+    const opciones = filas.map((fila) => {
       const { dispositivo, phy } = fila;
-      return { value: String(indice), label: `${phy.nameNow} · ${nombres(phy)}`,
+      return { value: phy.phyId, label: `${phy.nameNow} · ${nombres(phy)}`,
         description: `${dispositivo.bus} · ${CRITICIDAD[phy.connectivity.criticality]} · ${RESERVA[phy.reservation.state]}${conexion(phy)}` };
     });
     const parcial = perfil.status === "complete" ? "" : " · inventario parcial";
-    const opcion = await interfaz.elegir(`Harwiff / Adaptadores${parcial}\nSeleccionado en el proyecto: ${seleccionado ?? "ninguno"}`, [
+    const opcion = await interfaz.elegir(`Harwiff / Adaptadores${parcial}\nSeleccionado en el proyecto: ${seleccionado ?? "ninguno"}${estadoGuardado}`, [
       ...opciones, { value: "mock", label: "Mock · Simulado" }, { value: "actualizar", label: "Actualizar inventario" },
       { value: "volver", label: "Volver" },
-    ]);
+    ], undefined, { id: "inventario" });
     if (!opcion || opcion === "volver") return;
     if (opcion === "actualizar") {
       perfil = undefined;
       continue;
     }
-    const fila = filas[Number(opcion)];
-    const accion = await interfaz.elegir(fila ? resumen(fila) : mock, [
-      { value: "usar", label: "Usar este adaptador" },
-      ...(fila ? [{ value: "capacidades", label: "Ver capacidades completas" },
-        { value: "restricciones", label: "Ver restricciones y motivos" }] :
-        [{ value: "avisos", label: "Ver avisos del inventario" }]),
-      { value: "volver", label: "Volver" },
-    ]);
+    const fila = filas.find(({ phy }) => phy.phyId === opcion);
+    if (await revisarAdaptador(interfaz, fila, perfil, usar)) return;
+  }
+}
+
+async function revisarAdaptador(interfaz, fila, perfil, usar) {
+  const opciones = [
+    { value: "usar", label: "Usar este adaptador" },
+    ...(fila ? [{ value: "capacidades", label: "Ver capacidades completas" },
+      { value: "restricciones", label: "Ver restricciones y motivos" }] :
+      [{ value: "avisos", label: "Ver avisos del inventario" }]),
+    { value: "volver", label: "Volver" },
+  ];
+  do {
+    const accion = await interfaz.elegir(fila ? resumen(fila) : mock, opciones, undefined, {
+      id: "perfil/" + (fila?.phy.phyId ?? "mock"),
+    });
+    if (!accion || accion === "volver") return false;
     if (accion === "usar") {
-      if (!fila) return usar("mock");
-      const { phy } = fila;
-      const candidatos = phy.interfaces.filter(({ legacyAdapterId, ifindex }) => legacyAdapterId && ifindex);
-      if (!candidatos.length) {
-        await interfaz.mostrarDetalle("El radio no tiene una interfaz operativa identificable.", "Esc vuelve al inventario");
-        continue;
-      }
-      let nombre = candidatos[0].ifname;
-      if (candidatos.length > 1) {
-        nombre = await interfaz.elegir("Interfaz para verificar con preflight",
-          candidatos.map(({ ifname }) => ({ value: ifname, label: ifname })));
+      try {
+        if (!fila) {
+          await usar("mock");
+          return true;
+        }
+        const { phy } = fila;
+        const candidatos = phy.interfaces.filter(({ legacyAdapterId, ifindex }) => legacyAdapterId && ifindex);
+        if (!candidatos.length) {
+          await interfaz.mostrarDetalle("El radio no tiene una interfaz operativa identificable.", "Interfaz no disponible");
+          continue;
+        }
+        const nombre = candidatos.length === 1 ? candidatos[0].ifname :
+          await interfaz.elegir("Interfaz para verificar con preflight",
+            candidatos.map(({ ifname }) => ({ value: ifname, label: ifname })), undefined, { id: "interfaz/" + phy.phyId });
         if (!nombre) continue;
+        const { legacyAdapterId, interfaceId, ifindex } = candidatos.find(({ ifname }) => ifname === nombre);
+        await usar(nombre, legacyAdapterId, { phyId: phy.phyId, interfaceId, ifindex, ifname: nombre });
+        return true;
+      } catch (error) {
+        if (interfaz.enComandos()) throw error;
+        await interfaz.mostrarDetalle(error.message, "Preflight bloqueado");
       }
-      const { legacyAdapterId, interfaceId, ifindex } = candidatos.find(({ ifname }) => ifname === nombre);
-      return usar(nombre, legacyAdapterId, { phyId: phy.phyId, interfaceId, ifindex, ifname: nombre });
-    }
-    if (accion === "capacidades" || accion === "restricciones" || accion === "avisos") {
+    } else {
       const texto = accion === "capacidades" ? capacidades(fila) : accion === "restricciones" ? restricciones(fila, perfil) :
         avisos(perfil.warnings).join("\n") || "Sin advertencias generales.";
-      await interfaz.mostrarDetalle(texto, "Esc vuelve al inventario");
+      await interfaz.mostrarDetalle(texto, interfaz.enComandos() ? "Esc vuelve al inventario" :
+        opciones.find(({ value }) => value === accion).label);
     }
-  }
+  } while (!interfaz.enComandos());
+  return false;
 }

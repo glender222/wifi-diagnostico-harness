@@ -6,6 +6,7 @@ import json
 import os
 import pty
 import select
+import signal
 import struct
 import subprocess
 import tempfile
@@ -19,10 +20,10 @@ FUENTE = Path(__file__).resolve().parent.parent / "consola.mjs"
 
 
 @contextmanager
-def terminal(carpeta, env=None, destino=None, filas=28, columnas=110):
+def terminal(carpeta, env=None, destino=None, filas=28, columnas=110, ejecutable=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", filas, columnas, 0, 0))
-    comando = ["node", str(FUENTE)]
+    comando = [str(ejecutable)] if ejecutable else ["node", str(FUENTE)]
     if destino is not None:
         comando.append(str(destino))
     proceso = subprocess.Popen(comando, cwd=carpeta, stdin=slave, stdout=slave, stderr=slave,
@@ -50,6 +51,12 @@ def terminal(carpeta, env=None, destino=None, filas=28, columnas=110):
         captura.clear()
         os.write(master, entrada)
 
+    def redimensionar(filas, columnas):
+        captura.clear()
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", filas, columnas, 0, 0))
+        proceso.send_signal(signal.SIGWINCH)
+
+    escribir.redimensionar = redimensionar
     try:
         yield proceso, esperar, escribir
     finally:
@@ -65,10 +72,133 @@ def terminal(carpeta, env=None, destino=None, filas=28, columnas=110):
 
 class TerminalTest(unittest.TestCase):
     @staticmethod
+    def abrir_comandos(esperar, escribir):
+        esperar("? ayuda")
+        escribir(b"?")
+        esperar("Consola de comandos")
+        escribir(b"\x1b[B\r")
+        esperar("harwiff >")
+
+    @staticmethod
     def descartar_inicio(esperar, escribir):
-        esperar("Inicializar proyecto en")
-        escribir(b"\x1b")
-        return esperar("harwiff >")
+        esperar("Abrir proyecto")
+        TerminalTest.abrir_comandos(esperar, escribir)
+
+    def test_menus_alcance_preflight_diagnostico_y_auditoria(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            python = base / "python-fixture"
+            python.write_text("""#!/bin/sh
+case "$*" in
+    *adaptadores-perfil) echo '{"status":"complete","devices":[],"warnings":[]}' ;;
+    *) exec python3 "$@" ;;
+esac
+""")
+            python.chmod(0o700)
+            env = {**self.entorno_local(), "WIFI_PYTHON": str(python), "NO_COLOR": "1"}
+            with terminal(base, env, filas=24, columnas=80) as (proceso, esperar, escribir):
+                def paso(teclas, texto):
+                    escribir(teclas)
+                    return esperar(texto)
+
+                inicial = esperar("> Abrir proyecto")
+                self.assertNotIn(b"\x1b[96m", inicial)
+                self.assertFalse((base / ".harwiff").exists())
+                paso(b"\x1b[B" * 2 + b"\r", "> Agentes")
+                datos = base / ".harwiff"
+                control = datos / "control-wifi.json"
+                paso(b"\x1b[B" * 2 + b"\r", "> Mock")
+                paso(b"\r", "> Usar este adaptador")
+                paso(b"\r", "Preflight bloqueado")
+                self.assertFalse(control.exists())
+                paso(b"\x1b", "> Usar este adaptador")
+                paso(b"\x1b", "> Mock")
+                paso(b"\x1b", "> Adaptadores")
+                paso(b"\x1b[B\r", "> Editar alcance")
+                paso(b"\r", "> SSID")
+                paso(b"\r", "SSID autorizados")
+                paso(b"LAB_TEST_AP\r", "LAB_TEST_AP")
+                paso(b"\x1b[B" * 3 + b"\r", "Alcance guardado")
+                paso(b"\x1b", "> Alcance")
+                paso(b"\x1b[A\r", "> Mock")
+                paso(b"\r", "> Usar este adaptador")
+                paso(b"\r", "Adaptador seleccionado")
+                self.assertEqual(json.loads(control.read_text())["adapter"]["id"], "mock")
+                paso(b"\x1b[A\r", "Ejecutar en modo simulado")
+                paso(b"\r", "Ver en Auditoría")
+                paso(b"\r", "Ver registro JSON")
+                paso(b"\r", "Evidencia")
+                self.assertEqual(len(list((datos / "informes").glob("*.json"))), 1)
+                paso(b"\x1b", "Ver registro JSON")
+                paso(b"\x1b", "> Diagnóstico")
+
+                id_pendiente = f"{int(time.time() * 1000) + 1000}-00000000-0000-0000-0000-000000000000"
+                ruta_pendiente = datos / "auditoria" / id_pendiente
+                ruta_pendiente.mkdir()
+                (ruta_pendiente / "solicitud.json").write_text(json.dumps({
+                    "operacion": "ejecución pendiente", "inicio": "2026-11-18T20:00:00.000Z",
+                }))
+                paso(b"\x1b[B" * 4 + b"\r", "pendiente de cierre")
+                paso(b"\r", "Ver registro JSON")
+                paso(b"\x1b", "pendiente de cierre")
+                paso(b"\x1b", "> Auditoría")
+                paso(b"\x03", "\x1b[?1049l")
+                self.assertEqual(proceso.wait(timeout=5), 0)
+
+    def test_menu_agente_credencial_borrador_y_tamanos(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            base = Path(raiz)
+            env = self.entorno_openai(pausa="5500")
+            secreto = env.pop("OPENAI_API_KEY").encode()
+            subprocess.run(["node", str(FUENTE)], cwd=base, env=env, check=True, capture_output=True,
+                           input=b"/init\n/alcance set --ssid LAB_TEST_AP\n/adaptador usar mock\n/salir\n")
+            with terminal(base, env, filas=24, columnas=120) as (proceso, esperar, escribir):
+                def paso(teclas, texto):
+                    escribir(teclas)
+                    return esperar(texto)
+
+                esperar("> Agentes")
+                paso(b"\x1b[B" * 4 + b"\r", "Modelo para sesiones nuevas")
+                paso(b"\x1b[B\r", "Conectar proveedor LLM")
+                paso(b"\r", "entrada oculta")
+                captura = paso(b"\x1b[200~" + secreto + b"\x1b[201~", "•")
+                self.assertNotIn(secreto, captura)
+                paso(b"\r", "Filtrar por ID")
+                paso(b"gpt-4\r", "gpt-4.1-mini")
+                esperar("> Conexiones de proveedor")
+                paso(b"\x1b", "> Modelo y ajustes")
+                paso(b"\x1b[A" * 4 + b"\r", "> Nueva conversación")
+                paso(b"\r", "¿Qué quieres revisar")
+                paso(b"Revisar fixture\r", "Texto parcial del proveedor")
+                esperar("Actividad")
+                paso(b"\x1b", "Revisar fixture")
+                paso(b"\x1b", "1 agente trabajando")
+                paso(b"\x03", "Hay trabajo en curso")
+                paso(b"\x1b", "> Agentes")
+                paso(b"\r", "Nueva conversación")
+                paso(b"\x1b[B\r", "Mensaje >")
+                paso(b"Conservar borrador", "Conservar borrador")
+                paso(b"\t", "Acciones del agente")
+                paso(b"\r", "Detalles de operaciones")
+                paso(b"\r", "Parámetros")
+                paso(b"\x1b", "Detalles de operaciones")
+                paso(b"\x1b", "Acciones del agente")
+                paso(b"\x1b", "Conservar borrador")
+                paso(b"\x1b", "> Revisar fixture")
+                paso(b"\r", "Conservar borrador")
+
+                escribir.redimensionar(15, 59)
+                esperar("Se requieren 60×16")
+                escribir.redimensionar(16, 60)
+                captura = esperar("Conservar borrador")
+                self.assertNotIn(b"Actividad", captura)
+                esperar("Tab acciones")
+                paso(b"\t", "Detener turno")
+                paso(b"\x1b[B" * 2 + b"\r", "Solo consulta")
+                paso(b"\x1b", "> Revisar fixture")
+                paso(b"\x1b", "> Agentes")
+                paso(b"\x03", "\x1b[?1049l")
+                self.assertEqual(proceso.wait(timeout=8), 0)
 
     def test_connect_openai_oculta_clave_recupera_y_desvincula(self):
         with tempfile.TemporaryDirectory() as raiz:
@@ -132,7 +262,7 @@ else process.exit(1);
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
             with terminal(proyecto, env) as (proceso, esperar, escribir):
-                esperar("Proyecto abierto")
+                self.abrir_comandos(esperar, escribir)
                 escribir(b"/connect list\r")
                 esperar("credencial en Secret Service · modelo gpt-5-mini · seleccionado")
                 escribir(b"/model\r")
@@ -226,6 +356,7 @@ else process.exit(1);
             self.assertEqual([evento["text"] for evento in eventos if evento["type"] == "user" and evento["messageId"] in incorporados],
                              ["Sesion original", "Conserva los datos observados", "Distingue evidencia e hipotesis"])
             with terminal(proyecto, env) as (proceso, esperar, escribir):
+                self.abrir_comandos(esperar, escribir)
                 esperar("OpenAI / gpt-5-mini")
                 esperar("Adaptador: mock | Alcance: 1 SSID, 1 canal(es) | Preflight: OK")
                 esperar("Actividad reciente del proyecto")
@@ -312,7 +443,7 @@ else:
 """)
             python.chmod(0o700)
             env = {**self.entorno_local(), "WIFI_PYTHON": str(python)}
-            with terminal(base, env, filas=15, columnas=88) as (proceso, esperar, escribir):
+            with terminal(base, env, filas=16, columnas=88) as (proceso, esperar, escribir):
                 self.descartar_inicio(esperar, escribir)
                 escribir(b"/proyecto prueba\r")
                 esperar("Proyecto creado")
@@ -442,6 +573,7 @@ else:
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
             with terminal(proyecto, self.entorno_openai(pausa="1600")) as (proceso, esperar, escribir):
+                self.abrir_comandos(esperar, escribir)
                 esperar(f"{sesion.name} · completed")
                 escribir(b"\t")
                 esperar(f"[{sesion.name}")
@@ -475,8 +607,8 @@ else:
 
     def test_cabecera_del_plano_de_control(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("Adaptador: ninguno | Alcance: pendiente | Preflight: Pendiente")
             self.descartar_inicio(esperar, escribir)
+            esperar("Adaptador: ninguno | Alcance: pendiente | Preflight: Pendiente")
             escribir(b"/proyecto prueba\r")
             esperar("Proyecto creado")
             escribir(b'/alcance set --ssid "Red de laboratorio"\r')
@@ -506,16 +638,15 @@ else:
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
             with terminal(proyecto) as (proceso, esperar, escribir):
-                salida = esperar("Proyecto abierto")
+                self.abrir_comandos(esperar, escribir)
+                salida = esperar("harwiff >")
                 self.assertNotIn(b"Inicializar proyecto en", salida)
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
 
     def test_ahora_no_y_reintento_con_init(self):
         with tempfile.TemporaryDirectory() as raiz, terminal(raiz) as (proceso, esperar, escribir):
-            esperar("Ahora no")
-            escribir(b"\r")
-            esperar("harwiff >")
+            self.descartar_inicio(esperar, escribir)
             self.assertEqual(list(Path(raiz).iterdir()), [])
             escribir(b"/init\r")
             esperar("Proyecto creado")
@@ -537,8 +668,8 @@ else:
             contenido = '{"esquema":"wifi-proyecto/v1","cliente":"demo"}'
             heredado.write_text(contenido)
             with terminal(hijo) as (proceso, esperar, escribir):
-                esperar(f"Inicializar proyecto en {hijo}")
-                escribir(b"\x1b[A\r")
+                esperar("Inicializar esta carpeta")
+                escribir(b"\x1b[B\x1b[B\r")
                 esperar("Proyecto creado")
                 self.assertTrue((hijo / ".harwiff/harness.json").is_file())
                 self.assertFalse((padre / ".harwiff").exists())
@@ -546,7 +677,8 @@ else:
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
             with terminal(hijo, destino=padre) as (proceso, esperar, escribir):
-                salida = esperar("Proyecto abierto")
+                self.abrir_comandos(esperar, escribir)
+                salida = esperar("harwiff >")
                 self.assertNotIn(b"Inicializar proyecto en", salida)
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
@@ -580,7 +712,7 @@ else:
             escribir(b"/salir\r")
             self.assertEqual(proceso.wait(timeout=5), 0)
             with terminal(Path(raiz) / "prueba", self.entorno_local()) as (reabierto, esperar, escribir):
-                esperar("Proyecto abierto")
+                self.abrir_comandos(esperar, escribir)
                 escribir(b"agent harwiff demo-anterior\r")
                 esperar("Solo consulta")
                 escribir(b"Consulta a una demo anterior\r")
@@ -678,7 +810,7 @@ else:
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
             with terminal(raiz) as (proceso, esperar, escribir):
-                esperar("Proyecto abierto")
+                self.abrir_comandos(esperar, escribir)
                 escribir(b"/diagnostico demo\r")
                 esperar("Informe guardado")
                 self.assertTrue(list((carpeta / ".harwiff/informes").glob("*.json")))
@@ -687,7 +819,7 @@ else:
 
     def test_proyecto_desde_raiz_pide_una_carpeta(self):
         with terminal("/") as (proceso, esperar, escribir):
-            esperar("Sin proyecto")
+            self.abrir_comandos(esperar, escribir)
             escribir(b"/proyecto\r")
             esperar("Carpeta (ej. ~/wifi-prueba)")
             escribir(b"\r")
@@ -741,7 +873,7 @@ else:
                 carpeta.mkdir()
                 (carpeta / "harness.json").write_text('{"esquema":"wifi-proyecto/v1","cliente":"demo"}')
             with terminal(primera, self.entorno_openai(pausa="2800")) as (proceso, esperar, escribir):
-                esperar("Proyecto abierto")
+                self.abrir_comandos(esperar, escribir)
                 escribir(b"/alcance set --ssid LAB_TEST_AP\r")
                 esperar("Alcance guardado")
                 escribir(b"/adaptador usar mock\r")

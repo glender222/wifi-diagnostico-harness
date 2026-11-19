@@ -78,10 +78,12 @@ function vistaSesion(dir, estado, turnos = [], parciales = []) {
   const bloques = new Map();
   const usuarios = new Map();
   const herramientas = new Map();
-  function agregar(id, text, markdown = false) {
-    bloques.set(id, { id, text: textoVisible(text), markdown });
+  let idTurno;
+  function agregar(id, text, { markdown = false, tipo = "detalle", entrega } = {}) {
+    bloques.set(id, { id, text: textoVisible(text), markdown, tipo, entrega, turno: idTurno });
   }
   for (const { id: turno, eventos } of turnos) {
+    idTurno = turno;
     const tieneResumen = eventos.some(({ type }) => type === "summary") ||
       (turno === estado.turnId && parciales.some(({ resumen, text }) => resumen && text));
     for (const [indice, evento] of eventos.entries()) {
@@ -91,18 +93,19 @@ function vistaSesion(dir, estado, turnos = [], parciales = []) {
           if (evento.resumenSolicitado === false && !tieneResumen) {
             agregar(id + "/summary", "Resumen oficial de OpenAI · no disponible (soporte sin confirmar).");
           }
-          if (!eventos.some(({ type }) => type === "user")) agregar(id + "/goal", `Tú  ${evento.goal}`);
+          if (!eventos.some(({ type }) => type === "user")) agregar(id + "/goal", `Tú  ${evento.goal}`, { tipo: "mensaje" });
           break;
         case "user": {
           if (!usuarios.has(evento.messageId)) {
             usuarios.set(evento.messageId, evento.text);
-            agregar(evento.messageId, `Tú  ${evento.text} · en cola`);
+            agregar(evento.messageId, `Tú  ${evento.text} · en cola`, { tipo: "mensaje", entrega: "queued" });
           }
           break;
         }
         case "user_state": {
           const texto = usuarios.get(evento.messageId);
-          if (texto) agregar(evento.messageId, `Tú  ${texto}${evento.status === "not_sent" ? " · no enviado" : ""}`);
+          if (texto) agregar(evento.messageId, `Tú  ${texto}${evento.status === "not_sent" ? " · no enviado" : ""}`,
+            { tipo: "mensaje", entrega: evento.status });
           break;
         }
         case "request": agregar(id, `Iteración ${evento.iteration}`); break;
@@ -115,8 +118,8 @@ function vistaSesion(dir, estado, turnos = [], parciales = []) {
           agregar(clave, resumenHerramienta(detalle));
           break;
         }
-        case "response": agregar(evento.messageId ?? id, `**Harwiff**  ${evento.text}`, true); break;
-        case "summary": agregar(evento.messageId ?? id, `**Resumen de OpenAI**  ${evento.text}`, true); break;
+        case "response": agregar(evento.messageId ?? id, `**Harwiff**  ${evento.text}`, { markdown: true, tipo: "mensaje" }); break;
+        case "summary": agregar(evento.messageId ?? id, `**Resumen de OpenAI**  ${evento.text}`, { markdown: true }); break;
         case "usage": {
           const { tokens, estado: uso, modelosDevueltos } = evento.consumo;
           const modelo = modelosDevueltos.length ? ` · modelo devuelto: ${modelosDevueltos.join(", ")}` : "";
@@ -128,8 +131,9 @@ function vistaSesion(dir, estado, turnos = [], parciales = []) {
       }
     }
   }
+  idTurno = estado.turnId;
   for (const { id, text, resumen } of parciales) {
-    if (text) agregar(id, `**${resumen ? "Resumen de OpenAI" : "Harwiff"}**  ${text}`, true);
+    if (text) agregar(id, `**${resumen ? "Resumen de OpenAI" : "Harwiff"}**  ${text}`, { markdown: true, tipo: resumen ? "detalle" : "mensaje" });
   }
   if (!bloques.size) agregar("objetivo", estado.goal);
   if (estado.reason === "interrupted" && ![...bloques.values()].some(({ text }) => text === MOTIVOS.interrupted)) {
@@ -139,7 +143,7 @@ function vistaSesion(dir, estado, turnos = [], parciales = []) {
   return { id: estado.id, dir, modo: estado.provider, estado: estado.status, uso: estado.uso,
     modelId: estado.modelId, iniciado: true, autonoma: true, soloConsulta: SOLO_CONSULTA.has(estado.reason) ||
       (estado.provider === "azure-foundry" && (!estado.modelId || !estado.modelHost)),
-    transcript, operaciones: [...herramientas.values()],
+    objetivo: textoVisible(estado.goal ?? ""), transcript, operaciones: [...herramientas.values()],
     mensajes: transcript.map(({ text }) => text.replace(/^\*\*(Harwiff|Resumen de OpenAI)\*\*/, "$1")),
     actividad: actividad(estado.lastEvent) };
 }
