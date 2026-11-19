@@ -46,8 +46,10 @@ export async function conBloqueoProyecto(raiz, tarea, mensajeOcupado = "Otra con
 }
 
 const valores = (lista, valor) => lista.includes(valor) ? valor : "unknown";
-const fuentesInventario = ["sysfs", "sysfs/net", "sysfs/ieee80211", "sysfs/rfkill", "nmcli", "iw_dev", "iw_phy", "iw_reg", "ip-4", "ip-6", "ethtool"];
-const codigosInventario = ["source_unavailable", "permission_denied", "probe_timeout", "parse_unsupported", "adapter_disconnected", "ambiguous_interface"];
+const fuentesInventario = ["sysfs", "sysfs/net", "sysfs/ieee80211", "sysfs/rfkill", "nmcli", "iw_dev", "iw_phy", "iw_reg", "ip-4", "ip-6", "ethtool",
+  "nl80211_interface", "nl80211_wiphy", "nl80211_reg", "ethtool_drvinfo"];
+const codigosInventario = ["source_unavailable", "permission_denied", "probe_timeout", "parse_unsupported", "adapter_disconnected", "ambiguous_interface",
+  "snapshot_incomplete", "attribute_missing", "unsupported_attribute"];
 const avisosInventario = (lista) => lista
   .filter(({ code, source }) => codigosInventario.includes(code) && fuentesInventario.includes(source))
   .slice(0, 8).map(({ code, source }) => ({ code, source }));

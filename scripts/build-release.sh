@@ -29,7 +29,7 @@ uv pip install --no-deps --python "$stage/python/bin/python3" \
 
 for archivo in consola.mjs pantalla.mjs proyecto.mjs bucle.mjs entorno.mjs sesion-agente.mjs historial-agente.mjs policy.mjs proveedor-openai.mjs panel-adaptadores.mjs \
   credenciales-openai.mjs \
-  app.py entorno.py adaptador_core.py wifi.py diagnostico.py foundry.py broker_mock.py \
+  app.py entorno.py adaptador_core.py wireless_linux.py wifi.py diagnostico.py foundry.py broker_mock.py \
   AGENTS.proyecto.md package.json package-lock.json requirements-opensandbox.txt; do
   cp -- "$raiz/$archivo" "$stage/app/"
 done

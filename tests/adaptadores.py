@@ -1,5 +1,8 @@
+import errno
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -10,7 +13,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from adaptador_core import FuenteError, consultar, identidad_heredada, inventario_perfil, topologia
+from adaptador_core import FuenteError, WIRELESS, consultar, identidad_heredada, inventario_perfil, topologia
+import wireless_linux as nl
 from entorno import (DiagnosticoBloqueado, adaptadores, diagnostico_fisico, informe_demo,
                      inventario, preflight, preflight_detalle, reserva_adaptador)
 from wifi import asociacion_actual
@@ -66,10 +70,12 @@ def sys_fixture(raiz, radios):
         radio = fisico / "ieee80211" / phy
         radio.mkdir(parents=True)
         (radio / "device").symlink_to(fisico)
+        (radio / "index").write_text(phy.removeprefix("phy"))
         (sysfs / "ieee80211" / phy).symlink_to(radio)
         if not (fisico / "subsystem").exists():
-            (raiz / "pci").mkdir(exist_ok=True)
-            (fisico / "subsystem").symlink_to(raiz / "pci")
+            bus = raiz / ("usb" if dispositivo.startswith("usb") else "pci")
+            bus.mkdir(exist_ok=True)
+            (fisico / "subsystem").symlink_to(bus)
         for nombre, indice in interfaces:
             interfaz = sysfs / "net" / nombre
             interfaz.mkdir()
@@ -115,19 +121,16 @@ class PerfilTest(unittest.TestCase):
 
 
     def test_fuentes_declaradas_regulacion_y_reserva_solo_lectura(self):
-        iw = """Wiphy phy0
-	Supported interface modes:
-		 * managed
-		 * monitor
-	Band 1:
-		Frequencies:
-			* 2412 MHz [1] (20.0 dBm) (no IR)
-			* 5260 MHz [52] (radar detection)
-			* 5270 MHz [54] (disabled)
-	valid interface combinations:
-		 * #{ managed } <= 1, #{ AP, monitor } <= 1,
-		   total <= 2, #channels <= 1
-"""
+        radio = {"index": 0, "name": "phy0", "selfManaged": False, "modes": [2, 6], "softwareModes": [6],
+                 "bands": {"0": [[2412, 0, [1, 3]]], "1": [[5260, 0, [1, 5]], [5270, 0, [1, 2]]]},
+                 "combinations": [{"max": 2, "channels": 1, "matchBeacon": False, "unknown": False,
+                                   "limits": [{"max": 1, "modes": [2], "unknown": False},
+                                              {"max": 1, "modes": [3, 6], "unknown": False}]}]}
+        nativo = {"data": {
+            "nl80211_interface": [{"name": "wlan0", "index": 2, "phy": 0, "mode": 2}],
+            "nl80211_wiphy": [radio], "nl80211_reg": [{"phy": None, "country": "PE"}],
+        }, "errors": {}}
+        comandos = (sys.executable, "-I", "-B", str(WIRELESS))
         with tempfile.TemporaryDirectory() as directorio:
             raiz = Path(directorio)
             sysfs = sys_fixture(raiz, [("pci0", "phy0", [("wlan0", 2), ("wlan1", 3)])])
@@ -138,12 +141,11 @@ class PerfilTest(unittest.TestCase):
             fuentes = {
                 ("nmcli", "-t", "--escape", "no", "-f", "DEVICE,TYPE,STATE", "device", "status"):
                     "wlan0:wifi:connected\nwlan1:wifi:disconnected",
-                ("iw", "dev"): "phy#0\n\tInterface wlan0\n\t\ttype managed",
-                ("iw", "phy", "phy0", "info"): iw,
-                ("iw", "reg", "get"): "global\ncountry PE: DFS-UNSET",
+                (*comandos, "inventory"): json.dumps(nativo),
                 ("ip", "-j", "-4", "route", "show", "table", "all", "default"): "[]",
                 ("ip", "-j", "-6", "route", "show", "table", "all", "default"): '[{"nexthops":[{"dev":"wlan0"}]}]',
-                ("ethtool", "-i", "wlan0"): "driver: ejemplo\nfirmware-version: 1.2.3\nserial: privado",
+                (*comandos, "driver-info", "wlan0", "2"):
+                    '{"data":{"driver":"ejemplo","firmware":"1.2.3","serial":"privado"}}',
             }
             reservas = raiz / "reservas"
             with patch("adaptador_core.consultar", side_effect=lambda args, _: fuentes[tuple(args)]) as leer:
@@ -170,12 +172,87 @@ class PerfilTest(unittest.TestCase):
                 dto = inventario_perfil(sysfs, reservas, raiz / "proc-no-disponible")
                 self.assertEqual(dto["devices"][0]["phys"][0]["reservation"]["state"], "unknown")
                 self.assertFalse(list(reservas.iterdir()))
-                fuentes[("iw", "phy", "phy0", "info")] = "Formato desconocido"
+                self.assertIn("ethtool_drvinfo", perfil["probe"]["sources"])
+                self.assertEqual(cap["channels"][0]["source"], "nl80211_wiphy")
+                self.assertEqual(perfil["regulatory"]["source"], "nl80211_reg")
+                radio["combinations"][0]["unknown"] = True
+                del radio["modes"]
+                fuentes[(*comandos, "inventory")] = json.dumps(nativo)
                 dto = inventario_perfil(sysfs, reservas)
                 perfil = dto["devices"][0]["phys"][0]
                 self.assertEqual(perfil["capabilities"]["monitor"]["declared"], "unknown")
                 self.assertEqual(perfil["capabilities"]["interfaceCombinations"]["status"], "unknown")
-                self.assertIn("parse_unsupported", [a["code"] for a in perfil["probe"]["warnings"]])
+                self.assertEqual(perfil["capabilities"]["bands"], ["2.4GHz", "5GHz"])
+                self.assertIn("unsupported_attribute", [a["code"] for a in perfil["probe"]["warnings"]])
+
+    def test_usb_conserva_perfil_con_nm_ausente_y_firmware_denegado(self):
+        with tempfile.TemporaryDirectory() as directorio:
+            raiz = Path(directorio)
+            sysfs = sys_fixture(raiz, [("usb0", "phy1", [("wlan1", 5)])])
+
+            def consultar_fixture(args, _limite):
+                if args[-1] == "inventory":
+                    return json.dumps({"data": {
+                        "nl80211_interface": [{"name": "wlan1", "index": 5, "phy": 1, "mode": 2}],
+                        "nl80211_wiphy": [{"index": 1, "name": "phy1", "selfManaged": True,
+                                           "modes": [2], "bands": {"3": [[5955, 0, [1, 3]]]}}],
+                        "nl80211_reg": [{"phy": None, "country": "00"}],
+                    }, "errors": {}})
+                if "driver-info" in args:
+                    return '{"error":"permission_denied"}'
+                if args[0] == "ip":
+                    return "[]"
+                if args[0] == "nmcli":
+                    raise FuenteError("source_unavailable")
+                self.fail(f"Consulta inesperada: {args}")
+
+            with patch("adaptador_core.consultar", side_effect=consultar_fixture):
+                dto = inventario_perfil(sysfs, raiz / "reservas")
+                usb = dto["devices"][0]
+                phy = usb["phys"][0]
+                self.assertEqual(usb["bus"], "usb")
+                self.assertEqual(phy["interfaces"][0]["type"], "managed")
+                self.assertEqual(phy["interfaces"][0]["nmState"], "unavailable")
+                self.assertEqual(phy["capabilities"]["channels"][0]["channel"], 1)
+                self.assertIsNone(phy["regulatory"]["country"])
+                self.assertIsNone(usb["firmware"])
+                self.assertIn(("ethtool_drvinfo", "permission_denied"),
+                              {(a["source"], a["code"]) for a in phy["probe"]["warnings"]})
+
+    def test_hotplug_no_reutiliza_datos_nativos_del_radio_anterior(self):
+        with tempfile.TemporaryDirectory() as directorio:
+            raiz = Path(directorio)
+            sysfs = sys_fixture(raiz, [("usb0", "phy1", [("wlan1", 5)])])
+            radio = sysfs / "ieee80211" / "phy1"
+            destino_original = radio.resolve()
+            destino_nuevo = raiz / "nuevo" / "phy1"
+            destino_nuevo.mkdir(parents=True)
+            (destino_nuevo / "index").write_text("1")
+
+            def consultar_fixture(args, _limite):
+                if args[-1] == "inventory":
+                    radio.unlink()
+                    radio.symlink_to(destino_nuevo)
+                    return json.dumps({"data": {
+                        "nl80211_interface": [{"name": "wlan1", "index": 5, "phy": 1, "mode": 2}],
+                        "nl80211_wiphy": [{"index": 1, "name": "phy1", "selfManaged": False,
+                                           "modes": [6], "bands": {"0": [[2412, 0, [1]]]}}],
+                        "nl80211_reg": [{"phy": None, "country": "PE"}],
+                    }, "errors": {}})
+                if args[0] == "ip":
+                    return "[]"
+                if args[0] == "nmcli":
+                    return "wlan1:wifi:disconnected"
+                self.fail(f"Consulta inesperada: {args}")
+
+            with patch("adaptador_core.consultar", side_effect=consultar_fixture):
+                dto = inventario_perfil(sysfs, raiz / "reservas")
+            self.assertNotEqual(destino_original, radio.resolve())
+            phy = dto["devices"][0]["phys"][0]
+            self.assertFalse(phy["interfaces"])
+            self.assertEqual(phy["capabilities"]["monitor"]["declared"], "unknown")
+            self.assertEqual(dto["status"], "partial")
+            self.assertIn("adapter_disconnected", {a["code"] for a in phy["probe"]["warnings"]})
 
     def test_consulta_limita_salida_tiempo_y_recolecta_hijos(self):
         with self.assertRaises(FuenteError) as error:
@@ -194,6 +271,130 @@ class PerfilTest(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 consultar([sys.executable, "-c", "import time; time.sleep(30)"], time.monotonic() + 2)
         self.assertIsNotNone(hijos[0].poll())
+
+
+def atributo_entero(tipo, numero, formato="=I"):
+    return nl.attribute(tipo, struct.pack(formato, numero))
+
+
+def mensaje_nl(codigo, contenido, flags=0, secuencia=1):
+    largo = nl.NL_HEADER.size + len(contenido)
+    return nl.NL_HEADER.pack(largo, codigo, flags, secuencia, 10) + contenido + bytes(nl.aligned(largo) - largo)
+
+
+def datos_nl(familia, comando, atributos):
+    return mensaje_nl(familia, nl.GENL_HEADER.pack(comando, 1, 0) + atributos)
+
+
+class NetlinkTest(unittest.TestCase):
+    def canal_fixture(self, respuestas):
+        canal = Mock()
+        canal.getsockname.return_value = (10, 0)
+        canal.recvmsg.side_effect = [
+            (respuesta, [], 0, (0, 0)) if isinstance(respuesta, bytes) else respuesta for respuesta in respuestas
+        ]
+        canal.__enter__ = Mock(return_value=canal)
+        canal.__exit__ = Mock(return_value=False)
+        return canal
+
+    def test_consulta_solo_get_y_combina_un_dump_split_multipart(self):
+        familia = 42
+        controlador = self.canal_fixture([datos_nl(nl.GENL_ID_CTRL, nl.CTRL_CMD_NEWFAMILY,
+                                    atributo_entero(nl.CTRL_ATTR_FAMILY_ID, familia, "=H"))])
+        fin = mensaje_nl(nl.NLMSG_DONE, bytes(4))
+        interfaz = self.canal_fixture([datos_nl(familia, nl.NEW_INTERFACE,
+            atributo_entero(nl.Attr.WIPHY, 7) + atributo_entero(nl.Attr.IFINDEX, 4) +
+            nl.attribute(nl.Attr.IFNAME, b"wlan0\0") + atributo_entero(nl.Attr.IFTYPE, 2)) + fin])
+        def fragmento(indice, nombre, mhz, flags, modos=b""):
+            frecuencias = nl.attribute(1, nl.attribute(1, atributo_entero(1, mhz) + flags))
+            return datos_nl(familia, nl.NEW_WIPHY, atributo_entero(nl.Attr.WIPHY, indice) +
+                nl.attribute(nl.Attr.WIPHY_NAME, nombre) +
+                nl.attribute(nl.Attr.WIPHY_BANDS, nl.attribute(0, frecuencias)) + modos)
+        radio = self.canal_fixture([
+            fragmento(7, b"phy3\0", 2412, nl.attribute(3),
+                      nl.attribute(nl.Attr.SUPPORTED_IFTYPES, nl.attribute(2))),
+            fragmento(8, b"phy4\0", 2432, nl.attribute(2)),
+            fragmento(7, b"phy3\0", 2437, nl.attribute(5)) + fin,
+        ])
+        regulacion = self.canal_fixture([datos_nl(familia, nl.GET_REG,
+                                              nl.attribute(nl.Attr.REG_ALPHA2, b"PE\0")) + fin])
+        canales = [controlador, interfaz, radio, regulacion]
+        with patch("wireless_linux.socket.socket", side_effect=canales) as abrir:
+            reporte = nl.inventory()
+        self.assertEqual(reporte["errors"], {})
+        self.assertEqual(abrir.call_count, 4)
+        for llamada in abrir.call_args_list:
+            self.assertEqual(llamada.args, (socket.AF_NETLINK, socket.SOCK_RAW, nl.NETLINK_GENERIC))
+        comandos = []
+        for canal in canales:
+            canal.bind.assert_called_once_with((0, 0))
+            peticion, destino = canal.sendto.call_args.args
+            self.assertEqual(destino, (0, 0))
+            comandos.append(peticion[nl.NL_HEADER.size])
+        self.assertEqual(comandos, [nl.CTRL_CMD_GETFAMILY, nl.GET_INTERFACE, nl.GET_WIPHY, nl.GET_REG])
+        wiphy = radio.sendto.call_args.args[0]
+        self.assertEqual(dict(nl.attributes(wiphy[nl.NL_HEADER.size + nl.GENL_HEADER.size:])),
+                         {nl.Attr.SPLIT_WIPHY_DUMP: b""})
+        datos = reporte["data"]
+        self.assertEqual(datos["nl80211_interface"], [{"name": "wlan0", "phy": 7, "index": 4, "mode": 2}])
+        primero, segundo = datos["nl80211_wiphy"]
+        self.assertEqual((primero["index"], primero["name"], primero["modes"]), (7, "phy3", [2]))
+        self.assertEqual(primero["bands"][0], [[2412, 0, [1, 3]], [2437, 0, [1, 5]]])
+        self.assertEqual(segundo["bands"][0], [[2432, 0, [1, 2]]])
+        self.assertEqual(datos["nl80211_reg"], [{"phy": None, "country": "PE"}])
+
+    def test_normaliza_errores_por_fuente_y_conserva_otra_consulta(self):
+        familia = 42
+        controlador = self.canal_fixture([datos_nl(nl.GENL_ID_CTRL, nl.CTRL_CMD_NEWFAMILY,
+                                                  atributo_entero(nl.CTRL_ATTR_FAMILY_ID, familia, "=H"))])
+        denegado = self.canal_fixture([mensaje_nl(nl.NLMSG_ERROR, struct.pack("=i", -errno.EPERM))])
+        interrumpido = self.canal_fixture([mensaje_nl(nl.NLMSG_DONE, bytes(4), flags=nl.NLM_F_DUMP_INTR)])
+        regulacion = self.canal_fixture([datos_nl(familia, nl.GET_REG, nl.attribute(nl.Attr.REG_ALPHA2, b"00\0"))
+                                        + mensaje_nl(nl.NLMSG_DONE, bytes(4))])
+        with patch("wireless_linux.socket.socket", side_effect=[controlador, denegado, interrumpido, regulacion]):
+            reporte = nl.inventory()
+        self.assertEqual(reporte["errors"], {"nl80211_interface": "permission_denied",
+                                              "nl80211_wiphy": "snapshot_incomplete"})
+        self.assertEqual(reporte["data"]["nl80211_reg"], [{"phy": None, "country": "00"}])
+
+    def test_rechaza_truncamiento_emisor_secuencia_y_timeout(self):
+        fin = mensaje_nl(nl.NLMSG_DONE, bytes(4))
+        for evento, error in (
+            ((fin, [], socket.MSG_TRUNC, (0, 0)), "snapshot_incomplete"),
+            (fin[:-1], "snapshot_incomplete"),
+            ((fin, [], 0, (22, 0)), "parse_unsupported"),
+            (mensaje_nl(nl.NLMSG_DONE, bytes(4), secuencia=2), "parse_unsupported"),
+        ):
+            with self.subTest(error=error), patch("wireless_linux.socket.socket", return_value=self.canal_fixture([evento])):
+                with self.assertRaises(nl.ProbeError) as fallo:
+                    nl.request(42, nl.GET_INTERFACE, nl.NEW_INTERFACE, time.monotonic() + 1, dump=True)
+                self.assertEqual(fallo.exception.code, error)
+        canal = self.canal_fixture([])
+        canal.recvmsg.side_effect = TimeoutError
+        with patch("wireless_linux.socket.socket", return_value=canal):
+            with self.assertRaises(TimeoutError) as fallo:
+                nl.request(42, nl.GET_INTERFACE, nl.NEW_INTERFACE, time.monotonic() + 1, dump=True)
+        self.assertEqual(nl.error_code(fallo.exception), "probe_timeout")
+
+    def test_firmware_usa_solo_gdrvinfo_y_rechaza_indice_inconsistente(self):
+        canal = self.canal_fixture([])
+        canal.fileno.return_value = 123
+        def leer(descriptor, codigo, peticion, mutar):
+            self.assertEqual((descriptor, codigo, mutar), (123, 0x8946, True))
+            self.assertEqual(peticion[:16].strip(b"\0"), b"wlan1")
+            direccion = struct.unpack_from("@P", peticion, 16)[0]
+            info = (nl.ctypes.c_char * 196).from_address(direccion)
+            self.assertEqual(struct.unpack_from("=I", info, 0)[0], 3)
+            info[4:8] = b"test"
+            info[68:71] = b"1.0"
+        with (patch("wireless_linux.socket.if_nametoindex", side_effect=[4, 4, 9]),
+              patch("wireless_linux.socket.socket", return_value=canal),
+              patch("wireless_linux.fcntl.ioctl", side_effect=leer) as ioctl):
+            self.assertEqual(nl.driver_info("wlan1", 4), {"driver": "test", "firmware": "1.0"})
+            with self.assertRaises(nl.ProbeError) as error:
+                nl.driver_info("wlan1", 4)
+        self.assertEqual(error.exception.code, "adapter_disconnected")
+        ioctl.assert_called_once()
 
 
 class PreflightTest(unittest.TestCase):
@@ -218,6 +419,13 @@ class PreflightTest(unittest.TestCase):
         self.assertFalse(preflight("mock", alcance_vacio)["ok"])
         self.docker.assert_not_called()
         self.ip.assert_not_called()
+
+    def test_las_capacidades_declaradas_no_sustituyen_networkmanager(self):
+        with patch("entorno.nmcli", side_effect=RuntimeError("NetworkManager no disponible.")):
+            reporte = preflight("wlan1", ALCANCE)
+        self.assertFalse(reporte["ok"])
+        self.assertIn("NetworkManager no disponible.", reporte["errors"])
+        self.docker.assert_not_called()
 
     def test_rechaza_rutas_por_defecto_ipv4_ipv6_y_multipath(self):
         for rutas in ([{"dev": "wlan1"}], [{"nexthops": [{"dev": "wlan0"}, {"dev": "wlan1"}]}]):

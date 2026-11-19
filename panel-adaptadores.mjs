@@ -58,7 +58,7 @@ function capacidades({ dispositivo, phy }) {
     ...(combinaciones ?? ["Desconocidas"]),
     "Frecuencias anunciadas",
     ...(cap.channels?.map(({ frequencyMHz, channel, flags }) =>
-      `${frequencyMHz} MHz · canal ${channel}${flags.length ? ` · ${flags.join(", ")}` : ""}`) ?? ["Desconocidas"]),
+      `${frequencyMHz} MHz · canal ${dato(channel)}${flags.length ? ` · ${flags.join(", ")}` : ""}`) ?? ["Desconocidas"]),
   ].join("\n");
 }
 

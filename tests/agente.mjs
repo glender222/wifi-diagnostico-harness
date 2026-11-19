@@ -242,7 +242,7 @@ try {
     nameNow: sensible, interfaces: [{ ifname: sensible, serial: sensible }],
     capabilities: { monitor: { declared: "supported" }, concurrency: { declared: sensible } },
     connectivity: { criticality: "critical", interfaz: sensible },
-    probe: { warnings: [{ source: "iw_phy", code: "probe_timeout", message: sensible }] },
+    probe: { warnings: [{ source: "nl80211_wiphy", code: "snapshot_incomplete", message: sensible }] },
   };
   const perfil = { schema: "harwiff-adapter-inventory/v1", status: "partial", warnings: [],
     devices: Array.from({ length: 6 }, () => ({ bus: "usb", deviceId: sensible, phys: [radio] })) };
@@ -257,6 +257,8 @@ try {
         assert.equal(inventario.dispositivos.length, 4);
         assert.equal(inventario.truncado, true);
         assert.equal(inventario.dispositivos[0].radios[0].monitorAnunciado, "supported");
+        assert.deepEqual(inventario.dispositivos[0].radios[0].avisos,
+          [{ source: "nl80211_wiphy", code: "snapshot_incomplete" }]);
         assert.equal(inventario.dispositivos[0].radios[0].concurrenciaAnunciada, "unknown");
         assert.doesNotMatch(JSON.stringify(inventario), /contenido-privado-del-host/);
         return [fin];

@@ -7,6 +7,36 @@ export HARWIFF_DATA_DIR="$temporal/data" HARWIFF_BIN_DIR="$temporal/bin"
 curl -fsSL "$artefactos/install.sh" | HARWIFF_RELEASE_BASE="$artefactos" bash
 ejecutable="$HARWIFF_BIN_DIR/harwiff"
 "$ejecutable" --version
+instalado="$(readlink -f "$HARWIFF_DATA_DIR/actual")"
+python="$instalado/python/bin/python3"
+mkdir "$temporal/path-reducido"
+# Ejecuta el lector incluido y el DTO incluso con PATH sin utilidades de red.
+PATH="$temporal/path-reducido" "$python" -I -B "$instalado/app/wireless_linux.py" inventory \
+  | "$python" -B -c 'import json,sys; r=json.load(sys.stdin); assert r["data"].keys() | r["errors"].keys() == {"nl80211_interface","nl80211_wiphy","nl80211_reg"}'
+leer_perfil() {
+  PATH="$temporal/path-reducido" "$python" -B "$instalado/app/entorno.py" adaptadores-perfil
+}
+leer_perfil > "$temporal/perfil-sin-utilidades.json"
+for nombre in iw ethtool; do
+  cat > "$temporal/path-reducido/$nombre" <<'SH'
+#!/bin/sh
+printf '%s\n' "$0" >> "$HARWIFF_PRUEBA_UTILIDADES"
+exit 1
+SH
+  chmod +x "$temporal/path-reducido/$nombre"
+done
+HARWIFF_PRUEBA_UTILIDADES="$temporal/llamadas" leer_perfil > "$temporal/perfil-con-utilidades.json"
+test ! -e "$temporal/llamadas"
+"$python" -B - "$temporal/perfil-sin-utilidades.json" "$temporal/perfil-con-utilidades.json" <<'PYTEST'
+import json
+import sys
+perfiles = [json.load(open(ruta)) for ruta in sys.argv[1:]]
+for perfil in perfiles:
+    assert perfil.pop("observedAt")
+    assert perfil["schema"] == "harwiff-adapter-inventory/v1"
+    assert perfil["mock"]["id"] == "mock"
+assert perfiles[0] == perfiles[1]
+PYTEST
 proyecto="$temporal/proyecto nuevo"
 printf '%s\n' '/salir' | "$ejecutable" "$proyecto" > "$temporal/arranque"
 grep -q 'Sin proyecto' "$temporal/arranque"

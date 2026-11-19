@@ -7,6 +7,7 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 SYS = Path("/sys/class")
 NOMBRE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]{0,14}")
 PHY = re.compile(r"phy[0-9]+")
+WIRELESS = Path(__file__).with_name("wireless_linux.py").resolve()
 LIMITE_SALIDA = 256 * 1024
 
 
@@ -30,6 +32,9 @@ def aviso(codigo, fuente):
         "parse_unsupported": "La salida de la fuente no pudo interpretarse.",
         "adapter_disconnected": "El dispositivo o la interfaz cambió durante la consulta.",
         "ambiguous_interface": "La interfaz no tiene una asociación inequívoca.",
+        "snapshot_incomplete": "La consulta terminó con datos incompletos o inconsistentes.",
+        "attribute_missing": "El kernel o el driver no informó este dato.",
+        "unsupported_attribute": "El perfil no puede representar este dato del kernel.",
     }
     return {"code": codigo, "source": fuente, "message": mensajes[codigo]}
 
@@ -145,6 +150,11 @@ def nm_estados(salida, advertencias):
     return estados
 
 
+def indice_sysfs(ruta):
+    valor = texto(ruta)
+    return int(valor) if valor and re.fullmatch(r"[0-9]{1,10}", valor) else None
+
+
 def topologia(sysfs, advertencias, nm=None, tipos=None):
     nm = nm or {}
     tipos = tipos or {}
@@ -166,17 +176,27 @@ def topologia(sysfs, advertencias, nm=None, tipos=None):
             phys[ruta] = phy
         except (OSError, RuntimeError):
             advertir(advertencias, "adapter_disconnected", "sysfs")
-    por_nombre = {phy["nameNow"]: phy for phy in phys.values()}
+    por_indice = {}
+    if tipos:
+        for phy in phys.values():
+            indice = indice_sysfs(sysfs / "ieee80211" / phy["nameNow"] / "index")
+            if indice is not None:
+                por_indice[indice] = None if indice in por_indice else phy
     for entrada in entradas(sysfs / "net", NOMBRE, advertencias):
         enlace = resolver(entrada / "phy80211")
         nombre = entrada.name
-        tipo_iw, nombre_phy = tipos.get(nombre, (None, None))
-        phy = phys.get(enlace) if enlace else por_nombre.get(nombre_phy)
-        if enlace and nombre_phy and (not phy or phy["nameNow"] != nombre_phy):
-            advertir(advertencias, "ambiguous_interface", "sysfs")
-            continue
+        indice = indice_sysfs(entrada / "ifindex")
+        phy = phys.get(enlace)
+        tipo = tipos.get(nombre)
+        if tipo:
+            candidato = por_indice.get(tipo["phy"])
+            if not candidato or tipo["index"] != indice or (enlace and candidato is not phy):
+                advertir(advertencias, "ambiguous_interface", "nl80211_interface")
+                tipo = None
+            else:
+                phy = candidato
         if phy is None:
-            if enlace or nombre_phy or nombre in nm:
+            if enlace or nombre in nm:
                 advertir(advertencias, "ambiguous_interface", "sysfs")
             continue
         try:
@@ -184,12 +204,11 @@ def topologia(sysfs, advertencias, nm=None, tipos=None):
         except (OSError, RuntimeError):
             advertir(advertencias, "adapter_disconnected", "sysfs")
             continue
-        indice = texto(entrada / "ifindex")
         estado = texto(entrada / "operstate")
         nm_estado = nm.get(nombre)
         phy["interfaces"].append({
-            "interfaceId": observado, "ifname": nombre, "ifindex": int(indice) if indice and indice.isascii() and indice.isdigit() else None,
-            "type": tipo_iw, "linkState": estado if estado in {"up", "down"} else "unknown",
+            "interfaceId": observado, "ifname": nombre, "ifindex": indice,
+            "type": MODOS.get(tipo["mode"]) if tipo else None, "linkState": estado if estado in {"up", "down"} else "unknown",
             "nmState": ("unmanaged" if nm_estado == "unmanaged" else
                         "managed" if nm_estado in {"connected", "disconnected", "connecting"} else
                         "unavailable" if nm_estado in {None, "unavailable"} else "unknown"),
@@ -202,123 +221,176 @@ def topologia(sysfs, advertencias, nm=None, tipos=None):
     return list(dispositivos.values())
 
 
-MODOS = {"AP", "AP/VLAN", "managed", "monitor", "IBSS", "WDS", "mesh point", "P2P-client",
-         "P2P-GO", "P2P-device", "outside context of a BSS", "NAN"}
-LIMITE_MODO = r"#\{\s*([^}]+)\s*\}\s*<=\s*(\d+)"
-LIMITE_PHY = re.compile(r"total\s*<=\s*(\d+),\s*#channels\s*<=\s*(\d+)(?:,\s*(STA/AP BI must match))?")
+MODOS = {
+    1: "IBSS", 2: "managed", 3: "AP", 4: "AP/VLAN", 5: "WDS", 6: "monitor",
+    7: "mesh point", 8: "P2P-client", 9: "P2P-GO", 10: "P2P-device",
+    11: "outside context of a BSS", 12: "NAN",
+}
+BANDAS = {"0": "2.4GHz", "1": "5GHz", "2": "60GHz", "3": "6GHz", "4": "S1G"}
+RESTRICCIONES = {
+    2: "disabled", 3: "no-ir", 4: "no-ibss", 5: "dfs", 9: "no-ht40-minus",
+    10: "no-ht40-plus", 11: "no-80mhz", 12: "no-160mhz", 14: "indoor-only",
+    15: "ir-concurrent", 16: "no-20mhz", 17: "no-10mhz", 19: "no-he",
+    26: "no-320mhz", 27: "no-eht", 29: "dfs-concurrent", 30: "no-6ghz-vlp-client",
+    31: "no-6ghz-afc-client", 32: "can-monitor", 33: "allow-6ghz-vlp-ap",
+    34: "allow-20mhz-activity",
+}
+FUENTES_NL = ("nl80211_interface", "nl80211_wiphy", "nl80211_reg")
+ERRORES_NATIVOS = {
+    "source_unavailable", "permission_denied", "probe_timeout", "parse_unsupported",
+    "snapshot_incomplete", "adapter_disconnected",
+}
 
 
-def iw_interfaces(salida, avisos):
-    tipos = {}
-    radio = nombre = None
-    for linea in (salida or "").splitlines():
-        linea = linea.strip()
-        if coincidencia := re.fullmatch(r"phy#(\d+)", linea):
-            radio, nombre = "phy" + coincidencia[1], None
-        elif linea.startswith("Interface "):
-            candidato = linea.removeprefix("Interface ")
-            nombre = candidato if NOMBRE.fullmatch(candidato) else None
-        elif nombre and radio and linea.startswith("type "):
-            modo = linea.removeprefix("type ")
-            if nombre in tipos and tipos[nombre][1] != radio:
-                advertir(avisos, "ambiguous_interface", "iw_dev")
-                tipos[nombre] = (None, "")
-            else:
-                tipos[nombre] = (modo if modo in MODOS else None, radio)
-    if salida and not tipos and not re.search(r"(?m)^phy#\d+\s*$", salida):
-        advertir(avisos, "parse_unsupported", "iw_dev")
-    return tipos
+def consultar_nativo(argumentos, limite):
+    try:
+        resultado = json.loads(consultar([sys.executable, "-I", "-B", str(WIRELESS), *argumentos], limite))
+    except ValueError as error:
+        raise FuenteError("parse_unsupported") from error
+    if not isinstance(resultado, dict):
+        raise FuenteError("parse_unsupported")
+    return resultado
 
 
-def combinacion(linea):
-    partes = re.split(r",\s*(?=#\{|total\s*<=)", linea.lstrip("* "))
-    total = LIMITE_PHY.fullmatch(partes[-1])
-    if not total or len(partes) < 2:
+def leer_nl80211(avisos, limite):
+    try:
+        resultado = consultar_nativo(["inventory"], limite)
+        datos, errores = resultado["data"], resultado["errors"]
+        if not isinstance(datos, dict) or not isinstance(errores, dict):
+            raise FuenteError("parse_unsupported")
+    except (FuenteError, KeyError) as error:
+        datos = {}
+        errores = dict.fromkeys(FUENTES_NL, getattr(error, "codigo", "parse_unsupported"))
+    for fuente in FUENTES_NL:
+        if not isinstance(datos.get(fuente), list):
+            codigo = errores.get(fuente)
+            advertir(avisos, codigo if codigo in ERRORES_NATIVOS else "parse_unsupported", fuente)
+            datos.pop(fuente, None)
+    return datos
+
+
+def tipos_interfaces(filas, avisos):
+    candidatos = {}
+    ambiguas = set()
+    for fila in filas:
+        nombre = fila["name"]
+        if nombre in candidatos and candidatos[nombre] != fila:
+            ambiguas.add(nombre)
+        if fila["mode"] not in MODOS:
+            advertir(avisos, "unsupported_attribute" if fila["mode"] is not None else "attribute_missing",
+                     "nl80211_interface")
+        candidatos[nombre] = fila
+    if ambiguas:
+        advertir(avisos, "ambiguous_interface", "nl80211_interface")
+    return {nombre: fila for nombre, fila in candidatos.items() if nombre not in ambiguas}
+
+
+def modos_nl(valores, avisos):
+    if valores is None:
+        advertir(avisos, "attribute_missing", "nl80211_wiphy")
         return None
-    limites = []
-    for grupo in partes[:-1]:
-        limite = re.fullmatch(LIMITE_MODO, grupo)
-        if not limite:
-            return None
-        modos = [modo.strip() for modo in limite[1].split(",")]
-        if not set(modos) <= MODOS:
-            return None
-        limites.append({"modes": modos, "max": int(limite[2])})
-    return {"maxInterfaces": int(total[1]), "maxDifferentChannels": int(total[2]),
-            "limits": limites, "requiresMatchingBeaconIntervals": bool(total[3])}
+    if any(modo not in MODOS for modo in valores):
+        advertir(avisos, "unsupported_attribute", "nl80211_wiphy")
+        return None
+    return [MODOS[modo] for modo in sorted(set(valores))]
 
 
-def bloque_iw(salida, titulo):
-    lineas = []
-    sangria = None
-    for linea in salida.splitlines():
-        ancho = len(linea.expandtabs()) - len(linea.lstrip().expandtabs())
-        if linea.strip() == titulo:
-            sangria = ancho
-        elif sangria is not None and linea.strip():
-            if ancho <= sangria:
-                break
-            lineas.append(linea.strip())
-    return lineas
+def numero_canal(banda, frecuencia, offset):
+    if offset:
+        return None
+    if banda == "0":
+        if frecuencia == 2484:
+            return 14
+        base, paso, minimo, maximo = 2407, 5, 2412, 2472
+    elif banda == "1":
+        base, paso, minimo, maximo = ((4000, 5, 4910, 4980) if frecuencia < 5000
+                                      else (5000, 5, 5005, 5920))
+    elif banda == "3":
+        if frecuencia == 5935:
+            return 2
+        base, paso, minimo, maximo = 5950, 5, 5955, 7115
+    elif banda == "2":
+        base, paso, minimo, maximo = 56160, 2160, 58320, 69120
+    else:
+        return None
+    return (frecuencia - base) // paso if minimo <= frecuencia <= maximo and (frecuencia - base) % paso == 0 else None
 
 
-def capacidades_iw(salida, avisos):
-    salida = salida or ""
-    modos = bloque_iw(salida, "Supported interface modes:")
-    software = bloque_iw(salida, "software interface modes (can always be added):")
-    declarados = [modo[2:] for modo in modos if modo.startswith("* ") and modo[2:] in MODOS]
-    software = [modo[2:] for modo in software if modo.startswith("* ") and modo[2:] in MODOS]
+def canales_nl(bandas, avisos):
     canales = []
-    for linea in salida.splitlines():
-        if coincidencia := re.fullmatch(r"\s*\* (\d{4,5}) MHz \[(\d{1,4})\](.*)", linea):
-            mhz, numero, restricciones = coincidencia.groups()
-            flags = [flag for flag, patron in (("disabled", r"\bdisabled\b"), ("no-ir", r"\bno IR\b"),
-                                                ("dfs", r"radar detection"))
-                     if re.search(patron, restricciones, re.IGNORECASE)]
-            canales.append({"frequencyMHz": int(mhz), "channel": int(numero), "flags": flags, "source": "iw_phy"})
-    bandas = set()
-    for canal in canales:
-        mhz = canal["frequencyMHz"]
-        for nombre, minimo, maximo in (("2.4GHz", 2400, 2500), ("5GHz", 4900, 5925),
-                                       ("6GHz", 5925, 7126), ("60GHz", 57000, 71000)):
-            if minimo <= mhz < maximo:
-                bandas.add(nombre)
+    for banda, frecuencias in bandas.items():
+        for frecuencia, offset, atributos in frecuencias:
+            canal = numero_canal(banda, frecuencia, offset)
+            desconocida = any(atributo not in range(1, 35) for atributo in atributos)
+            if canal is None or desconocida:
+                advertir(avisos, "unsupported_attribute", "nl80211_wiphy")
+            if offset or desconocida:
+                # Este DTO no representa frecuencias fraccionarias ni restricciones futuras.
+                continue
+            canales.append({"frequencyMHz": frecuencia, "channel": canal,
+                            "flags": [RESTRICCIONES[i] for i in sorted(set(atributos)) if i in RESTRICCIONES],
+                            "source": "nl80211_wiphy"})
+    return canales or None
+
+
+def combinaciones_nl(items, avisos):
+    if not items:
+        advertir(avisos, "attribute_missing", "nl80211_wiphy")
+        return None
     combinaciones = []
-    for linea in bloque_iw(salida, "valid interface combinations:"):
-        if linea.startswith("* "):
-            combinaciones.append(linea)
-        elif combinaciones:
-            combinaciones[-1] += " " + linea
-    items = [combinacion(linea) for linea in combinaciones]
-    conocidas = bool(items) and all(items)
-    modos_completos = bool(modos) and len(modos) == len(declarados)
-    if salida and (not declarados or not modos_completos or (items and not conocidas)):
-        advertir(avisos, "parse_unsupported", "iw_phy")
-    monitor = "supported" if "monitor" in declarados else "unsupported" if modos_completos else "unknown"
+    for combo in items:
+        if combo["unknown"] or not combo["max"] or not combo["channels"] or not combo["limits"]:
+            advertir(avisos, "unsupported_attribute", "nl80211_wiphy")
+            return None
+        limites = []
+        for limite in combo["limits"]:
+            modos = modos_nl(limite["modes"], avisos)
+            if not modos or not limite["max"] or limite["unknown"]:
+                advertir(avisos, "unsupported_attribute", "nl80211_wiphy")
+                return None
+            limites.append({"modes": modos, "max": limite["max"]})
+        combinaciones.append({"maxInterfaces": combo["max"], "maxDifferentChannels": combo["channels"],
+                              "limits": limites, "requiresMatchingBeaconIntervals": combo["matchBeacon"]})
+    return combinaciones
+
+
+def capacidades_nl(radio, avisos):
+    modos = software = bandas = canales = combinaciones = None
+    if radio is not None:
+        modos = modos_nl(radio.get("modes"), avisos)
+        software = modos_nl(radio.get("softwareModes"), avisos)
+        bandas = sorted({BANDAS[banda] for banda in radio["bands"] if banda in BANDAS}) or None
+        if radio["bands"].keys() - BANDAS.keys():
+            advertir(avisos, "unsupported_attribute", "nl80211_wiphy")
+        if not radio["bands"] or any(not frecuencias for frecuencias in radio["bands"].values()):
+            advertir(avisos, "attribute_missing", "nl80211_wiphy")
+        canales = canales_nl(radio["bands"], avisos)
+        combinaciones = combinaciones_nl(radio.get("combinations"), avisos)
+    monitor = "unknown" if modos is None else "supported" if "monitor" in modos else "unsupported"
     return {
-        "interfaceModes": declarados or None, "softwareInterfaceModes": software or None,
-        "bands": sorted(bandas) or None, "channels": canales or None,
-        "monitor": {"declared": monitor, "verified": "not_tested", "source": "iw_phy" if modos else None},
+        "interfaceModes": modos or None, "softwareInterfaceModes": software or None,
+        "bands": bandas, "channels": canales,
+        "monitor": {"declared": monitor, "verified": "not_tested", "source": "nl80211_wiphy" if modos is not None else None},
         "injection": {"declared": "unknown", "verified": "not_tested", "source": None},
-        "concurrency": {"declared": "supported" if conocidas else "unknown", "verified": "not_tested",
-                        "source": "iw_phy" if conocidas else None},
-        "interfaceCombinations": {"status": "known" if conocidas else "unknown", "items": items if conocidas else None},
+        "concurrency": {"declared": "supported" if combinaciones else "unknown", "verified": "not_tested",
+                        "source": "nl80211_wiphy" if combinaciones else None},
+        "interfaceCombinations": {"status": "known" if combinaciones else "unknown", "items": combinaciones},
     }
 
 
-def regulacion_iw(salida, avisos):
+def paises_nl(registros, avisos):
     paises = {}
-    seccion = None
-    for linea in (salida or "").splitlines():
-        if linea == "global":
-            seccion = "global"
-        elif radio := re.fullmatch(r"phy#(\d+)(?: \(self-managed\))?", linea):
-            seccion = "phy" + radio[1]
-        elif seccion and (pais := re.fullmatch(r"country ([A-Z0-9]{2}):.*", linea)):
-            paises[seccion] = pais[1]
-    if salida and not paises:
-        advertir(avisos, "parse_unsupported", "iw_reg")
-    return paises
+    ambiguos = set()
+    for registro in registros:
+        pais, indice = registro["country"], registro["phy"]
+        if not pais or not re.fullmatch(r"[A-Z0-9]{2}", pais):
+            advertir(avisos, "unsupported_attribute", "nl80211_reg")
+            continue
+        if paises.setdefault(indice, pais) != pais:
+            ambiguos.add(indice)
+    if ambiguos:
+        advertir(avisos, "snapshot_incomplete", "nl80211_reg")
+    return {indice: None if indice in ambiguos else pais for indice, pais in paises.items()}
 
 
 def rutas_por_defecto(salida):
@@ -441,47 +513,99 @@ def reserva_observada(directorio, claves, locks):
     return "free"
 
 
-def perfil_dispositivo(sysfs, dispositivo, rutas, incompletas, paises, reservas, locks, limite):
+def observar_identidad(prefijo, ruta):
+    try:
+        return id_observado(prefijo, ruta.resolve(strict=True))
+    except (OSError, RuntimeError):
+        return None
+
+
+def enriquecer_firmware(sysfs, dispositivo, limite):
+    phy, interfaz = next(((phy, interfaz) for phy in dispositivo["phys"] for interfaz in phy["interfaces"]
+                          if interfaz["ifindex"]), (dispositivo["phys"][0], None))
+    probe = phy["probe"]
+    avisos = probe["warnings"]
+    fuente = "ethtool_drvinfo"
+    if interfaz is None:
+        advertir(avisos, "attribute_missing", fuente)
+    else:
+        nombre, indice = interfaz["ifname"], interfaz["ifindex"]
+        entrada = sysfs / "net" / nombre
+        try:
+            resultado = consultar_nativo(["driver-info", nombre, str(indice)], limite)
+            if observar_identidad("net", entrada) != interfaz["interfaceId"] or indice_sysfs(entrada / "ifindex") != indice:
+                raise FuenteError("adapter_disconnected")
+            if "error" in resultado:
+                codigo = resultado["error"]
+                raise FuenteError(codigo if codigo in ERRORES_NATIVOS else "parse_unsupported")
+            datos = resultado.get("data")
+            if not isinstance(datos, dict):
+                raise FuenteError("parse_unsupported")
+            probe["sources"].append(fuente)
+            for campo in ("driver", "firmware"):
+                valor = datos.get(campo)
+                if not valor or valor in {"N/A", "none"}:
+                    if dispositivo[campo] is None:
+                        advertir(avisos, "attribute_missing", fuente)
+                elif not re.fullmatch(r"[0-9A-Za-z_.:+ -]{1,32}", valor):
+                    advertir(avisos, "unsupported_attribute", fuente)
+                elif dispositivo[campo] is None:
+                    dispositivo[campo] = valor
+        except FuenteError as error:
+            advertir(avisos, error.codigo, fuente)
+    if avisos:
+        probe["status"] = "partial"
+
+
+def perfil_dispositivo(sysfs, dispositivo, rutas, incompletas, nativo, ids_previos, reservas, locks, limite):
+    radios = nativo.get("nl80211_wiphy", [])
     for phy in dispositivo["phys"]:
         avisos = []
         nombre = phy["nameNow"]
+        entrada = sysfs / "ieee80211" / nombre
+        indice = indice_sysfs(entrada / "index")
         interfaces = {interfaz["ifname"] for interfaz in phy["interfaces"]}
         conexion = conectividad(sysfs, interfaces, rutas, incompletas)
         phy["connectivity"] = conexion
-        rfkill = rfkill_del(sysfs, nombre, avisos)
-        phy["rfkill"] = rfkill
+        phy["rfkill"] = rfkill_del(sysfs, nombre, avisos)
         ides = {x["legacyAdapterId"] for x in phy["interfaces"] if x["legacyAdapterId"]}
         phy["reservation"] = {
             "state": reserva_observada(reservas, ides | {clave_phy(phy)}, locks),
             "source": "harwiff_local",
         }
-        iw = opcional(avisos, "iw_phy", ["iw", "phy", nombre, "info"], limite)
-        phy["capabilities"] = capacidades_iw(iw, avisos)
-        phy["regulatory"] = {"country": paises.get(nombre, paises.get("global")),
-                             "source": "iw_reg" if nombre in paises or "global" in paises else None}
+        radio = None
+        if ids_previos.get(nombre) != (phy["phyId"], indice) or observar_identidad("phy", entrada) != phy["phyId"]:
+            advertir(avisos, "adapter_disconnected", "sysfs")
+        elif "nl80211_wiphy" in nativo:
+            candidatos = [dato for dato in radios if dato["index"] == indice and dato["name"] == nombre]
+            if len(candidatos) == 1:
+                radio = candidatos[0]
+            else:
+                advertir(avisos, "snapshot_incomplete", "nl80211_wiphy")
+        phy["capabilities"] = capacidades_nl(radio, avisos)
+        paises = nativo.get("paises", {})
+        pais = None
+        if radio is not None:
+            pais = paises.get(indice, None if radio["selfManaged"] else paises.get(None))
+        if pais is None and "nl80211_reg" in nativo:
+            advertir(avisos, "attribute_missing", "nl80211_reg")
+        phy["regulatory"] = {"country": pais, "source": "nl80211_reg" if pais else None}
         phy["operations"] = {
             "inspectCapabilities": {"implemented": True, "authorized": True, "availableNow": "yes", "reasons": []},
             "createMonitorInterface": {"implemented": False, "authorized": False, "availableNow": "no",
                                        "reasons": ["out_of_mvp_scope", *conexion["reasons"]]},
         }
         fuentes = ["sysfs"]
-        if iw is not None:
-            fuentes.append("iw_phy")
+        if radio is not None:
+            fuentes.append("nl80211_wiphy")
+        if any(i["type"] is not None for i in phy["interfaces"]):
+            fuentes.append("nl80211_interface")
+        if pais:
+            fuentes.append("nl80211_reg")
         if any(i["nmState"] in {"managed", "unmanaged"} for i in phy["interfaces"]):
             fuentes.append("nmcli")
-        if not resolver(sysfs / "ieee80211" / nombre):
-            advertir(avisos, "adapter_disconnected", "sysfs")
         phy["probe"] = {"status": "partial" if avisos else "complete", "sources": fuentes, "warnings": avisos}
-    if interfaz := next((i for phy in dispositivo["phys"] for i in phy["interfaces"]), None):
-        avisos = dispositivo["phys"][0]["probe"]["warnings"]
-        salida = opcional(avisos, "ethtool", ["ethtool", "-i", interfaz["ifname"]], limite)
-        if salida:
-            for campo, etiqueta in (("driver", "driver"), ("firmware", "firmware-version")):
-                valor = re.search(rf"(?m)^{etiqueta}: ([0-9A-Za-z_.:+ -]{{1,100}})$", salida)
-                if valor and valor[1] not in {"N/A", "none"} and dispositivo[campo] is None:
-                    dispositivo[campo] = valor[1]
-        if avisos:
-            dispositivo["phys"][0]["probe"]["status"] = "partial"
+    enriquecer_firmware(sysfs, dispositivo, limite)
 
 
 def inventario_perfil(sysfs=SYS, reservas=None, proc=Path("/proc/locks")):
@@ -491,14 +615,29 @@ def inventario_perfil(sysfs=SYS, reservas=None, proc=Path("/proc/locks")):
         reservas = Path("/tmp") / f"harwiff-wifi-{os.getuid()}"
     nm = nm_estados(opcional(avisos, "nmcli", ["nmcli", "-t", "--escape", "no", "-f", "DEVICE,TYPE,STATE",
                                               "device", "status"], limite), avisos)
-    tipos = iw_interfaces(opcional(avisos, "iw_dev", ["iw", "dev"], limite), avisos)
+    ids_previos = {ruta.name: (observar_identidad("phy", ruta), indice_sysfs(ruta / "index"))
+                   for ruta in entradas(sysfs / "ieee80211", PHY, avisos, opcional=True)}
+    ids_net = ({ruta.name: observar_identidad("net", ruta)
+                for ruta in entradas(sysfs / "net", NOMBRE, avisos)} if ids_previos else {})
+    nativo = leer_nl80211(avisos, limite) if ids_previos else {}
+    nativo["paises"] = paises_nl(nativo.get("nl80211_reg", []), avisos)
+    indices_vigentes = {
+        indice for nombre, (identidad, indice) in ids_previos.items()
+        if identidad and observar_identidad("phy", sysfs / "ieee80211" / nombre) == identidad
+        and indice_sysfs(sysfs / "ieee80211" / nombre / "index") == indice
+    }
+    tipos = tipos_interfaces(nativo.get("nl80211_interface", []), avisos)
+    for nombre, datos in list(tipos.items()):
+        if (datos["phy"] not in indices_vigentes or not ids_net.get(nombre)
+                or ids_net[nombre] != observar_identidad("net", sysfs / "net" / nombre)):
+            advertir(avisos, "adapter_disconnected", "nl80211_interface")
+            del tipos[nombre]
     dispositivos = topologia(sysfs, avisos, nm, tipos)
     if dispositivos:
         rutas, incompletas = consultar_rutas(avisos, limite)
-        paises = regulacion_iw(opcional(avisos, "iw_reg", ["iw", "reg", "get"], limite), avisos)
         locks = observar_reservas(reservas, proc)
         for dispositivo in dispositivos:
-            perfil_dispositivo(sysfs, dispositivo, rutas, incompletas, paises, reservas, locks, limite)
+            perfil_dispositivo(sysfs, dispositivo, rutas, incompletas, nativo, ids_previos, reservas, locks, limite)
     no_disponible = any(x["source"] == "sysfs/ieee80211" for x in avisos)
     parcial = avisos or any(phy["probe"]["warnings"] for d in dispositivos for phy in d["phys"])
     return {
