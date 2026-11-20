@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
+import { inspeccionar, interpretarInspeccion } from "./inspeccion.mjs";
+import { resolverModeloInspeccion } from "./modelo-inspeccion.mjs";
 import { crearCredencialesOpenAI } from "./credenciales-openai.mjs";
 import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
 import { detalleAdaptador, panelAdaptadores } from "./panel-adaptadores.mjs";
@@ -51,7 +53,7 @@ const comandos = {
   "/adaptador": "Consultar inventario y elegir adaptador",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
   "/alcance": "Definir o ver el alcance autorizado",
-  "/agente": "Iniciar una sesión sobre el escenario mock",
+  "/agente": "Sesión mock o /agente --inspeccion [opciones] -- objetivo",
   "/auditoria": "Listar ejecuciones o ver una por ID",
   "/config": "Ver la configuración del proyecto",
   "/model": "Elegir el modelo para sesiones nuevas",
@@ -194,6 +196,7 @@ async function aplicar(destino) {
   let sesion;
   let cerrando = false;
   let diagnosticoPendiente;
+  let inspeccionPendiente;
   let carpetaParaInicializar;
   let adaptadorAusente;
   const objetivosPendientes = new Map();
@@ -225,7 +228,7 @@ async function aplicar(destino) {
     return { proveedor: etiquetaProveedor(proveedor), modelo: proveedor ? modelo || "pendiente" : undefined };
   }
   function hayTrabajo() {
-    return Boolean(diagnosticoPendiente) || [...agentes.values()].some((item) => item.trabajo || envios.has(item));
+    return Boolean(diagnosticoPendiente || inspeccionPendiente) || [...agentes.values()].some((item) => item.trabajo || envios.has(item));
   }
 
   function adaptadorVisible() {
@@ -324,6 +327,7 @@ async function aplicar(destino) {
     if (cerrando) return;
     cerrando = true;
     diagnosticoPendiente?.abort();
+    inspeccionPendiente?.abort();
     for (const item of agentes.values()) item.controlador?.abort();
     interfaz?.cerrar();
     lector?.close();
@@ -826,6 +830,62 @@ async function aplicar(destino) {
     if (!item) throw new Error("Usa /agente <objetivo> para iniciar una sesión.");
     await enfocar(item.id);
     if (!tty) for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
+  }
+
+  async function ejecutarInspeccion(opciones, cancelacion) {
+    if (inspeccionPendiente) throw new Error("Ya hay una inspección en curso.");
+    const controlador = new AbortController();
+    inspeccionPendiente = controlador;
+    try {
+      config = await leerJson(ruta);
+      const proveedor = process.env.HARWIFF_LLM_PROVIDER ?? config.llm?.inspeccion?.provider ?? config.llm?.proveedor;
+      const conexionOpenAI = proveedor === "openai" ? await credenciales.resolver() : undefined;
+      const conexion = await resolverModeloInspeccion(config, conexionOpenAI?.entorno);
+      const signal = cancelacion ? AbortSignal.any([controlador.signal, cancelacion]) : controlador.signal;
+      return await inspeccionar({proyecto: proyectoWifi(), ...opciones, conexion, signal});
+    } finally {
+      inspeccionPendiente = undefined;
+    }
+  }
+
+  async function menuInspeccion() {
+    const perfil = await entorno("adaptadores-perfil", undefined, {tiempo: 15000, soloLectura: true});
+    const nombres = [...new Set(perfil.devices.flatMap(d => d.phys.flatMap(p => p.interfaces.map(i => i.ifname))))];
+    const valor = await interfaz.elegir("Inspección de solo lectura", [
+      {value: "host", label: "Inventario del host"},
+      ...nombres.map(value => ({value: "if:" + value, label: value})),
+    ], undefined, {id: "inspeccion-interfaz"});
+    if (!valor) return;
+    const nombre = valor.startsWith("if:") ? valor.slice(3) : undefined;
+    const control = nombre ? await leerControlWifi(proyectoWifi()) : null;
+    let red = false;
+    if (control && (control.scope.allowedSsids.length || control.scope.allowedBssids.length)) {
+      const permiso = await interfaz.elegir("Alcance de la inspección", [
+        {value: "host", label: "Solo datos del host"},
+        {value: "red", label: "Incluir la asociación autorizada del proyecto"},
+      ], undefined, {id: "inspeccion-alcance"});
+      if (!permiso) return;
+      red = permiso === "red";
+    }
+    let anterior;
+    while (!cerrando) {
+      const objetivo = (await interfaz.preguntar(anterior ? "¿Qué quieres revisar a continuación?" : "¿Qué quieres revisar?"))?.trim();
+      if (!objetivo) return;
+      const resultado = await interfaz.consultar("Inspección Wi-Fi de solo lectura…",
+        signal => ejecutarInspeccion({objetivo, anterior, nombre, red, historial: true}, signal));
+      if (!resultado || cerrando) return;
+      await interfaz.mostrarDetalle(textoInspeccion(resultado), "Inspección Wi-Fi");
+      const siguiente = await interfaz.elegir("Inspección", [
+        {value: "otra", label: "Hacer otra pregunta"},
+        {value: "volver", label: "Volver a Agentes"},
+      ], undefined, {id: "inspeccion-continuar"});
+      if (siguiente !== "otra") return;
+      anterior = {objetivo, scopeId: resultado.scopeId};
+    }
+  }
+
+  function textoInspeccion(resultado) {
+    return ["Inspección " + resultado.motivo + " · /auditoria " + resultado.turnId, ...resultado.lineas].join("\n");
   }
 
   async function iniciarAgenteProyecto(objetivo, enfocarAlIniciar = false) {
@@ -1413,10 +1473,12 @@ async function aplicar(destino) {
         ...[...agentes.values()].filter(({ iniciado }) => iniciado)
           .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
           .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) })),
+        { value: "+inspeccion", label: "Inspección Wi-Fi de solo lectura" },
       ], undefined, { id: "agentes" });
       if (!opcion) return;
       try {
-        if (opcion === "+nueva") await nuevoAgente();
+        if (opcion === "+inspeccion") await menuInspeccion();
+        else if (opcion === "+nueva") await nuevoAgente();
         else await enfocar(opcion);
         if (agente) return;
       } catch (error) {
@@ -1609,7 +1671,13 @@ async function aplicar(destino) {
         break;
       }
       case "/agente":
-        await iniciarAgenteProyecto(args);
+        if (/^--inspeccion(?:\s|$)/.test(args)) {
+          const opciones = interpretarInspeccion(args);
+          const resultado = interfaz
+            ? await interfaz.consultar("Inspección Wi-Fi de solo lectura…", signal => ejecutarInspeccion(opciones, signal))
+            : await ejecutarInspeccion(opciones);
+          if (resultado) mostrar(textoInspeccion(resultado), null);
+        } else await iniciarAgenteProyecto(args);
         break;
       case "/adaptador": {
         if (!args && interfaz) return elegirAdaptador();

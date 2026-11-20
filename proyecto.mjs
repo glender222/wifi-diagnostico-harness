@@ -244,7 +244,7 @@ export async function directorios(ruta) {
 
 export const crearIdAuditoria = () => `${Date.now()}-${randomUUID()}`;
 
-export async function auditar(proyecto, datos, trabajo, signal, detallesResultado, id = crearIdAuditoria()) {
+export async function auditar(proyecto, datos, trabajo, signal, detallesResultado, id = crearIdAuditoria(), confirmar = cerrar => cerrar()) {
   if (!ID_EJECUCION.test(id)) throw new Error("ID de auditoría inválido.");
   const raiz = join(proyecto, "auditoria", id);
   await mkdir(raiz, { recursive: true, mode: 0o700 });
@@ -257,6 +257,12 @@ export async function auditar(proyecto, datos, trabajo, signal, detallesResultad
   try {
     signal?.throwIfAborted();
     resultado = await trabajo(id);
+    await confirmar((datos = {}) => guardarJson(join(raiz, "resultado.json"), {
+      estado: "completo", decision: "autorizado", fin: new Date().toISOString(),
+      evidencia: resultado?.evidencia,
+      ...detallesResultado?.({ id, estado: "completo", resultado }),
+      ...datos,
+    }));
   } catch (error) {
     const estado = signal?.aborted ? "cancelado" : error.decision === "denegado" ? "bloqueado" : "error";
     await guardarJson(join(raiz, "resultado.json"), {
@@ -266,11 +272,6 @@ export async function auditar(proyecto, datos, trabajo, signal, detallesResultad
     });
     throw error;
   }
-  await guardarJson(join(raiz, "resultado.json"), {
-    estado: "completo", decision: "autorizado", fin: new Date().toISOString(),
-    evidencia: resultado?.evidencia,
-    ...detallesResultado?.({ id, estado: "completo", resultado }),
-  });
   return id;
 }
 

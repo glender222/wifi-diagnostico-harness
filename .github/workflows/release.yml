@@ -20,6 +20,8 @@ jobs:
           version: 0.12.5
       - run: npm ci --ignore-scripts
       - run: node tests/runtime.mjs
+      - run: node tests/inspeccion.mjs
+      - run: uv run --no-project --with jsonschema==4.26.0 python -B tests/inspeccion.py
       - run: node tests/agente.mjs
       - run: node tests/interactivo.mjs
       - run: node tests/openai.mjs

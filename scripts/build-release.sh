@@ -40,14 +40,14 @@ uv pip install --no-deps --python "$stage/python/bin/python3" \
   --target "$stage/python/lib/python3.12/site-packages" -r "$raiz/requirements-runtime.txt"
 
 for archivo in consola.mjs pantalla.mjs proyecto.mjs bucle.mjs entorno.mjs sesion-agente.mjs historial-agente.mjs policy.mjs proveedor-openai.mjs panel-adaptadores.mjs \
-  credenciales-openai.mjs \
-  app.py entorno.py adaptador_core.py wireless_linux.py wifi.py diagnostico.py foundry.py broker_mock.py \
+  credenciales-openai.mjs modelo-inspeccion.mjs inspeccion.mjs \
+  app.py entorno.py adaptador_core.py wireless_linux.py wifi.py diagnostico.py foundry.py broker_mock.py broker_lectura.py \
   AGENTS.proyecto.md package.json package-lock.json requirements-opensandbox.txt; do
   cp -- "$raiz/$archivo" "$stage/app/"
 done
 mkdir -- "$stage/app/ejemplos"
 cp -- "$raiz/ejemplos/"{informe-demo,escenario-wifi-mock}.json "$stage/app/ejemplos/"
-cp -a -- "$raiz/vendor" "$stage/app/"
+cp -a -- "$raiz/vendor" "$raiz/contratos" "$stage/app/"
 (cd "$stage/app" && npm ci --omit=dev --ignore-scripts)
 cp -- "$raiz/scripts/harwiff" "$stage/harwiff"
 cp -- "$raiz/THIRD_PARTY.md" "$stage/licenses/THIRD_PARTY.md"

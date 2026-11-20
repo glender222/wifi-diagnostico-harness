@@ -6,6 +6,23 @@
 
 ![Menú de Harwiff en el proyecto Laboratorio, con adaptador simulado, alcance y modelo configurados](docs/capturas/menu.png)
 
+## Inspección Wi-Fi con el agente
+
+Desde un proyecto abierto en Harwiff, usa el menú **Agentes → Inspección Wi-Fi de solo lectura**. En la consola:
+
+```text
+/agente --inspeccion -- ¿Qué radios Wi-Fi detectas?
+/agente --inspeccion --interfaz wlp1s0 -- ¿Qué rutas IPv4 e IPv6 observas?
+/agente --inspeccion --interfaz wlp1s0 --red-del-proyecto -- Describe la asociación autorizada.
+/agente --inspeccion --historial -- Recupera la evidencia con ID <id-de-auditoría>.
+```
+
+Sustituye `wlp1s0` por la interfaz elegida. La selección de inspección admite la tarjeta que sostiene la ruta principal y las consultas de host funcionan sin configurar un SSID. `--red-del-proyecto` habilita datos de asociación cuando el enlace coincide con el alcance guardado. La evidencia se consulta en `/auditoria <id>`. Para recuperar una evidencia histórica de enlace, repite la selección de interfaz y permisos originales.
+
+La inspección usa el proveedor configurado en el proyecto. Para usar otro adaptador de Pi compatible, establece `HARWIFF_LLM_PROVIDER` y `HARWIFF_LLM_MODEL` al iniciar Harwiff y configura las credenciales de ese proveedor mediante su mecanismo habitual. También puedes guardar `provider`, `model` y, cuando haga falta, `contextWindow` bajo `llm.inspeccion` en el manifiesto. El recorrido exige una comprobación sintética de tool calling antes de consultar el hardware. Los hechos se muestran con citas verificables y las interpretaciones se presentan como hipótesis con sus límites.
+
+Desde código fuente, instala `jsonschema==4.26.0` en el Python usado por Harwiff. Puedes seleccionar ese intérprete mediante `WIFI_PYTHON`. El paquete Linux lo incluye. Las pruebas de protocolos simulados se ejecutan con `node tests/inspeccion.mjs`. Para registrar corridas con un modelo real, usa `node tests/inspeccion-real.mjs <proyecto-autorizado> <interfaz>`. El runner separa el oráculo automático de la revisión humana. Agrega `--usb` para el perfil del segundo equipo.
+
 ## Instalación
 
 El paquete es para **Linux x86‑64 con glibc**. Incluye Node.js, Python, el lector Wi‑Fi nativo, Pi y OpenSandbox. El instalador verifica el SHA‑256 del paquete, instala sin `sudo` y activa el comando en `~/.local/bin/harwiff`.

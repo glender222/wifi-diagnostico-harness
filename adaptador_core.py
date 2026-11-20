@@ -608,9 +608,10 @@ def perfil_dispositivo(sysfs, dispositivo, rutas, incompletas, nativo, ids_previ
     enriquecer_firmware(sysfs, dispositivo, limite)
 
 
-def inventario_perfil(sysfs=SYS, reservas=None, proc=Path("/proc/locks")):
+def inventario_perfil(sysfs=SYS, reservas=None, proc=Path("/proc/locks"), limite=None):
     avisos = []
-    limite = time.monotonic() + 12
+    if limite is None:
+        limite = time.monotonic() + 12
     if reservas is None:
         reservas = Path("/tmp") / f"harwiff-wifi-{os.getuid()}"
     nm = nm_estados(opcional(avisos, "nmcli", ["nmcli", "-t", "--escape", "no", "-f", "DEVICE,TYPE,STATE",

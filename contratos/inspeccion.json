@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harwiff:inspeccion:v1",
+  "$defs": {
+    "id": {"type":"string","pattern":"^[0-9]{13}-[0-9a-f-]{36}$"},
+    "hash": {"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "ref": {"type":"string","pattern":"^[0-9]{13}-[0-9a-f-]{36}#[0-9]{1,2}$"},
+    "refs": {"type":"array","minItems":1,"maxItems":6,"uniqueItems":true,"items":{"$ref":"#/$defs/ref"}},
+    "inventory": {"type":"object","additionalProperties":false,"properties":{},"required":[]},
+    "link": {
+      "type":"object","additionalProperties":false,"required":["interfaz"],
+      "properties":{"interfaz":{"type":"string","enum":["i1"]}}
+    },
+    "lookup": {
+      "type":"object","additionalProperties":false,"required":["id"],
+      "properties":{"id":{"$ref":"#/$defs/id"}}
+    },
+    "network": {
+      "type":"object","additionalProperties":false,"required":["allowedBssids","allowedSsids","allowedChannels"],
+      "properties":{
+        "allowedBssids":{"type":"array","maxItems":128,"items":{"type":"string","pattern":"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$"}},
+        "allowedSsids":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":32}},
+        "allowedChannels":{"type":"array","maxItems":233,"items":{"type":"integer","minimum":1,"maximum":233}}
+      },
+      "anyOf":[{"properties":{"allowedBssids":{"minItems":1}}},{"properties":{"allowedSsids":{"minItems":1}}}]
+    },
+    "request": {
+      "type":"object","additionalProperties":false,
+      "required":["version","requestId","sessionId","turnId","scopeId","networkRevision","operation","params","binding","network","timeoutMs"],
+      "properties":{
+        "version":{"const":1},"requestId":{"$ref":"#/$defs/id"},"sessionId":{"$ref":"#/$defs/id"},"turnId":{"$ref":"#/$defs/id"},
+        "scopeId":{"$ref":"#/$defs/hash"},"networkRevision":{"type":["integer","null"],"minimum":0},
+        "operation":{"enum":["consultar_adaptadores","inspeccionar_enlace"]},
+        "params":{"anyOf":[{"$ref":"#/$defs/inventory"},{"$ref":"#/$defs/link"}]},
+        "binding":{
+          "anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["name","identity"],
+            "properties":{"name":{"type":"string","pattern":"^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,14}$"},"identity":{"$ref":"#/$defs/hash"}}}]
+        },
+        "network":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/network"}]},
+        "timeoutMs":{"type":"integer","minimum":100,"maximum":5000}
+      },
+      "allOf":[
+        {"if":{"properties":{"operation":{"const":"consultar_adaptadores"}}},"then":{"properties":{"params":{"$ref":"#/$defs/inventory"}}},"else":{"properties":{"params":{"$ref":"#/$defs/link"},"binding":{"type":"object"}}}},
+        {"if":{"properties":{"network":{"type":"object"}}},"then":{"properties":{"networkRevision":{"type":"integer"},"binding":{"type":"object"}}},"else":{"properties":{"networkRevision":{"type":"null"}}}}
+      ]
+    },
+    "field": {"enum":["radio_count","bus","monitor","concurrency","interface_phy","link_state","ipv4_configured","ipv6_configured","ipv4_route","ipv6_route","association","frequency_mhz","signal_dbm"]},
+    "reason": {"enum":["source_unavailable","permission_denied","probe_timeout","parse_unsupported","identity_changed","unstable_snapshot","network_scope_required","network_scope_denied","association_unknown","not_observed","truncated","invalid_request"]},
+    "observation": {
+      "type":"object","additionalProperties":false,
+      "required":["subject","field","source","scope","value"],
+      "properties":{
+        "subject":{"type":"string","pattern":"^(?:host|i1|p1|p_[0-9a-f]{16})$"},
+        "field":{"$ref":"#/$defs/field"},
+        "source":{"enum":["sysfs","nl80211","ip","nm_cache","proc_wireless"]},
+        "scope":{"enum":["host","network"]},
+        "value":{"type":["integer","boolean","string","null"]},
+        "observedAt":{"type":"string","pattern":"^[0-9TZ:.\\-]{20,30}$"},
+        "method":{"enum":["kernel_attributes","kernel_get","kernel_ip_read","association_cache_read","kernel_signal_read"]},
+        "coverage":{"enum":["observed","partial","unavailable"]},
+        "reason":{"$ref":"#/$defs/reason"}
+      },
+      "allOf":[
+        {"if":{"properties":{"value":{"type":"null"}}},"then":{"required":["reason"]},"else":{"not":{"required":["reason"]}}},
+        {"if":{"properties":{"field":{"enum":["association","frequency_mhz","signal_dbm"]}}},"then":{"properties":{"scope":{"const":"network"}}},"else":{"properties":{"scope":{"const":"host"}}}},
+        {"if":{"properties":{"field":{"const":"radio_count"}}},"then":{"properties":{"subject":{"const":"host"},"value":{"type":["integer","null"],"minimum":0,"maximum":65535}}}},
+        {"if":{"properties":{"field":{"const":"bus"}}},"then":{"properties":{"value":{"enum":["usb","pci","sdio","platform","virtual",null]}}}},
+        {"if":{"properties":{"field":{"enum":["monitor","concurrency"]}}},"then":{"properties":{"value":{"enum":["supported","unsupported",null]}}}},
+        {"if":{"properties":{"field":{"const":"interface_phy"}}},"then":{"properties":{"subject":{"const":"i1"},"value":{"enum":["p1",null]}}}},
+        {"if":{"properties":{"field":{"const":"link_state"}}},"then":{"properties":{"subject":{"const":"i1"},"value":{"enum":["up","down",null]}}}},
+        {"if":{"properties":{"field":{"enum":["ipv4_configured","ipv6_configured"]}}},"then":{"properties":{"subject":{"const":"i1"},"value":{"type":["boolean","null"]}}}},
+        {"if":{"properties":{"field":{"enum":["ipv4_route","ipv6_route"]}}},"then":{"properties":{"subject":{"const":"p1"},"value":{"enum":["direct","none_observed","indeterminate",null]}}}},
+        {"if":{"properties":{"field":{"const":"association"}}},"then":{"properties":{"subject":{"const":"i1"},"value":{"enum":["associated",null]}}}},
+        {"if":{"properties":{"field":{"const":"frequency_mhz"}}},"then":{"properties":{"subject":{"const":"i1"},"value":{"type":["integer","null"],"minimum":1,"maximum":1000000}}}},
+        {"if":{"properties":{"field":{"const":"signal_dbm"}}},"then":{"properties":{"subject":{"const":"i1"},"value":{"type":["integer","null"],"minimum":-127,"maximum":-1}}}}
+      ]
+    },
+    "result": {
+      "type":"object","additionalProperties":false,"required":["version","origin","status","observations","reasons"],
+      "properties":{
+        "version":{"const":1},"origin":{"enum":["host_readonly","fixture"]},"status":{"enum":["ok","partial","unavailable","denied"]},
+        "observations":{"type":"array","maxItems":16,"items":{"$ref":"#/$defs/observation"}},
+        "reasons":{"type":"array","maxItems":8,"uniqueItems":true,"items":{"$ref":"#/$defs/reason"}}
+      },
+      "allOf":[{"if":{"properties":{"status":{"enum":["unavailable","denied"]}}},"then":{"properties":{"observations":{"maxItems":0},"reasons":{"minItems":1}}},"else":{"properties":{"observations":{"minItems":1}}}}]
+    },
+    "fact": {
+      "type":"object","additionalProperties":false,"required":["kind","refs"],
+      "properties":{"kind":{"const":"fact"},"refs":{"$ref":"#/$defs/refs"}}
+    },
+    "inference": {
+      "type":"object","additionalProperties":false,"required":["kind","refs","text","limitation"],
+      "properties":{
+        "kind":{"const":"inference"},"refs":{"$ref":"#/$defs/refs"},
+        "text":{"type":"string","minLength":1,"maxLength":350},"limitation":{"type":"string","minLength":1,"maxLength":220}
+      }
+    },
+    "unknown": {
+      "type":"object","additionalProperties":false,"required":["kind","field"],
+      "properties":{"kind":{"const":"unknown"},"field":{"$ref":"#/$defs/field"}}
+    },
+    "conclusion": {
+      "type":"object","additionalProperties":false,"required":["version","claims"],
+      "properties":{
+        "version":{"const":1},
+        "claims":{"type":"array","minItems":1,"maxItems":6,"items":{"oneOf":[{"$ref":"#/$defs/fact"},{"$ref":"#/$defs/inference"},{"$ref":"#/$defs/unknown"}]}}
+      }
+    }
+  }
+}

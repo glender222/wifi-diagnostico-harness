@@ -34,8 +34,9 @@ def nmcli(*args):
         raise RuntimeError("No se pudo consultar NetworkManager con nmcli.") from error
 
 
-def asociacion_actual(interfaz):
-    salida = nmcli("IN-USE,SSID-HEX,CHAN,FREQ,BSSID", "device", "wifi", "list",
+def asociacion_actual(interfaz, consultar=None):
+    consultar = consultar or nmcli
+    salida = consultar("IN-USE,SSID-HEX,CHAN,FREQ,BSSID", "device", "wifi", "list",
                    "ifname", interfaz, "--rescan", "no")
     activas = [linea.split(":", 4) for linea in salida.splitlines() if linea.startswith("*:")]
     if len(activas) != 1 or len(activas[0]) != 5:
