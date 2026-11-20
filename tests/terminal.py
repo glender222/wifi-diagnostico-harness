@@ -517,11 +517,23 @@ elif sys.argv[-1] == "preflight":
         os.dup2(lectura, 0)
         os.close(lectura)
         os.execvp("python3", ["python3", *sys.argv[1:]])
+elif sys.argv[-1] == "vincular-inspeccion":
+    assert json.load(sys.stdin) == {"name": "wlanlab"}
+    print(json.dumps({"identity": "b" * 64}))
+elif sys.argv[-1] == "broker-lectura":
+    entrada = json.load(sys.stdin)
+    assert entrada["network"] is None
+    assert entrada["binding"]["identity"] == "b" * 64
+    assert entrada["operation"] == "inspeccionar_enlace"
+    print(json.dumps({"version": 1, "origin": "host_readonly", "status": "ok", "reasons": [],
+                      "observations": [{"subject": "p1", "field": "ipv4_route", "source": "ip",
+                                        "scope": "host", "value": "direct"}]}))
 else:
     os.execvp("python3", ["python3", *sys.argv[1:]])
 """)
             python.chmod(0o700)
-            env = {**self.entorno_local(), "WIFI_PYTHON": str(python)}
+            env = {**self.entorno_openai(), "WIFI_PYTHON": str(python),
+                   "HARWIFF_LLM_PROVIDER": "openai", "HARWIFF_LLM_MODEL": "gpt-4.1-mini"}
             with terminal(base, env, filas=18, columnas=105) as (proceso, esperar, escribir):
                 self.configurar_sesion_mock(esperar, escribir)
                 control = base / "prueba/.harwiff/control-wifi.json"
@@ -533,7 +545,10 @@ else:
                 escribir(b"\r")
                 esperar("Solo datos del host")
                 escribir(b"\r")
-                esperar("¿Qué quieres revisar?")
+                salida = esperar("Ruta por defecto IPv4 observada")
+                self.assertNotIn("¿Qué quieres revisar?".encode(), salida)
+                escribir(b"\x1b")
+                esperar("Hacer otra pregunta")
                 escribir(b"\x1b")
                 esperar("Harwiff / Adaptadores")
                 self.assertEqual(control.read_bytes(), previo)

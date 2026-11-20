@@ -10,17 +10,25 @@ globalThis.fetch = async (input, init) => {
     return Response.json({ data: [{ id: "gpt-4.1-mini" }, { id: "gpt-5-mini" }] });
   }
   if (solicitud.url !== "https://api.openai.com/v1/responses") throw new Error("Ruta fuera del fixture");
-  const { model, input: contexto, stream } = await solicitud.json();
+  const { model, input: contexto, stream, tools } = await solicitud.json();
   const usage = { input_tokens: 8, output_tokens: 2, total_tokens: 10 };
+  const catalogo = new Set(tools?.map(({ name }) => name));
+  const operacion = catalogo.has("comprobar") ? "comprobar" :
+    catalogo.has("inspeccionar_enlace") ? "inspeccionar_enlace" : "observar_entorno";
   const llamada = { type: "function_call", id: "fc_fixture", call_id: "call_fixture",
-    name: "observar_entorno", arguments: "{}", status: "completed" };
+    name: operacion, arguments: operacion === "inspeccionar_enlace" ? '{"interfaz":"i1"}' : "{}", status: "completed" };
   if (!stream) return Response.json({ status: "completed", model, usage, output: [llamada] });
-  const recibio = contexto.some((item) => item.type === "function_call_output");
+  const recibio = contexto.findLast((item) => item.type === "function_call_output");
   const pausa = Number(process.env.HARWIFF_FIXTURE_STREAM_DELAY);
   const seguimiento = contexto.some((item) => JSON.stringify(item).includes("Confirma lo que guardaste"));
   const fase = seguimiento ? "seguimiento" : "proveedor";
   const parcial = `Texto parcial del ${fase}.`;
-  const texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
+  let texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
+  if (recibio && operacion === "comprobar") texto = JSON.stringify({ resultado: recibio.output });
+  if (recibio && operacion === "inspeccionar_enlace") {
+    const { ref } = JSON.parse(recibio.output).observations.find(({ field }) => field === "ipv4_route");
+    texto = JSON.stringify({ version: 1, claims: [{ kind: "fact", refs: [ref] }] });
+  }
   const item = recibio ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
     content: [{ type: "output_text", text: texto, annotations: [] }] } : llamada;
   const respuesta = { id: recibio ? "resp_fixture_2" : "resp_fixture_1", model };

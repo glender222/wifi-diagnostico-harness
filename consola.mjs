@@ -870,12 +870,23 @@ async function aplicar(destino) {
       red = permiso === "red";
     }
     let anterior;
+    let objetivo = red ? undefined : nombre
+      ? "Resume el estado del enlace local de la interfaz elegida y qué rutas por defecto IPv4 e IPv6 observas."
+      : "Resume qué radios Wi-Fi detectas y sus buses.";
     while (!cerrando) {
-      const objetivo = (await interfaz.preguntar(anterior ? "¿Qué quieres revisar a continuación?" : "¿Qué quieres revisar?"))?.trim();
+      objetivo ??= (await interfaz.preguntar(anterior ? "¿Qué quieres revisar a continuación?" : "¿Qué quieres revisar?"))?.trim();
       if (!objetivo) return;
       const resultado = await interfaz.consultar("Inspección Wi-Fi de solo lectura…",
         signal => ejecutarInspeccion({objetivo, anterior, nombre, red, historial: true}, signal));
-      if (!resultado || cerrando) return;
+      if (cerrando) return;
+      if (!resultado) {
+        const accion = await interfaz.elegir("Inspección cancelada", [
+          {value: "reintentar", label: "Reintentar"},
+          {value: "volver", label: "Volver"},
+        ], undefined, {id: "inspeccion-cancelada"});
+        if (accion !== "reintentar") return;
+        continue;
+      }
       await interfaz.mostrarDetalle(textoInspeccion(resultado), "Inspección Wi-Fi");
       const siguiente = await interfaz.elegir("Inspección", [
         {value: "otra", label: "Hacer otra pregunta"},
@@ -883,11 +894,20 @@ async function aplicar(destino) {
       ], undefined, {id: "inspeccion-continuar"});
       if (siguiente !== "otra") return;
       anterior = {objetivo, scopeId: resultado.scopeId};
+      objetivo = undefined;
     }
   }
 
   function textoInspeccion(resultado) {
-    return ["Inspección " + resultado.motivo + " · /auditoria " + resultado.turnId, ...resultado.lineas].join("\n");
+    const estado = {
+      completed: "Inspección completada",
+      partial: "Inspección parcial · se muestran los datos confirmados",
+      timeout: "Inspección sin completar · se agotó el tiempo",
+      budget_limit: "Inspección sin completar · se alcanzó el límite del turno",
+      provider_error: "Inspección sin completar · el modelo no devolvió una conclusión válida",
+      cancelled: "Inspección cancelada",
+    }[resultado.motivo] ?? "Inspección sin completar";
+    return [estado + " · /auditoria " + resultado.turnId, ...resultado.lineas].join("\n");
   }
 
   async function iniciarAgenteProyecto(objetivo, enfocarAlIniciar = false) {
@@ -1263,9 +1283,11 @@ async function aplicar(destino) {
       ...(adaptador ? [{ value: "actual", label: adaptador.id === "mock" ? "Ejecutar en modo simulado" : "Ejecutar en modo físico",
         description: adaptadorVisible() }] : [{ value: "adaptador", label: "Elegir adaptador" }]),
       { value: "demo", label: "Generar muestra sintética" },
+      { value: "inspeccion", label: "Inspección Wi-Fi de solo lectura" },
     ];
     const modo = await interfaz.elegir("Diagnóstico", opciones, undefined, { id: "diagnostico" });
     if (!modo) return;
+    if (modo === "inspeccion") return menuInspeccion();
     if (modo === "adaptador") return elegirAdaptador();
     const simulado = modo === "demo" || adaptador?.id === "mock";
     const id = await interfaz.consultar(simulado ? "Generando muestra sintética…" : "Ejecutando diagnóstico físico en OpenSandbox…",
@@ -1472,7 +1494,7 @@ async function aplicar(destino) {
     for (;;) {
       const haySesiones = [...agentes.values()].some(({ iniciado }) => iniciado);
       const opcion = await interfaz.elegir(haySesiones ? "Agentes" : "Agentes · sin conversaciones", () => [
-        { value: "+nueva", label: "Nueva conversación", description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined },
+        { value: "+nueva", label: "Nueva conversación simulada", description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined },
         ...[...agentes.values()].filter(({ iniciado }) => iniciado)
           .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
           .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) })),

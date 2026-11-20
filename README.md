@@ -8,7 +8,7 @@
 
 ## Inspección Wi-Fi con el agente
 
-Desde un proyecto abierto en Harwiff, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Agentes → Inspección Wi-Fi de solo lectura**. La tarjeta que sostiene la ruta principal también está disponible para esta inspección. En la consola:
+Desde un proyecto abierto en Harwiff, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Diagnóstico → Inspección Wi-Fi de solo lectura**. **Solo datos del host** inicia el resumen de la interfaz de inmediato, incluso si la tarjeta sostiene la ruta principal. Después del resultado puedes hacer otra pregunta. En la consola:
 
 ```text
 /agente --inspeccion -- ¿Qué radios Wi-Fi detectas?
