@@ -506,7 +506,7 @@ else:
             (base / "wifi-fixture.json").write_text(json.dumps(perfil))
             python = base / "python-fixture"
             python.write_text("""#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 if sys.argv[-1] == "adaptadores-perfil":
     print(Path("wifi-fixture.json").read_text())
@@ -535,9 +535,12 @@ elif sys.argv[-1] == "broker-lectura":
     assert entrada["network"] is None
     assert entrada["binding"]["identity"] == ("d" if Path("interfaz-recreada").exists() else "b") * 64
     assert entrada["operation"] == "inspeccionar_enlace"
+    time.sleep(0.4)
     print(json.dumps({"version": 1, "origin": "host_readonly", "status": "ok", "reasons": [],
                       "observations": [{"subject": "p1", "field": "ipv4_route", "source": "ip",
-                                        "scope": "host", "value": "direct"}]}))
+                                        "scope": "host", "value": "direct"},
+                                       {"subject": "p1", "field": "ipv6_route", "source": "ip",
+                                        "scope": "host", "value": "none_observed"}]}))
 else:
     os.execvp("python3", ["python3", *sys.argv[1:]])
 """)
@@ -630,7 +633,7 @@ else:
                 esperar("→ Nueva inspección con wlanlab")
 
             # El recorrido de producción usa el editor de chat y conserva el historial al reiniciar.
-            with terminal(base, env, destino="prueba", filas=16, columnas=64, fuente=FUENTE_REAL) as (app, esperar, escribir):
+            with terminal(base, env, destino="prueba", filas=16, columnas=60, fuente=FUENTE_REAL) as (app, esperar, escribir):
                 esperar("> Agentes")
                 escribir(b"\r")
                 pantalla = esperar("> Nueva conversación · wlanlab")
@@ -638,7 +641,10 @@ else:
                 escribir(b"\r")
                 esperar("Mensaje >")
                 escribir(b"Resume el enlace original\r")
-                esperar("Ruta por defecto IPv4 observada")
+                en_curso = esperar("Enlace y rutas · En curso")
+                self.assertNotIn(b"pasa por esta tarjeta", en_curso)
+                esperar("Enlace y rutas · Completado")
+                esperar("ruta por defecto observada")
                 escribir(b"\x1b")
                 esperar("Abrir sesión guardada")
                 escribir(b"\x1b")
@@ -646,7 +652,7 @@ else:
                 escribir(b"\x03")
                 self.assertEqual(app.wait(timeout=5), 0)
 
-            with terminal(base, env, destino="prueba", filas=16, columnas=64, fuente=FUENTE_REAL) as (_, esperar, escribir):
+            with terminal(base, env, destino="prueba", filas=16, columnas=60, fuente=FUENTE_REAL) as (_, esperar, escribir):
                 esperar("> Agentes")
                 escribir(b"\r")
                 esperar("Abrir sesión guardada")
@@ -654,9 +660,10 @@ else:
                 sesiones = esperar("Resume el enlace original")
                 self.assertNotIn("Sesión anterior".encode(), sesiones)
                 escribir(b"\r")
-                esperar("Ruta por defecto IPv4 observada")
-                escribir(b"Sigue con la pregunta anterior\r")
-                esperar("Sigue con la pregunta anterior")
+                esperar("ruta por defecto observada")
+                escribir(b"ohh y eso que dice?\r")
+                captura = esperar("por dónde intentaría salir")
+                self.assertNotIn("Enlace y rutas · En curso".encode(), captura)
                 [chat] = [d for d in (control.parent / "agentes").iterdir() if not d.name.startswith("fixture-")]
                 limite = time.monotonic() + 8
                 while len(list(chat.glob("turnos/*/resultado.json"))) < 2:
@@ -665,11 +672,17 @@ else:
             [chat] = [d for d in (control.parent / "agentes").iterdir() if not d.name.startswith("fixture-")]
             turnos = sorted(chat.glob("turnos/*/resultado.json"))
             self.assertEqual(len(turnos), 2)
+            inicial = json.loads(turnos[0].read_text())
+            self.assertIn("pasa por esta tarjeta", inicial["respuesta"])
+            self.assertIn("IPv6", inicial["respuesta"])
             for archivo in turnos:
                 resultado = json.loads(archivo.read_text())
-                self.assertIn("Ruta por defecto IPv4 observada", resultado["respuesta"])
+                self.assertTrue(any("Ruta por defecto IPv4 observada" in linea for linea in resultado["detalle"]))
                 registro = control.parent / "auditoria" / resultado["auditoria"] / "solicitud.json"
                 self.assertEqual(json.loads(registro.read_text())["sessionId"], chat.name)
+            explicacion = json.loads(turnos[1].read_text())
+            self.assertIn("Eso te dice por dónde", explicacion["respuesta"])
+            self.assertEqual(explicacion["operaciones"], [])
 
             denegado = subprocess.run(["node", str(FUENTE_REAL), str(base / "prueba")], cwd=base, env=env,
                                       input="/adaptador listar\n/agente --mock prueba\n/diagnostico demo\n/salir\n",

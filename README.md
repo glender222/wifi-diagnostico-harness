@@ -64,7 +64,9 @@ Usa **↑** y **↓** para moverte, **Enter** para abrir y **Esc** para volver. 
 2. Abre **Agentes → Nueva conversación** y escribe «¿Qué rutas por defecto IPv4 e IPv6 observas?».
 3. Puedes saludar, pedir explicaciones generales o hacer otra pregunta en el mismo chat. Harwiff envía contexto reciente del mismo alcance. Las preguntas sobre el estado de tu equipo usan lecturas verificables.
 
-**Esc** vuelve a Agentes. **Abrir sesión guardada** recupera la conversación después de reiniciar. **Tab** abre **Detalle de turnos**, **Detener turno** cuando está activo y **Datos del próximo mensaje**. Para consultar la asociación, configura una red autorizada y habilita **Incluir la asociación autorizada del proyecto** antes de enviar ese mensaje.
+Durante una lectura, el chat muestra cuándo cada herramienta está en curso y cuándo termina. La respuesta resume los hallazgos. Para ver las observaciones y sus citas, abre **Tab → Detalle de turnos**. Si preguntas «¿Y eso qué significa?», Harwiff puede explicar la lectura anterior con la evidencia de esa conversación.
+
+**Esc** vuelve a Agentes. **Abrir sesión guardada** recupera la conversación después de reiniciar. Para consultar la asociación, configura una red autorizada y elige **Tab → Datos del próximo mensaje → Incluir la asociación autorizada del proyecto** antes de enviar ese mensaje.
 
 ### Proveedores
 

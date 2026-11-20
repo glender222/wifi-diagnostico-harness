@@ -99,7 +99,7 @@ function actualizarBloques(zona, bloques, limpiar) {
     const texto = limpiar(bloque.text);
     const anterior = zona.bloques.get(bloque.id);
     const componente = anterior?.componente ?? (bloque.markdown
-      ? new Markdown(texto, 1, 0, temaMarkdown) : new Text(texto, 1));
+      ? new Markdown(texto, 1, 0, temaMarkdown) : new Text(texto, bloque.tipo === "herramienta" ? 3 : 1, bloque.tipo === "herramienta" ? 0 : 1));
     if (anterior && anterior.texto !== texto) componente.setText(texto);
     proximos.set(bloque.id, { componente, texto });
   }
@@ -459,10 +459,10 @@ export function pantalla(comandos, acciones) {
         claveChat = clave;
         conversacion.clear();
         conversacion.addChild(zona.vista, { grow: 1, basis: 0 });
-        conversacion.addChild(actividad, { basis: 34, visible: ({ width }) => !compatibilidad && width >= 120 });
+        conversacion.addChild(actividad, { basis: 34, visible: ({ width }) => !compatibilidad && !estado?.inspeccion && width >= 120 });
       }
       const bloques = compatibilidad ? nuevo.transcript ?? [] : (nuevo.transcript ?? [])
-        .filter(({ tipo }) => tipo === "mensaje")
+        .filter(({ tipo }) => tipo === "mensaje" || tipo === "herramienta")
         .map((bloque) => {
           let texto = bloque.text;
           if (bloque.entrega === "queued") texto = texto.replace(/ · en cola$/, " · En cola");

@@ -111,7 +111,7 @@ grep -q 'Proveedor de /agente: sin configurar' "$temporal/sin-conexion"
 grep -q 'Conecta un proveedor con /connect' "$temporal/error-conexion"
 ! grep -q '^Error:' "$temporal/sin-conexion"
 cp -- "$(dirname -- "$0")/fixtures/connect-openai.mjs" "$temporal/openai-fixture.mjs"
-printf '%s\n' '/model gpt-4.1-mini' '/agente Revisar el inventario local' '/salir' \
+printf '%s\n' '/model gpt-4.1-mini' '/agente Revisar el inventario local' '/detalle' '/salir' \
   | env OPENAI_API_KEY=sk-fixture-harwiff-terminal NODE_OPTIONS="--import=$temporal/openai-fixture.mjs" \
     "$ejecutable" "$proyecto" > "$temporal/agente"
 grep -q 'Modelo OpenAI guardado: gpt-4.1-mini' "$temporal/agente"
@@ -119,7 +119,7 @@ grep -q 'Radios Wi‑Fi detectados' "$temporal/agente"
 grep -q '/auditoria ' "$temporal/agente"
 "$ejecutable" proyectos --json "$temporal" | grep -q '"nombre": "proyecto nuevo"'
 printf '%s\n' "/proyectos $temporal" '/salir' | "$ejecutable" | grep 'proyecto nuevo · demo'
-printf '%s\n' 'agent harwiff' '/volver' '/salir' | "$ejecutable" "$proyecto" | grep 'Radios Wi‑Fi detectados'
+printf '%s\n' 'agent harwiff' '/detalle' '/volver' '/salir' | "$ejecutable" "$proyecto" | grep 'Radios Wi‑Fi detectados'
 (cd "$proyecto" && printf '%s\n' '/salir' | "$ejecutable" > "$temporal/reapertura")
 grep -q 'Actividad reciente del proyecto' "$temporal/reapertura"
 grep -q 'Adaptador: ninguno' "$temporal/reapertura"

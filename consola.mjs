@@ -21,7 +21,7 @@ import {
 } from "./proyecto.mjs";
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { cargarSesionAutonoma, enviarMensajeAgente, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
-import { cargarConversacionInspeccion, crearConversacionInspeccion, guardarTurnoConversacion } from "./sesion-inspeccion.mjs";
+import { bloqueOperacion, cargarConversacionInspeccion, crearConversacionInspeccion, guardarTurnoConversacion } from "./sesion-inspeccion.mjs";
 
 import paquete from "./package.json" with { type: "json" };
 
@@ -904,6 +904,17 @@ async function aplicar(destino, fixtures) {
     item.avisos = [];
     const permisoRed = item.permisoRed;
     item.permisoRed = undefined;
+    const operaciones = new Map();
+    const baseTranscript = item.transcript;
+    let bloqueUsuario;
+    function publicarTurno() {
+      item.transcript = [...baseTranscript, bloqueUsuario, ...[...operaciones.values()]
+        .map(operacion => bloqueOperacion(bloqueUsuario.turno, operacion))];
+      actualizar();
+    }
+    function cerrarOperaciones(estado) {
+      return [...operaciones.values()].map(operacion => operacion.estado === "running" ? {...operacion, estado} : operacion);
+    }
     const trabajo = guardarTurnoConversacion(item, texto, async (contextoConversacion) => {
       try {
         controlador.signal.throwIfAborted();
@@ -911,21 +922,28 @@ async function aplicar(destino, fixtures) {
           objetivo: texto, contextoConversacion, idConversacion: item.id,
           nombre: item.adaptador?.name, adaptadorIdEsperado: item.adaptador?.id,
           red: Boolean(permisoRed), permisoRed, historial: true,
+          alOperacion(operacion) {
+            operaciones.set(operacion.id, operacion);
+            publicarTurno();
+          },
         }, controlador.signal);
         const estado = ["completed", "partial"].includes(resultado.motivo) ? "completo"
           : resultado.motivo === "cancelled" ? "cancelado" : "error";
-        const respuesta = resultado.respuestaConversacion ?? (
+        const respuesta = resultado.respuestaConversacion ?? resultado.resumenConversacion ?? (
           resultado.motivo === "completed" ? [...resultado.lineas, "/auditoria " + resultado.turnId].join("\n")
             : resultado.motivo === "partial" && resultado.metricas.intentos === 0 ? resultado.lineas.join("\n")
               : textoInspeccion(resultado));
-        return { estado, respuesta, scopeId: resultado.scopeId, auditoria: resultado.turnId };
+        return { estado, respuesta, scopeId: resultado.scopeId, auditoria: resultado.turnId,
+          detalle: resultado.detalleConversacion ?? resultado.lineas,
+          operaciones: cerrarOperaciones(estado === "cancelado" ? "cancelled" : "unavailable") };
       } catch (error) {
-        return controlador.signal.aborted ? { estado: "cancelado", respuesta: "Turno cancelado." }
-          : { estado: "error", respuesta: seguro(ocultar(error.message)) };
+        return controlador.signal.aborted
+          ? { estado: "cancelado", respuesta: "Turno cancelado.", operaciones: cerrarOperaciones("cancelled") }
+          : { estado: "error", respuesta: seguro(ocultar(error.message)), operaciones: cerrarOperaciones("unavailable") };
       }
     }, ({ id, usuario }) => {
-      item.transcript = [...item.transcript, { id: id + "/usuario", tipo: "mensaje", text: "Tú  " + usuario.content }];
-      actualizar();
+      bloqueUsuario = { id: id + "/usuario", turno: id, tipo: "mensaje", text: "Tú  " + usuario.content };
+      publicarTurno();
     });
     item.trabajo = trabajo;
     actualizar();

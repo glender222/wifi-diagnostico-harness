@@ -117,8 +117,10 @@ try {
   }
 
   llamadas = 0;
-  const lecturaEnChat = await inspeccionar({proyecto: {raiz}, idConversacion: crearIdAuditoria(),
-    objetivo: "¿Cuántos radios detectas en mi equipo?", broker,
+  const idConversacion = crearIdAuditoria();
+  const operaciones = [];
+  const lecturaEnChat = await inspeccionar({proyecto: {raiz}, idConversacion, historial: true,
+    objetivo: "¿Cuántos radios detectas en mi equipo?", broker, alOperacion: operacion => operaciones.push(operacion),
     conexion: conexion(openaiProvider(), [
       () => ({name: "consultar_adaptadores", args: {}}),
       ...probar,
@@ -126,7 +128,7 @@ try {
       payload => {
         assert.equal(payload.tool_choice, "none");
         const {ref} = JSON.parse(ultimoResultado(payload)).observations[0];
-        return {text: JSON.stringify({version: 1, claims: [{kind: "fact", refs: [ref]}]})};
+        return {text: JSON.stringify({version: 1, claims: [{kind: "fact", refs: [ref], text: "Hay diez radios."}]})};
       },
     ])});
   assert.equal(lecturaEnChat.motivo, "completed");
@@ -134,6 +136,38 @@ try {
   assert.equal(llamadas, 1);
   assert.match(lecturaEnChat.lineas[0], /Radios Wi‑Fi detectados/);
   assert.doesNotMatch(lecturaEnChat.lineas.join("\n"), /diez/);
+  assert.match(lecturaEnChat.resumenConversacion, /detectó 1 radio Wi‑Fi/);
+  assert.doesNotMatch(JSON.stringify(lecturaEnChat.afirmaciones), /diez/);
+  assert.deepEqual(operaciones.map(({id, estado}) => [id, estado]), [[1, "running"], [1, "ok"]]);
+
+  const previo = {estado: "completo", usuario: {content: "¿Cuántos radios detectas en mi equipo?"},
+    respuesta: lecturaEnChat.resumenConversacion, scopeId: lecturaEnChat.scopeId, auditoria: lecturaEnChat.turnId};
+  const refPrevia = lecturaEnChat.evidencias[0] + "#0";
+  const explicada = await inspeccionar({proyecto: {raiz}, idConversacion, historial: true, contextoConversacion: [previo],
+    objetivo: "ohh y eso que dice?",
+    broker: async () => assert.fail("La explicación no debe repetir la lectura."),
+    comprobarModelo: async () => assert.fail("La explicación no necesita una herramienta."),
+    conexion: conexion(openaiProvider(), [payload => {
+      assert.ok(!payload.tools?.length);
+      assert.match(JSON.stringify(payload), /Observaciones históricas verificadas/);
+      assert.ok(JSON.stringify(payload).includes(refPrevia));
+      return {text: JSON.stringify({version: 1, claims: [{kind: "inference", refs: [refPrevia],
+        text: "El sistema reconocía un radio Wi-Fi.", limitation: "No se midió su rendimiento."}]})};
+    }])});
+  assert.equal(explicada.motivo, "completed");
+  assert.equal(explicada.metricas.intentos, 0);
+  assert.match(explicada.resumenConversacion, /se basa en la lectura anterior/);
+  assert.match(explicada.resumenConversacion, /reconocía un radio/);
+  assert.match(explicada.detalleConversacion.join("\n"), /Hecho histórico/);
+  assert.deepEqual(explicada.evidencias, lecturaEnChat.evidencias);
+
+  const otraConversacion = await inspeccionar({proyecto: {raiz}, idConversacion: crearIdAuditoria(), historial: true,
+    contextoConversacion: [previo], objetivo: "¿Qué es un radio?",
+    conexion: conexion(openaiProvider(), [payload => {
+      assert.ok(!JSON.stringify(payload).includes(refPrevia));
+      return {text: '{"version":1,"reply":"El radio transmite y recibe señales Wi-Fi."}'};
+    }])});
+  assert.equal(otraConversacion.motivo, "completed");
 
   let idHistorico;
   for (const provider of [openaiProvider(), anthropicProvider()]) {

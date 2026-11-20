@@ -8,6 +8,14 @@ const ESQUEMA = "harwiff-conversacion-inspeccion/v1";
 const LIMITE_VISTA = 100;
 const textoVisible = (texto) => String(texto).replace(/\s+/g, " ").trim();
 
+export function bloqueOperacion(turno, operacion) {
+  const estado = {
+    running: "En curso", ok: "Completado", partial: "Datos parciales", historical: "Recuperado",
+    denied: "Denegado", unavailable: "Sin datos", cancelled: "Cancelado",
+  }[operacion.estado] ?? "Sin resultado";
+  return {id: `${turno}/herramienta/${operacion.id}`, tipo: "herramienta", text: `${operacion.label} · ${estado}`};
+}
+
 export async function crearConversacionInspeccion(raiz, adaptador) {
   const id = crearIdAuditoria();
   const dir = join(raiz, "agentes", id);
@@ -30,9 +38,11 @@ export async function cargarConversacionInspeccion(dir, datos, { soloResumen = f
     if (typeof turno.usuario?.content !== "string") continue;
     const id = turno.id ?? `interrumpido-${transcript.length}`;
     transcript.push({ id: id + "/usuario", tipo: "mensaje", text: "Tú  " + turno.usuario.content });
+    for (const operacion of turno.operaciones ?? []) transcript.push(bloqueOperacion(id, operacion));
     transcript.push({ id: id + "/respuesta", tipo: "mensaje",
       text: "Agente  " + (turno.respuesta ?? "Turno sin resultado guardado.") });
-    if (turno.auditoria) transcript.push({ id: id + "/detalle", tipo: "detalle", turno: id, text: "/auditoria " + turno.auditoria });
+    if (turno.auditoria) transcript.push({ id: id + "/detalle", tipo: "detalle", turno: id,
+      text: [...(turno.detalle ?? []), "/auditoria " + turno.auditoria].join("\n") });
   }
   return {
     id: datos.id, dir, inspeccion: true, autonoma: true, iniciado: true, modo: "inspeccion",

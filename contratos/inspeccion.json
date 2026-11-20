@@ -106,12 +106,16 @@
         "reply":{"type":"string","minLength":1,"maxLength":1000}
       }
     },
-    "conclusion": {
+    "conclusionEnvelope": {
       "type":"object","additionalProperties":false,"required":["version","claims"],
       "properties":{
         "version":{"const":1},
-        "claims":{"type":"array","minItems":1,"maxItems":6,"items":{"oneOf":[{"$ref":"#/$defs/fact"},{"$ref":"#/$defs/inference"},{"$ref":"#/$defs/unknown"}]}}
+        "claims":{"type":"array","minItems":1,"maxItems":6}
       }
+    },
+    "conclusion": {
+      "allOf":[{"$ref":"#/$defs/conclusionEnvelope"},
+        {"properties":{"claims":{"items":{"oneOf":[{"$ref":"#/$defs/fact"},{"$ref":"#/$defs/inference"},{"$ref":"#/$defs/unknown"}]}}}}]
     }
   }
 }
