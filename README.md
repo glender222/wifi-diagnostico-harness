@@ -10,6 +10,8 @@
 
 Para usar tu tarjeta habitualmente, elige **Adaptadores → tu radio → Seleccionar para Agentes**. El proyecto recuerda la interfaz y la ofrece en **Agentes → Nueva inspección con …**. En la consola, `/agente <objetivo>` usa esa interfaz con datos del host. La conversación simulada sigue disponible con `/agente --mock <objetivo>`.
 
+En la consola, pulsa **Tab** con la línea vacía o escribe `/agente` para abrir el menú **Agentes**. Allí también puedes elegir **Abrir sesión guardada** si el proyecto tiene conversaciones.
+
 Para una consulta puntual, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Diagnóstico → Inspección Wi-Fi de solo lectura**. **Solo datos del host** inicia el resumen de la interfaz de inmediato, incluso si la tarjeta sostiene la ruta principal. Después del resultado puedes hacer otra pregunta. Ejemplos de consola:
 
 ```text
@@ -66,7 +68,7 @@ Usa **↑** y **↓** para moverte, **Enter** para abrir y **Esc** para volver. 
 1. En **Alcance → Editar alcance**, añade el SSID `LAB_TEST_AP` y el canal `6`.
 2. En **Adaptadores**, abre **Mock · Simulado** y elige **Usar este adaptador**.
 3. En **Modelo y ajustes**, conecta un proveedor y elige el modelo para sesiones nuevas.
-4. Abre **Agentes → Nueva conversación** y escribe, por ejemplo, «Resume las observaciones del escenario de laboratorio».
+4. Abre **Agentes → Nueva conversación simulada** y escribe, por ejemplo, «Resume las observaciones del escenario de laboratorio».
 
 ![Conversación simulada con el agente y actividad de herramientas a la derecha](docs/capturas/agente.png)
 

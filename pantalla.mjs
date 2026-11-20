@@ -209,7 +209,8 @@ export function pantalla(comandos, acciones) {
     { component: editor, visible: visible(() => !selector && !secreto && !detalle &&
       Boolean(compatibilidad || pregunta || (estado?.agente && !estado.soloConsulta))) },
     { component: campoSecreto, visible: visible(() => Boolean(secreto)) },
-    { component: fila, visible: visible(() => Boolean(compatibilidad && !selector && !detalle && estado?.agentes.length)) },
+    { component: fila, visible: visible(() => Boolean(compatibilidad && !selector && !detalle && !pregunta &&
+      estado?.proyecto && (!estado.agente || estado.agentes.length))) },
     { component: aviso, maxSize: 2, visible: visible(() => Boolean(!compatibilidad && avisoTexto && !detalle && !secreto)) },
     { component: pie, visible: visible(() => !compatibilidad) },
   ]));
@@ -379,10 +380,16 @@ export function pantalla(comandos, acciones) {
       render(estado);
       return { consume: true };
     }
-    if (compatibilidad && matchesKey(dato, "tab") && !editor.getText() && !pregunta && estado?.agentes.length) {
-      enFila = !enFila;
-      render(estado);
-      return { consume: true };
+    if (compatibilidad && matchesKey(dato, "tab") && !editor.getText() && !pregunta && estado?.proyecto) {
+      if (!estado.agente && esperando) {
+        resolverEntrada({ accion: "agentes" });
+        return { consume: true };
+      }
+      if (estado.agentes.length) {
+        enFila = !enFila;
+        render(estado);
+        return { consume: true };
+      }
     }
     if (!enFila) return undefined;
     if (dato === "/" || matchesKey(dato, "/")) {
@@ -429,7 +436,9 @@ export function pantalla(comandos, acciones) {
         const texto = `${id} · ${estado}${reciente}`;
         return enFila && n === indice ? acento(`[${texto}]`) : texto;
       });
-      fila.setText(`Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : "   ·   Tab"}`);
+      fila.setText(nuevo.agente
+        ? `Agentes  ${agentes.join("   |   ")}${enFila ? "   ← → y Enter" : "   ·   Tab"}`
+        : ["Tab Agentes", ...agentes].join("   ·   "));
     }
     if (detalle) {
       actualizarBloques(inspector, [{ id: "detalle", text: detalle }], acciones.limpiar);

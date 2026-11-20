@@ -53,7 +53,7 @@ const comandos = {
   "/adaptador": "Inventario · /adaptador agentes <interfaz|--quitar>",
   "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
   "/alcance": "Definir o ver el alcance autorizado",
-  "/agente": "Usar adaptador predeterminado · --mock objetivo · --inspeccion [opciones] -- objetivo",
+  "/agente": "Abrir el menú Agentes o enviar un objetivo · --mock objetivo · --inspeccion [opciones] -- objetivo",
   "/auditoria": "Listar ejecuciones o ver una por ID",
   "/config": "Ver la configuración del proyecto",
   "/model": "Elegir el modelo para sesiones nuevas",
@@ -1518,25 +1518,29 @@ async function aplicar(destino) {
   }
 
   async function menuAgentes() {
+    const guardadas = () => [...agentes.values()].filter(({ iniciado }) => iniciado)
+      .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
+      .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) }));
     for (;;) {
       controlWifi = await leerControlWifi(proyectoWifi());
       const adaptador = controlWifi.inspectionAdapter;
-      const opcionReal = { value: "+inspeccion", label: adaptador ? `Nueva inspección con ${adaptador.name}` : "Inspección Wi-Fi de solo lectura",
-        description: adaptador ? "Solo lectura" : undefined };
-      const haySesiones = [...agentes.values()].some(({ iniciado }) => iniciado);
-      const opcion = await interfaz.elegir(haySesiones ? "Agentes" : "Agentes · sin conversaciones", () => [
-        ...(adaptador ? [opcionReal] : []),
-        { value: "+nueva", label: "Nueva conversación simulada", description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined },
-        ...[...agentes.values()].filter(({ iniciado }) => iniciado)
-          .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
-          .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) })),
-        ...(adaptador ? [] : [opcionReal]),
-      ], undefined, { id: adaptador ? "agentes/lectura" : "agentes" });
+      const opcionReal = { value: "+inspeccion",
+        label: (adaptador ? `Nueva inspección con ${adaptador.name}` : "Nueva inspección Wi-Fi") + " · solo lectura" };
+      const simulada = { value: "+nueva", label: "Nueva conversación simulada",
+        description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined };
+      const opciones = adaptador ? [opcionReal, simulada] : [simulada, opcionReal];
+      if ([...agentes.values()].some(({ iniciado }) => iniciado)) {
+        opciones.push({ value: "+guardadas", label: "Abrir sesión guardada" });
+      }
+      const opcion = await interfaz.elegir("Agentes", opciones);
       if (!opcion) return;
       try {
-        if (opcion === "+inspeccion") await menuInspeccion(adaptador?.name, { adaptadorIdEsperado: adaptador?.id, pedirObjetivo: Boolean(adaptador) });
+        if (opcion === "+inspeccion") await menuInspeccion(adaptador?.name, { adaptadorIdEsperado: adaptador?.id, pedirObjetivo: true });
         else if (opcion === "+nueva") await nuevoAgente();
-        else await enfocar(opcion);
+        else {
+          const id = await interfaz.elegir("Sesiones de agente guardadas", guardadas, undefined, { id: "agentes/guardadas" });
+          if (id) await enfocar(id);
+        }
         if (agente) return;
       } catch (error) {
         mostrarError(error);
@@ -1728,6 +1732,7 @@ async function aplicar(destino) {
         break;
       }
       case "/agente":
+        if (!args && interfaz) return menuAgentes();
         if (/^--inspeccion(?:\s|$)/.test(args)) {
           await ejecutarInspeccionComando(interpretarInspeccion(args));
         } else if (/^--mock(?:\s|$)/.test(args)) await iniciarAgenteProyecto(args.slice("--mock".length).trim());
