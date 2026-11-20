@@ -10,18 +10,50 @@ globalThis.fetch = async (input, init) => {
     return Response.json({ data: [{ id: "gpt-4.1-mini" }, { id: "gpt-5-mini" }] });
   }
   if (solicitud.url !== "https://api.openai.com/v1/responses") throw new Error("Ruta fuera del fixture");
-  const { model, input: contexto, stream } = await solicitud.json();
+  const { model, input: contexto, stream, tools } = await solicitud.json();
   const usage = { input_tokens: 8, output_tokens: 2, total_tokens: 10 };
+  const catalogo = new Set(tools?.map(({ name }) => name));
+  const operacion = catalogo.has("comprobar") ? "comprobar" :
+    catalogo.has("inspeccionar_enlace") ? "inspeccionar_enlace" :
+      catalogo.has("observar_entorno") ? "observar_entorno" : "consultar_adaptadores";
   const llamada = { type: "function_call", id: "fc_fixture", call_id: "call_fixture",
-    name: "observar_entorno", arguments: "{}", status: "completed" };
+    name: operacion, arguments: operacion === "inspeccionar_enlace" ? '{"interfaz":"i1"}' : "{}", status: "completed" };
   if (!stream) return Response.json({ status: "completed", model, usage, output: [llamada] });
-  const recibio = contexto.some((item) => item.type === "function_call_output");
+  const recibio = contexto.findLast((item) => item.type === "function_call_output");
+  const demoraSolicitud = Number(process.env.HARWIFF_FIXTURE_DELAY_REQUEST);
+  if (!recibio && operacion !== "comprobar" && demoraSolicitud) {
+    await esperar(demoraSolicitud, undefined, {signal: solicitud.signal});
+  }
+  const mensajeActual = contexto.findLast((item) => item.role === "user")?.content;
+  const identidad = !recibio && /como te llamas\?/.test(JSON.stringify(mensajeActual ?? ""));
+  const explicacion = !catalogo.size && /Pregunta actual: ohh y eso que dice\?/.test(JSON.stringify(mensajeActual ?? ""));
   const pausa = Number(process.env.HARWIFF_FIXTURE_STREAM_DELAY);
   const seguimiento = contexto.some((item) => JSON.stringify(item).includes("Confirma lo que guardaste"));
   const fase = seguimiento ? "seguimiento" : "proveedor";
   const parcial = `Texto parcial del ${fase}.`;
-  const texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
-  const item = recibio ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
+  let texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
+  if (identidad) texto = JSON.stringify({version: 1, reply: "Me llamo Harwiff."});
+  if (explicacion) {
+    const ref = JSON.stringify(mensajeActual).match(/\d{13}-[0-9a-f-]{36}#\d+/)?.[0];
+    texto = JSON.stringify({version: 1, claims: [{kind: "inference", refs: [ref],
+      text: "Eso te dice por dónde intentaría salir el tráfico.", limitation: "Describe la lectura anterior."}]});
+  }
+  if (recibio && operacion === "comprobar") texto = JSON.stringify({ resultado: recibio.output });
+  if (recibio && operacion === "inspeccionar_enlace") {
+    const entrada = JSON.stringify(contexto);
+    if (entrada.includes("Sigue con la pregunta anterior") &&
+        (!entrada.includes("sin valor probatorio") || !entrada.includes("Resume el enlace original"))) {
+      throw new Error("La conversación perdió la pregunta previa.");
+    }
+    const { ref } = JSON.parse(recibio.output).observations.find(({ field }) => field === "ipv4_route");
+    texto = JSON.stringify({ version: 1, claims: [{ kind: "fact", refs: [ref] }] });
+  }
+  if (recibio && operacion === "consultar_adaptadores") {
+    const radios = JSON.parse(recibio.output).observations?.find(({ field }) => field === "radio_count");
+    texto = JSON.stringify({ version: 1, claims: [typeof radios?.value === "number"
+      ? { kind: "fact", refs: [radios.ref] } : { kind: "unknown", field: "radio_count" }] });
+  }
+  const item = recibio || identidad || explicacion ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
     content: [{ type: "output_text", text: texto, annotations: [] }] } : llamada;
   const respuesta = { id: recibio ? "resp_fixture_2" : "resp_fixture_1", model };
   const eventos = [

@@ -305,6 +305,13 @@ def inventario():
     return {"adaptadores": dispositivos}
 
 
+def coincide_alcance(asociacion, scope):
+    bssid, ssid, canal, _ = asociacion
+    return ((not scope["allowedBssids"] or bssid in scope["allowedBssids"])
+            and (not scope["allowedSsids"] or ssid in [nombre.encode("utf-8") for nombre in scope["allowedSsids"]])
+            and (not scope["allowedChannels"] or canal in scope["allowedChannels"]))
+
+
 def asociacion_autorizada(interfaz, scope):
     try:
         asociacion = asociacion_actual(interfaz)
@@ -312,10 +319,7 @@ def asociacion_autorizada(interfaz, scope):
         raise DiagnosticoBloqueado("No se pudo verificar la asociación Wi-Fi actual.") from error
     if asociacion is None:
         raise DiagnosticoBloqueado("El adaptador no tiene una asociación Wi-Fi verificable.")
-    bssid, ssid, canal, _ = asociacion
-    if ((scope["allowedBssids"] and bssid not in scope["allowedBssids"])
-            or (scope["allowedSsids"] and ssid not in [nombre.encode("utf-8") for nombre in scope["allowedSsids"]])
-            or (scope["allowedChannels"] and canal not in scope["allowedChannels"])):
+    if not coincide_alcance(asociacion, scope):
         raise DiagnosticoBloqueado("La asociación Wi-Fi actual está fuera del alcance autorizado.")
     return asociacion
 
@@ -349,7 +353,7 @@ def diagnostico_fisico(identificador, alcance, ejecucion, puerto):
 @contextmanager
 def sandbox_administrado(puerto_pedido=0):
     if not docker("info", timeout=10):
-        raise RuntimeError("Docker no está accesible para Harwiff. Prueba /diagnostico demo.")
+        raise RuntimeError("Docker no está accesible para Harwiff. Usa Agentes para consultar el enlace de solo lectura.")
     for imagen in (EXECD, IMAGEN):
         if not docker("image", "inspect", imagen, timeout=10) and not docker("pull", imagen):
             raise RuntimeError("No se pudo descargar una imagen fijada de OpenSandbox.")
@@ -405,7 +409,8 @@ def sandbox_administrado(puerto_pedido=0):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operacion", choices=("adaptadores", "alcance", "preflight", "diagnostico", "demo",
-                                              "estado", "bloquear-config", "broker-mock", "adaptadores-perfil"))
+                                              "estado", "bloquear-config", "broker-mock", "adaptadores-perfil",
+                                              "broker-lectura", "vincular-inspeccion"))
     args = parser.parse_args()
     def interrumpir(_senal, _marco):
         raise KeyboardInterrupt
@@ -435,6 +440,12 @@ def main():
             elif args.operacion == "preflight":
                 resultado = preflight_detalle(entrada.get("name"), entrada.get("scope"), entrada.get("id"),
                                              entrada.get("observed"))
+            elif args.operacion in {"broker-lectura", "vincular-inspeccion"}:
+                from broker_lectura import ejecutar_lectura, vincular
+                if args.operacion == "broker-lectura":
+                    resultado = ejecutar_lectura(entrada, normalizar_alcance, coincide_alcance)
+                else:
+                    resultado = vincular(entrada)
             elif args.operacion == "broker-mock":
                 resultado = ejecutar_mock(entrada, normalizar_alcance)
             else:

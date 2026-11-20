@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { conBloqueoProyecto } from "../entorno.mjs";
 import { buildScopeSnapshot, guardarAlcance, idsAuditoria, leerAuditoria, leerControlWifi, localizarProyecto } from "../proyecto.mjs";
 
-const consola = fileURLToPath(new URL("../consola.mjs", import.meta.url));
+const consola = fileURLToPath(new URL("./fixtures/consola.mjs", import.meta.url));
 const temporal = await mkdtemp(join(tmpdir(), "harwiff-descubrir-"));
 const raiz = join(temporal, "Área de trabajo");
 const plano = join(raiz, "a legado");

@@ -7,4 +7,4 @@
 - Distingue resultados medidos, simulaciones y pendientes. No guardes credenciales, nombres de redes, direcciones ni datos de dispositivos en las notas.
 - Si solo recibiste el contexto en un chat y la carpeta no está disponible, entrega la nota Markdown para importarla. Confirma una escritura únicamente después de verificarla.
 
-Los diagnósticos administrados se ejecutan desde `harwiff >` con `/diagnostico`. Para citar una lectura, usa su ID de `/auditoria`. El agente de Harwiff consulta informes ya guardados. Usa `/diagnostico demo` para generar una muestra sintética.
+Los diagnósticos administrados se ejecutan desde `harwiff >` con `/diagnostico`. Para citar una lectura, usa su ID de `/auditoria`. En **Agentes → Nueva conversación**, Harwiff puede consultar el host en solo lectura y recuperar evidencia previa del mismo alcance.

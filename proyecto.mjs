@@ -9,6 +9,9 @@ export const CLIENTES = ["demo", "azure-foundry", "chatgpt", "opencode"];
 export const ID_SESION = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const ID_EJECUCION = /^\d{13}-[a-f0-9-]{36}$/;
 
+const NOMBRE_INTERFAZ = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,14}$/;
+const ID_ADAPTADOR = /^[a-f0-9]{20}$/;
+
 export function resumenControlWifi(control) {
   const adaptador = control?.adapter;
   const alcance = control?.scope;
@@ -65,6 +68,7 @@ export async function leerControlWifi(proyecto) {
       projectId: null,
       revision: 0,
       adapter: typeof id === "string" ? { id, name: null, mode: "sandbox" } : null,
+      inspectionAdapter: null,
       scope: { allowedBssids: [], allowedSsids: [], allowedChannels: [], maxIterations: 8 },
       preflight: null,
       snapshot: null,
@@ -76,10 +80,13 @@ export async function leerControlWifi(proyecto) {
     if (estado?.esquema !== "harwiff-control-wifi/v1" || typeof estado.projectId !== "string"
         || !["allowedBssids", "allowedSsids", "allowedChannels"].every((campo) => Array.isArray(estado.scope?.[campo]))
         || (estado.revision !== undefined && (!Number.isSafeInteger(estado.revision) || estado.revision < 0))
-        || (estado.adapter !== null && typeof estado.adapter?.id !== "string")) {
+        || (estado.adapter !== null && typeof estado.adapter?.id !== "string")
+        || (estado.inspectionAdapter != null &&
+          (typeof estado.inspectionAdapter.name !== "string" || !NOMBRE_INTERFAZ.test(estado.inspectionAdapter.name) ||
+           typeof estado.inspectionAdapter.id !== "string" || !ID_ADAPTADOR.test(estado.inspectionAdapter.id)))) {
       throw new TypeError();
     }
-    return { revision: 0, ...estado };
+    return { revision: 0, inspectionAdapter: null, ...estado };
   } catch (error) {
     if (error instanceof SyntaxError || error instanceof TypeError) {
       throw new Error("Revisa control-wifi.json. El estado Wi-Fi del proyecto tiene un formato inválido.");
@@ -156,11 +163,12 @@ export async function buildScopeSnapshot(project) {
   return (await validarScopeSnapshot(project)).snapshot;
 }
 
-export async function guardarAlcance(proyecto, datos) {
+export async function guardarAlcance(proyecto, datos, { permitirMock = true } = {}) {
   const scope = await entorno("alcance", datos);
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
-    const resultado = await validarControlWifi({ ...anterior, projectId: anterior.projectId ?? randomUUID(), scope });
+    const adapter = !permitirMock && anterior.adapter?.id === "mock" ? null : anterior.adapter;
+    const resultado = await validarControlWifi({ ...anterior, adapter, projectId: anterior.projectId ?? randomUUID(), scope });
     const estado = revisarAlcance(anterior, resultado.estado);
     const huboCambio = hashAlcance({ ...anterior, scope: estado.scope }) !== hashAlcance(anterior);
     await guardarCambioConfiguracion(proyecto.raiz, huboCambio ? ["alcance"] : [], () => guardarControlWifi(proyecto, estado));
@@ -180,9 +188,34 @@ export async function usarAdaptador(proyecto, name, id, observed) {
   });
 }
 
-export async function inspeccionarControlWifi(proyecto) {
+export async function elegirAdaptadorInspeccion(proyecto, name, observado) {
+  let seleccion = null;
+  if (name !== null) {
+    if (typeof name !== "string" || !NOMBRE_INTERFAZ.test(name)) throw new Error("Interfaz Wi-Fi inválida.");
+    const actual = await entorno("vincular-inspeccion", { name }, { tiempo: 2000, soloLectura: true });
+    if (typeof actual?.adapterId !== "string" || !ID_ADAPTADOR.test(actual.adapterId) ||
+        (observado !== undefined && observado !== actual.adapterId)) {
+      throw new Error("La interfaz Wi-Fi ya no coincide con el inventario. Actualízalo y vuelve a elegirla.");
+    }
+    seleccion = { id: actual.adapterId, name };
+  }
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
+    if (anterior.inspectionAdapter?.id === seleccion?.id && anterior.inspectionAdapter?.name === seleccion?.name) {
+      return anterior;
+    }
+    const estado = { ...anterior, projectId: anterior.projectId ?? randomUUID(), inspectionAdapter: seleccion };
+    await guardarCambioConfiguracion(proyecto.raiz, ["adaptador_inspeccion"], () => guardarControlWifi(proyecto, estado));
+    return estado;
+  });
+}
+
+export async function inspeccionarControlWifi(proyecto, { permitirMock = true } = {}) {
+  return conBloqueoProyecto(proyecto.raiz, async () => {
+    const anterior = await leerControlWifi(proyecto);
+    if (!permitirMock && anterior.adapter?.id === "mock") {
+      return { estado: { ...anterior, adapter: null, snapshot: null, preflight: null }, lockedBySession: null };
+    }
     const resultado = await validarControlWifi(anterior);
     if (anterior.projectId && JSON.stringify(resultado.estado) !== JSON.stringify(anterior)) {
       await guardarControlWifi(proyecto, resultado.estado);
@@ -244,7 +277,7 @@ export async function directorios(ruta) {
 
 export const crearIdAuditoria = () => `${Date.now()}-${randomUUID()}`;
 
-export async function auditar(proyecto, datos, trabajo, signal, detallesResultado, id = crearIdAuditoria()) {
+export async function auditar(proyecto, datos, trabajo, signal, detallesResultado, id = crearIdAuditoria(), confirmar = cerrar => cerrar()) {
   if (!ID_EJECUCION.test(id)) throw new Error("ID de auditoría inválido.");
   const raiz = join(proyecto, "auditoria", id);
   await mkdir(raiz, { recursive: true, mode: 0o700 });
@@ -257,6 +290,12 @@ export async function auditar(proyecto, datos, trabajo, signal, detallesResultad
   try {
     signal?.throwIfAborted();
     resultado = await trabajo(id);
+    await confirmar((datos = {}) => guardarJson(join(raiz, "resultado.json"), {
+      estado: "completo", decision: "autorizado", fin: new Date().toISOString(),
+      evidencia: resultado?.evidencia,
+      ...detallesResultado?.({ id, estado: "completo", resultado }),
+      ...datos,
+    }));
   } catch (error) {
     const estado = signal?.aborted ? "cancelado" : error.decision === "denegado" ? "bloqueado" : "error";
     await guardarJson(join(raiz, "resultado.json"), {
@@ -266,11 +305,6 @@ export async function auditar(proyecto, datos, trabajo, signal, detallesResultad
     });
     throw error;
   }
-  await guardarJson(join(raiz, "resultado.json"), {
-    estado: "completo", decision: "autorizado", fin: new Date().toISOString(),
-    evidencia: resultado?.evidencia,
-    ...detallesResultado?.({ id, estado: "completo", resultado }),
-  });
   return id;
 }
 
@@ -293,6 +327,7 @@ export async function idsAuditoria(proyecto) {
 const AJUSTES = new Map([
   ["proveedor", "proveedor LLM"], ["modelo", "modelo predeterminado"], ["foundry", "configuración de Foundry"],
   ["sandbox", "puerto de OpenSandbox"], ["alcance", "alcance"], ["adaptador", "adaptador"],
+  ["adaptador_inspeccion", "adaptador de Agentes"],
 ]);
 
 export async function guardarCambioConfiguracion(raiz, campos, guardar) {

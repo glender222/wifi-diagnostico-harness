@@ -16,14 +16,15 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-FUENTE = Path(__file__).resolve().parent.parent / "consola.mjs"
+FUENTE_REAL = Path(__file__).resolve().parent.parent / "consola.mjs"
+FUENTE = Path(__file__).resolve().parent / "fixtures" / "consola.mjs"
 
 
 @contextmanager
-def terminal(carpeta, env=None, destino=None, filas=28, columnas=110, ejecutable=None):
+def terminal(carpeta, env=None, destino=None, filas=28, columnas=110, ejecutable=None, fuente=FUENTE):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", filas, columnas, 0, 0))
-    comando = [str(ejecutable)] if ejecutable else ["node", str(FUENTE)]
+    comando = [str(ejecutable)] if ejecutable else ["node", str(fuente)]
     if destino is not None:
         comando.append(str(destino))
     proceso = subprocess.Popen(comando, cwd=carpeta, stdin=slave, stdout=slave, stderr=slave,
@@ -83,6 +84,15 @@ class TerminalTest(unittest.TestCase):
     def descartar_inicio(esperar, escribir):
         esperar("Abrir proyecto")
         TerminalTest.abrir_comandos(esperar, escribir)
+
+    @staticmethod
+    def abrir_agente_guardado(esperar, escribir, objetivo):
+        escribir(b"\t")
+        esperar("Abrir sesión guardada")
+        escribir(b"\x1b[B" * 2 + b"\r")
+        esperar("Sesiones de agente guardadas")
+        esperar(objetivo)
+        escribir(b"\r")
 
     def test_menus_alcance_preflight_diagnostico_y_auditoria(self):
         with tempfile.TemporaryDirectory() as raiz:
@@ -171,12 +181,13 @@ esac
                 paso(b"\r", "¿Qué quieres revisar")
                 paso(b"Revisar fixture\r", "Texto parcial del proveedor")
                 esperar("Actividad")
-                paso(b"\x1b", "Revisar fixture")
+                paso(b"\x1b", "Abrir sesión guardada")
                 paso(b"\x1b", "1 agente trabajando")
                 paso(b"\x03", "Hay trabajo en curso")
                 paso(b"\x1b", "> Agentes")
                 paso(b"\r", "Nueva conversación")
-                paso(b"\x1b[B\r", "Mensaje >")
+                paso(b"\x1b[B" * 2 + b"\r", "> Revisar fixture")
+                paso(b"\r", "Mensaje >")
                 paso(b"Conservar borrador", "Conservar borrador")
                 paso(b"\t", "Acciones del agente")
                 paso(b"\r", "Detalles de operaciones")
@@ -184,7 +195,8 @@ esac
                 paso(b"\x1b", "Detalles de operaciones")
                 paso(b"\x1b", "Acciones del agente")
                 paso(b"\x1b", "Conservar borrador")
-                paso(b"\x1b", "> Revisar fixture")
+                paso(b"\x1b", "Abrir sesión guardada")
+                paso(b"\x1b[B" * 2 + b"\r", "> Revisar fixture")
                 paso(b"\r", "Conservar borrador")
 
                 escribir.redimensionar(15, 59)
@@ -195,7 +207,7 @@ esac
                 esperar("Tab acciones")
                 paso(b"\t", "Detener turno")
                 paso(b"\x1b[B" * 2 + b"\r", "Solo consulta")
-                paso(b"\x1b", "> Revisar fixture")
+                paso(b"\x1b", "Abrir sesión guardada")
                 paso(b"\x1b", "> Agentes")
                 paso(b"\x03", "\x1b[?1049l")
                 self.assertEqual(proceso.wait(timeout=8), 0)
@@ -282,9 +294,7 @@ else process.exit(1);
                 escribir(b"/agente Revisar el fixture autorizado\r")
                 esperar("Sesión iniciada")
                 [agente] = (proyecto / ".harwiff/agentes").iterdir()
-                escribir(b"\t")
-                esperar(f"[{agente.name}")
-                escribir(b"\r")
+                self.abrir_agente_guardado(esperar, escribir, "Revisar el fixture autorizado")
                 esperar("ALLOWED")
                 esperar("Iteración 2")
                 esperar("Tokens OpenAI · entrada 16, salida 4, total 20")
@@ -318,9 +328,7 @@ else process.exit(1);
                 escribir(b"/agente Sesion original\r")
                 esperar("Sesión iniciada")
                 [original] = (proyecto / ".harwiff/agentes").iterdir()
-                escribir(b"\t")
-                esperar(f"[{original.name}")
-                escribir(b"\r")
+                self.abrir_agente_guardado(esperar, escribir, "Sesion original")
                 datos = esperar("Texto parcial del proveedor")
                 self.assertNotIn(b"Cierre del proveedor", datos)
                 escribir(b"Conserva los datos observados\rDistingue evidencia e hipotesis\r")
@@ -498,7 +506,7 @@ else:
             (base / "wifi-fixture.json").write_text(json.dumps(perfil))
             python = base / "python-fixture"
             python.write_text("""#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 if sys.argv[-1] == "adaptadores-perfil":
     print(Path("wifi-fixture.json").read_text())
@@ -517,11 +525,28 @@ elif sys.argv[-1] == "preflight":
         os.dup2(lectura, 0)
         os.close(lectura)
         os.execvp("python3", ["python3", *sys.argv[1:]])
+elif sys.argv[-1] == "vincular-inspeccion":
+    assert json.load(sys.stdin) == {"name": "wlanlab"}
+    adapter_id = "c" * 20 if Path("adaptador-sustituido").exists() else "a" * 20
+    identity = "d" * 64 if Path("interfaz-recreada").exists() else "b" * 64
+    print(json.dumps({"identity": identity, "adapterId": adapter_id}))
+elif sys.argv[-1] == "broker-lectura":
+    entrada = json.load(sys.stdin)
+    assert entrada["network"] is None
+    assert entrada["binding"]["identity"] == ("d" if Path("interfaz-recreada").exists() else "b") * 64
+    assert entrada["operation"] == "inspeccionar_enlace"
+    time.sleep(0.4)
+    print(json.dumps({"version": 1, "origin": "host_readonly", "status": "ok", "reasons": [],
+                      "observations": [{"subject": "p1", "field": "ipv4_route", "source": "ip",
+                                        "scope": "host", "value": "direct"},
+                                       {"subject": "p1", "field": "ipv6_route", "source": "ip",
+                                        "scope": "host", "value": "none_observed"}]}))
 else:
     os.execvp("python3", ["python3", *sys.argv[1:]])
 """)
             python.chmod(0o700)
-            env = {**self.entorno_local(), "WIFI_PYTHON": str(python)}
+            env = {**self.entorno_openai(), "WIFI_PYTHON": str(python),
+                   "HARWIFF_LLM_PROVIDER": "openai", "HARWIFF_LLM_MODEL": "gpt-4.1-mini"}
             with terminal(base, env, filas=18, columnas=105) as (proceso, esperar, escribir):
                 self.configurar_sesion_mock(esperar, escribir)
                 control = base / "prueba/.harwiff/control-wifi.json"
@@ -529,8 +554,22 @@ else:
                 escribir(b"/adaptador\r")
                 esperar("Conexión principal")
                 escribir(b"\r")
-                esperar("Ver restricciones y motivos")
+                esperar("→ Seleccionar para Agentes")
                 escribir(b"\x1b[B")
+                esperar("→ Inspeccionar en solo lectura")
+                escribir(b"\r")
+                esperar("Solo datos del host")
+                escribir(b"\r")
+                salida = esperar("Ruta por defecto IPv4 observada")
+                self.assertNotIn("¿Qué quieres revisar?".encode(), salida)
+                escribir(b"\x1b")
+                esperar("Hacer otra pregunta")
+                escribir(b"\x1b")
+                esperar("Harwiff / Adaptadores")
+                self.assertEqual(control.read_bytes(), previo)
+                escribir(b"\r")
+                esperar("Ver restricciones y motivos")
+                escribir(b"\x1b[B" * 3)
                 esperar("→ Ver capacidades completas")
                 escribir(b"\x1b[B")
                 esperar("→ Ver restricciones y motivos")
@@ -539,17 +578,208 @@ else:
                 escribir(b"\x1b")
                 esperar("Harwiff / Adaptadores")
                 escribir(b"\r")
-                esperar("Usar este adaptador")
+                esperar("Restringido por la ruta principal")
+                escribir(b"\x1b[B" * 2)
+                esperar("→ Usar para diagnóstico físico")
                 escribir(b"\r")
                 esperar("La interfaz cambió.")
                 self.assertEqual(control.read_bytes(), previo)
+                escribir(b"/adaptador\r")
+                esperar("Harwiff / Adaptadores")
+                escribir(b"\r")
+                esperar("→ Seleccionar para Agentes")
+                escribir(b"\r")
+                esperar("Adaptador de Agentes guardado · wlanlab")
+                original = json.loads(previo)
+                con_preferencia = json.loads(control.read_text())
+                self.assertEqual(con_preferencia.pop("inspectionAdapter"), {"id": "a" * 20, "name": "wlanlab"})
+                original.pop("inspectionAdapter", None)
+                self.assertEqual(con_preferencia, original)
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
+
+            (base / "interfaz-recreada").touch()
+            for i in range(12):
+                sesion = control.parent / "agentes" / f"fixture-{i:02}"
+                sesion.mkdir(parents=True)
+                (sesion / "sesion.json").write_text(json.dumps({
+                    "modo": "demo", "iniciado": True, "objetivo": f"Sesión anterior {i}",
+                }))
+            with terminal(base, env, destino="prueba", filas=16, columnas=60) as (_, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("> Nueva inspección con wlanlab")
+                esperar("Abrir sesión guardada")
+                escribir(b"\x1b")
+                esperar("> Agentes")
+                escribir(b"/")
+                esperar("Tab Agentes")
+                escribir(b"\x7f\t")
+                esperar("→ Nueva inspección con wlanlab")
+                esperar("Abrir sesión guardada")
+                escribir(b"\r")
+                esperar("¿Qué quieres revisar con el agente?")
+                escribir(b"Resume las rutas locales\r")
+                esperar("Solo datos del host")
+                escribir(b"\r")
+                esperar("Ruta por defecto IPv4 observada")
+                escribir(b"\x1b")
+                esperar("Hacer otra pregunta")
+                escribir(b"\x1b")
+                esperar("→ Nueva inspección con wlanlab")
+                escribir(b"\x1b")
+                esperar("harwiff >")
+                escribir(b"/agente\r")
+                esperar("→ Nueva inspección con wlanlab")
+
+            # El recorrido de producción usa el editor de chat y conserva el historial al reiniciar.
+            lento = {**env, "HARWIFF_FIXTURE_DELAY_REQUEST": "450", "NO_COLOR": "1"}
+            with terminal(base, lento, destino="prueba", filas=16, columnas=60, fuente=FUENTE_REAL) as (app, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                pantalla = esperar("> Nueva conversación · wlanlab")
+                self.assertNotIn(b"simulada", pantalla)
+                escribir(b"\r")
+                esperar("Mensaje >")
+                escribir(b"Resume el enlace original\r")
+                esperar("Mensaje enviado · esperando respuesta")
+                en_curso = esperar("Enlace y rutas · En curso")
+                self.assertNotIn(b"pasa por esta tarjeta", en_curso)
+                esperar("Enlace y rutas · Completado")
+                esperar("ruta por defecto observada")
+                escribir(b"\t")
+                esperar("> Herramientas")
+                escribir(b"\r")
+                esperar("Enlace y rutas")
+                escribir(b"\r")
+                esperar("Operación · inspeccionar_enlace")
+                esperar("interfaz = i1")
+                esperar("Ruta por defecto IPv4 observada")
+                escribir.redimensionar(24, 80)
+                esperar("Ruta por defecto IPv6 observada")
+                escribir(b"\x1b")
+                esperar("Completado")
+                escribir(b"\x1b")
+                esperar("Acciones del agente")
+                escribir(b"\x1b")
+                esperar("Mensaje >")
+                escribir(b"\x1b")
+                esperar("Abrir sesión guardada")
+                escribir(b"\x1b")
+                esperar("> Agentes")
+                escribir(b"\x03")
+                self.assertEqual(app.wait(timeout=5), 0)
+
+            with terminal(base, env, destino="prueba", filas=16, columnas=60, fuente=FUENTE_REAL) as (_, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("Abrir sesión guardada")
+                escribir(b"\x1b[B\r")
+                sesiones = esperar("Resume el enlace original")
+                self.assertNotIn("Sesión anterior".encode(), sesiones)
+                escribir(b"\r")
+                esperar("ruta por defecto observada")
+                escribir(b"ohh y eso que dice?\r")
+                captura = esperar("por dónde intentaría salir")
+                self.assertNotIn("Enlace y rutas · En curso".encode(), captura)
+                [chat] = [d for d in (control.parent / "agentes").iterdir() if not d.name.startswith("fixture-")]
+                limite = time.monotonic() + 8
+                while len(list(chat.glob("turnos/*/resultado.json"))) < 2:
+                    self.assertLess(time.monotonic(), limite)
+                    time.sleep(0.05)
+            [chat] = [d for d in (control.parent / "agentes").iterdir() if not d.name.startswith("fixture-")]
+            turnos = sorted(chat.glob("turnos/*/resultado.json"))
+            self.assertEqual(len(turnos), 2)
+            inicial = json.loads(turnos[0].read_text())
+            self.assertIn("pasa por esta tarjeta", inicial["respuesta"])
+            self.assertIn("IPv6", inicial["respuesta"])
+            herramienta = inicial["operaciones"][0]
+            self.assertEqual(herramienta["parametros"], {"interfaz": "i1"})
+            self.assertEqual(len(herramienta["resultado"]["observaciones"]), 2)
+            self.assertTrue((control.parent / "auditoria" / herramienta["auditoria"] / "resultado.json").is_file())
+            for archivo in turnos:
+                resultado = json.loads(archivo.read_text())
+                self.assertTrue(any("Ruta por defecto IPv4 observada" in linea for linea in resultado["detalle"]))
+                registro = control.parent / "auditoria" / resultado["auditoria"] / "solicitud.json"
+                self.assertEqual(json.loads(registro.read_text())["sessionId"], chat.name)
+            explicacion = json.loads(turnos[1].read_text())
+            self.assertIn("Eso te dice por dónde", explicacion["respuesta"])
+            self.assertEqual(explicacion["operaciones"], [])
+
+            denegado = subprocess.run(["node", str(FUENTE_REAL), str(base / "prueba")], cwd=base, env=env,
+                                      input="/adaptador listar\n/agente --mock prueba\n/diagnostico demo\n/salir\n",
+                                      text=True, capture_output=True, timeout=15)
+            self.assertEqual(denegado.returncode, 1)
+            self.assertNotIn("mock", denegado.stdout)
+            self.assertIn("Usa /agente <objetivo>", denegado.stderr)
+
+            def ejecutar_objetivo():
+                return subprocess.run(["node", str(FUENTE), str(base / "prueba")], cwd=base, env=env,
+                                      input="/agente Resume las rutas locales\n/salir\n", text=True,
+                                      capture_output=True, timeout=15)
+
+            resultado = ejecutar_objetivo()
+            self.assertEqual(resultado.returncode, 0, resultado.stderr)
+            self.assertIn("Ruta por defecto IPv4 observada", resultado.stdout)
+            (base / "adaptador-sustituido").touch()
+            resultado = ejecutar_objetivo()
+            self.assertEqual(resultado.returncode, 1)
+            self.assertIn("La interfaz guardada para Agentes cambió", resultado.stderr)
 
     def entorno_openai(self, pausa="0"):
         preload = (Path(__file__).parent / "fixtures" / "connect-openai.mjs").resolve().as_uri()
         return {**self.entorno_local(), "OPENAI_API_KEY": "sk-fixture-harwiff-terminal",
                 "NODE_OPTIONS": "--import=" + preload, "HARWIFF_FIXTURE_STREAM_DELAY": pausa}
+
+    def test_conversacion_responde_sin_inspeccionar(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            env = {**self.entorno_openai(), "HARWIFF_LLM_PROVIDER": "openai", "HARWIFF_LLM_MODEL": "gpt-4.1-mini"}
+            subprocess.run(["node", FUENTE_REAL], cwd=raiz, env=env, input=b"/init\n/salir\n",
+                           check=True, capture_output=True)
+            with terminal(raiz, env, filas=16, columnas=60, fuente=FUENTE_REAL) as (_, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("Nueva conversación")
+                escribir(b"\r")
+                esperar("Mensaje >")
+                escribir(b"como te llamas?\r")
+                captura = esperar("Agente  Me llamo Harwiff.")
+                self.assertNotIn("Inspección parcial".encode(), captura)
+                datos = Path(raiz) / ".harwiff"
+                [resultado] = (datos / "agentes").glob("*/turnos/*/resultado.json")
+                guardado = json.loads(resultado.read_text())
+                self.assertEqual(guardado["respuesta"], "Me llamo Harwiff.")
+                auditoria = json.loads((datos / "auditoria" / guardado["auditoria"] / "resultado.json").read_text())
+                self.assertEqual(auditoria["conclusion"]["metricas"]["intentos"], 0)
+                self.assertEqual(auditoria["conclusion"]["metricas"]["solicitudes"], 1)
+
+    def test_chat_conserva_borrador_y_cancela_desde_editor(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            env = {**self.entorno_openai(), "HARWIFF_LLM_PROVIDER": "openai", "HARWIFF_LLM_MODEL": "gpt-4.1-mini",
+                   "HARWIFF_FIXTURE_DELAY_REQUEST": "1800", "NO_COLOR": "1"}
+            subprocess.run(["node", FUENTE_REAL], cwd=raiz, env=env, input=b"/init\n/salir\n",
+                           check=True, capture_output=True)
+            with terminal(raiz, env, filas=16, columnas=60, fuente=FUENTE_REAL) as (app, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("Nueva conversación")
+                escribir(b"\r")
+                esperar("Mensaje >")
+                escribir(b"como te llamas?\r")
+                esperar("Mensaje enviado · esperando respuesta")
+                escribir(b"Conservar mi borrador\r")
+                captura = esperar("Borrador conservado")
+                self.assertIn(b"Conservar mi borrador", captura)
+                escribir(b"\x03")
+                esperar("Turno cancelado.")
+                self.assertIsNone(app.poll())
+                escribir(b"!")
+                esperar("Conservar mi borrador!")
+                datos = Path(raiz) / ".harwiff"
+                [resultado] = (datos / "agentes").glob("*/turnos/*/resultado.json")
+                guardado = json.loads(resultado.read_text())
+                self.assertEqual(guardado["estado"], "cancelado")
+                self.assertEqual(guardado["usuario"]["content"], "como te llamas?")
 
     def test_sesion_mock_detach_continua_y_reabre(self):
         with tempfile.TemporaryDirectory() as raiz:
@@ -561,9 +791,7 @@ else:
                 escribir(b"/agente Revisar fixture\r")
                 esperar("Sesión iniciada")
                 [sesion] = (proyecto / ".harwiff/agentes").iterdir()
-                escribir(b"\t")
-                esperar(f"[{sesion.name}")
-                escribir(b"\r")
+                self.abrir_agente_guardado(esperar, escribir, "Revisar fixture")
                 esperar(f"agente/{sesion.name} >")
                 escribir(b"\x1b")
                 esperar("harwiff >")
@@ -575,9 +803,7 @@ else:
             with terminal(proyecto, self.entorno_openai(pausa="1600")) as (proceso, esperar, escribir):
                 self.abrir_comandos(esperar, escribir)
                 esperar(f"{sesion.name} · completed")
-                escribir(b"\t")
-                esperar(f"[{sesion.name}")
-                escribir(b"\r")
+                self.abrir_agente_guardado(esperar, escribir, "Revisar fixture")
                 esperar("Sesión completada.")
                 escribir(b"/salir\r")
                 esperar("harwiff >")
@@ -592,9 +818,7 @@ else:
             escribir(b"/agente Revisar fixture\r")
             esperar("Sesión iniciada")
             [sesion] = (Path(raiz) / "prueba" / ".harwiff/agentes").iterdir()
-            escribir(b"\t")
-            esperar(f"[{sesion.name}")
-            escribir(b"\r")
+            self.abrir_agente_guardado(esperar, escribir, "Revisar fixture")
             esperar(f"agente/{sesion.name} >")
             escribir(b"/detener\r")
             esperar("Sesión cancelada.")
@@ -785,7 +1009,9 @@ else:
             escribir(b"\x1b")
             esperar("harwiff >")
             escribir(b"\t")
-            esperar(f"[{sesion.name}")
+            esperar("Abrir sesión guardada")
+            escribir(b"\x1b")
+            esperar("harwiff >")
             escribir(b"/")
             esperar("Ejecutar en OpenSandbox")
             escribir(b"salir\r")

@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 
 import { ejecutarPi, guardarJson, modeloFoundry, MODELO_DEMO } from "./bucle.mjs";
 import { contextoHistorico, leerHistorial, leerResultadoAuditado, recuperarTurno, resultadoTurno, textoVisible } from "./historial-agente.mjs";
-import { conBloqueoProyecto, entorno, depurarInventario } from "./entorno.mjs";
+import { conBloqueoProyecto, crearBrokerLocal, entorno, depurarInventario } from "./entorno.mjs";
 import { authorize, cargarObjetivosMock, HERRAMIENTAS, parametrosAuditables } from "./policy.mjs";
 import { MENSAJES_OPENAI, seguirOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { auditar, crearIdAuditoria, hashAlcance, ID_EJECUCION, leerControlWifi, leerJson, validarScopeSnapshot } from "./proyecto.mjs";
@@ -16,7 +16,8 @@ const DENEGACIONES_BROKER = new Set(["invalid_request", "invalid_scope", "adapte
 const TIEMPO_SESION = 120_000;
 const TIEMPO_BROKER = 5_000;
 const SOLO_CONSULTA = new Set(["cancelled", "interrupted", "timeout", "scope_changed"]);
-const brokerMock = (solicitud, signal) => entorno("broker-mock", solicitud, { signal, tiempo: TIEMPO_BROKER });
+const simulador = crearBrokerLocal("fixture");
+const brokerMock = async (solicitud, signal) => (await simulador.execute(solicitud, signal, TIEMPO_BROKER)).resultado;
 const consultarInventario = (signal) => entorno("adaptadores-perfil", undefined, { signal, tiempo: TIEMPO_BROKER });
 
 const MOTIVOS = {

@@ -9,16 +9,20 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { DEPLOYMENT_AZURE, DOMINIO_AZURE, ejecutarPi, guardarJson, leerTurnos, modeloFoundry, responder } from "./bucle.mjs";
+import { inspeccionar, interpretarInspeccion } from "./inspeccion.mjs";
+import { resolverModeloInspeccion } from "./modelo-inspeccion.mjs";
 import { crearCredencialesOpenAI } from "./credenciales-openai.mjs";
 import { conBloqueoProyecto, ejecutar, entorno } from "./entorno.mjs";
 import { detalleAdaptador, panelAdaptadores } from "./panel-adaptadores.mjs";
 import {
-  ID_SESION, auditar, descubrirProyectos, directorios, guardarAlcance, guardarCambioConfiguracion, guardarInforme, idsAuditoria,
+  ID_SESION, auditar, descubrirProyectos, directorios, elegirAdaptadorInspeccion, guardarAlcance, guardarCambioConfiguracion, guardarInforme, hashAlcance, idsAuditoria,
   informesAgente, inspeccionarControlWifi, leerActividadProyecto, leerAuditoria, leerControlWifi, leerJson, localizarProyecto,
   resumenControlWifi, usarAdaptador,
 } from "./proyecto.mjs";
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { cargarSesionAutonoma, enviarMensajeAgente, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
+import { bloqueOperacion, cargarConversacionInspeccion, crearConversacionInspeccion, detalleOperacionInspeccion,
+  estadoOperacion, guardarTurnoConversacion } from "./sesion-inspeccion.mjs";
 
 import paquete from "./package.json" with { type: "json" };
 
@@ -48,10 +52,10 @@ const comandos = {
   "/init": "Inicializar Harwiff en la carpeta actual",
   "/proyecto": "Crear o abrir un proyecto",
   "/proyectos": "Listar y abrir proyectos de una ruta",
-  "/adaptador": "Consultar inventario y elegir adaptador",
-  "/diagnostico": "Ejecutar en OpenSandbox o usar /diagnostico demo",
+  "/adaptador": "Inventario · /adaptador agentes <interfaz|--quitar>",
+  "/diagnostico": "Ejecutar en OpenSandbox · solo lectura",
   "/alcance": "Definir o ver el alcance autorizado",
-  "/agente": "Iniciar una sesión sobre el escenario mock",
+  "/agente": "Abrir Agentes o iniciar una conversación · --inspeccion [opciones] -- objetivo",
   "/auditoria": "Listar ejecuciones o ver una por ID",
   "/config": "Ver la configuración del proyecto",
   "/model": "Elegir el modelo para sesiones nuevas",
@@ -170,7 +174,7 @@ function errorBloqueado(motivo) {
   return Object.assign(new Error(motivo), { decision: "denegado", publico: motivo });
 }
 
-async function aplicar(destino) {
+async function aplicar(destino, fixtures) {
   const credenciales = crearCredencialesOpenAI();
   const verificaciones = new Map();
   const ocultar = (texto) => {
@@ -194,6 +198,7 @@ async function aplicar(destino) {
   let sesion;
   let cerrando = false;
   let diagnosticoPendiente;
+  let inspeccionPendiente;
   let carpetaParaInicializar;
   let adaptadorAusente;
   const objetivosPendientes = new Map();
@@ -225,13 +230,17 @@ async function aplicar(destino) {
     return { proveedor: etiquetaProveedor(proveedor), modelo: proveedor ? modelo || "pendiente" : undefined };
   }
   function hayTrabajo() {
-    return Boolean(diagnosticoPendiente) || [...agentes.values()].some((item) => item.trabajo || envios.has(item));
+    return Boolean(diagnosticoPendiente || inspeccionPendiente) || [...agentes.values()].some((item) => item.trabajo || envios.has(item));
+  }
+
+  function controlVisible(estado) {
+    return !fixtures && estado.adapter?.id === "mock" ? { ...estado, adapter: null, snapshot: null, preflight: null } : estado;
   }
 
   function adaptadorVisible() {
     const adaptador = controlWifi?.adapter;
     if (!adaptador) return "Pendiente";
-    if (adaptador.id === "mock") return "mock (simulado)";
+    if (adaptador.id === "mock") return fixtures ? "mock (simulado)" : "Pendiente";
     return (adaptador.name ?? "Adaptador guardado") + (adaptador.id === adaptadorAusente ? " (desconectado)" : "");
   }
 
@@ -259,9 +268,9 @@ async function aplicar(destino) {
       { value: "salir", label: "Salir" },
     ];
     return [
-      { value: "agentes", label: "Agentes" },
+      { value: "agentes", label: "Agentes", description: controlWifi?.inspectionAdapter?.name },
       { value: "diagnostico", label: "Diagnóstico" },
-      { value: "adaptador", label: "Adaptadores", description: adaptadorVisible() },
+      { value: "adaptador", label: "Adaptadores", description: controlWifi?.inspectionAdapter ? undefined : adaptadorVisible() },
       { value: "alcance", label: "Alcance", description: resumenAlcance() },
       { value: "ajustes", label: "Modelo y ajustes", description: llmProyecto().modelo ?? "Pendiente" },
       { value: "auditoria", label: "Auditoría" },
@@ -273,8 +282,10 @@ async function aplicar(destino) {
 
   function resumenPantalla() {
     if (agente) return [
-      (agente.autonoma || agente.modo === "demo") && "Simulado",
-      agente.historialPendiente ? "Cargando historial" : estadoAgente(agente),
+      agente.inspeccion ? `${agente.adaptador?.name ?? "Inventario del host"} · Solo lectura`
+        : (agente.autonoma || agente.modo === "demo") && "Simulado",
+      agente.permisoRed && "Asociación autorizada para el próximo mensaje",
+      !agente.inspeccion && (agente.historialPendiente ? "Cargando historial" : estadoAgente(agente)),
       agente.soloConsulta && "Solo consulta",
       agente.modelId,
     ].filter(Boolean).join(" | ");
@@ -291,7 +302,11 @@ async function aplicar(destino) {
       agente: agente?.id, agentes: [...agentes.values()].filter((item) => item.iniciado),
       mensajes: agente?.autonoma ? agente.avisos ?? [] : agente ? agente.mensajes : mensajes,
       transcript: agente?.transcript, ...(config && llmProyecto()),
-      autonoma: agente?.autonoma, soloConsulta: agente?.soloConsulta, comandos: disponibles(proyecto, agente),
+      autonoma: agente?.autonoma, inspeccion: agente?.inspeccion, soloConsulta: agente?.soloConsulta,
+      interfazAgente: agente?.inspeccion ? agente.adaptador?.name ?? "Inventario del host" : undefined,
+      respondiendo: Boolean(agente?.inspeccion && agente.trabajo),
+      progresoChat: agente?.inspeccion ? (agente.historialPendiente ? "Cargando historial…" : agente.faseTurno) : undefined,
+      comandos: disponibles(proyecto, agente),
       controlWifi, menu: menuPrincipal(), estadoResumen: seguro(ocultar(resumenPantalla())),
       actividad: actividadAgente(agente),
       promptEntorno: PROMPT_ENTORNO,
@@ -324,6 +339,7 @@ async function aplicar(destino) {
     if (cerrando) return;
     cerrando = true;
     diagnosticoPendiente?.abort();
+    inspeccionPendiente?.abort();
     for (const item of agentes.values()) item.controlador?.abort();
     interfaz?.cerrar();
     lector?.close();
@@ -364,9 +380,17 @@ async function aplicar(destino) {
           const item = agentes.get(id);
           void enfocar(id).catch((error) => mostrar(`Error: ${error.message}`, item));
         },
-        enviar(id, texto) {
+        detener(id) {
+          detenerTurno(agentes.get(id));
+        },
+        enviar(id, texto, alAdmitir) {
           const item = agentes.get(id);
-          if (item?.autonoma) void enviarConversacion(item, texto).catch((error) => mostrar(`Error: ${error.message}`, item));
+          if (!item?.autonoma) return false;
+          const envio = item.inspeccion ? enviarInspeccion(item, texto, alAdmitir) : enviarConversacion(item, texto);
+          return envio.catch((error) => {
+            mostrar(`Error: ${error.message}`, item);
+            return false;
+          });
         },
       });
       actualizar();
@@ -738,7 +762,7 @@ async function aplicar(destino) {
       if (!ubicacion) throw new Error("El proyecto inicializado ya no está disponible.");
     }
     const { raiz, archivo, config: nuevaConfig } = ubicacion;
-    const nuevoControl = await leerControlWifi(ubicacion);
+    const nuevoControl = controlVisible(await leerControlWifi(ubicacion));
 
     const nuevaCarpetaAgentes = join(raiz, "agentes");
     const nuevosAgentes = new Map();
@@ -792,6 +816,8 @@ async function aplicar(destino) {
       if (error.code === "ENOENT") return undefined;
       throw error;
     });
+    const inspeccion = await cargarConversacionInspeccion(dir, datos, { soloResumen });
+    if (inspeccion || !fixtures) return inspeccion;
     const autonoma = await cargarSesionAutonoma(dir, datos, { soloResumen });
     if (autonoma) return autonoma.modo === "demo" ? { ...autonoma, soloConsulta: true } : autonoma;
     if (!datos || !["demo", "azure-foundry"].includes(datos.modo)) return;
@@ -826,6 +852,221 @@ async function aplicar(destino) {
     if (!item) throw new Error("Usa /agente <objetivo> para iniciar una sesión.");
     await enfocar(item.id);
     if (!tty) for (const mensaje of item.mensajes.slice(-12)) salida(mensaje);
+  }
+
+  async function ejecutarInspeccion(opciones, cancelacion) {
+    if (inspeccionPendiente) throw new Error("Ya hay una inspección en curso.");
+    const controlador = new AbortController();
+    inspeccionPendiente = controlador;
+    try {
+      config = await leerJson(ruta);
+      const proveedor = process.env.HARWIFF_LLM_PROVIDER ?? config.llm?.inspeccion?.provider ?? config.llm?.proveedor;
+      const conexionOpenAI = proveedor === "openai" ? await credenciales.resolver() : undefined;
+      const conexion = await resolverModeloInspeccion(config, conexionOpenAI?.entorno);
+      const signal = cancelacion ? AbortSignal.any([controlador.signal, cancelacion]) : controlador.signal;
+      return await inspeccionar({proyecto: proyectoWifi(), ...opciones, conexion, signal});
+    } finally {
+      inspeccionPendiente = undefined;
+    }
+  }
+
+  async function ejecutarInspeccionComando(opciones) {
+    const resultado = interfaz
+      ? await interfaz.consultar("Inspección Wi-Fi de solo lectura…", signal => ejecutarInspeccion(opciones, signal))
+      : await ejecutarInspeccion(opciones);
+    if (resultado) mostrar(textoInspeccion(resultado), null);
+  }
+
+  async function iniciarAgentePredeterminado(objetivo, enfocar = false) {
+    controlWifi = controlVisible(await leerControlWifi(proyectoWifi()));
+    const adaptador = controlWifi.inspectionAdapter;
+    if (fixtures) {
+      if (!adaptador) return iniciarAgenteProyecto(objetivo, enfocar);
+      return ejecutarInspeccionComando({ objetivo, nombre: adaptador.name, adaptadorIdEsperado: adaptador.id });
+    }
+    if (!objetivo || Buffer.byteLength(objetivo) > 2000) throw new Error("Escribe un mensaje de hasta 2.000 bytes.");
+    const item = await abrirConversacionNueva(adaptador);
+    const turno = enviarInspeccion(item, objetivo);
+    if (tty) void turno.catch((error) => mostrarError(error, item));
+    else {
+      const resultado = await turno;
+      mostrar(resultado.respuesta, null);
+      if (resultado.estado !== "completo") throw new Error(resultado.respuesta);
+    }
+  }
+
+  async function abrirConversacionNueva(adaptador) {
+    const item = await crearConversacionInspeccion(proyecto, adaptador);
+    agentes.set(item.id, item);
+    await enfocar(item.id);
+    return item;
+  }
+
+  function detenerTurno(item) {
+    if (!item?.controlador) return;
+    if (item.inspeccion) item.faseTurno = "Deteniendo el turno…";
+    item.controlador.abort();
+    actualizar();
+  }
+
+  async function enviarInspeccion(item, texto, alAdmitir = () => {}) {
+    if (item.trabajo) throw new Error("El agente está respondiendo. Espera o detén el turno.");
+    const controlador = new AbortController();
+    item.controlador = controlador;
+    item.estado = "trabajando";
+    item.actividad = "Respondiendo";
+    item.faseTurno = "Guardando mensaje…";
+    item.avisos = [];
+    const permisoRed = item.permisoRed;
+    item.permisoRed = undefined;
+    const operaciones = new Map();
+    const baseTranscript = item.transcript;
+    let bloqueUsuario;
+    function publicarTurno() {
+      item.transcript = [...baseTranscript, bloqueUsuario, ...[...operaciones.values()]
+        .map(operacion => bloqueOperacion(bloqueUsuario.turno, operacion))];
+      actualizar();
+    }
+    function cerrarOperaciones(estado) {
+      return [...operaciones.values()].map(operacion => operacion.estado === "running" ? {...operacion, estado} : operacion);
+    }
+    const trabajo = guardarTurnoConversacion(item, texto, async (contextoConversacion) => {
+      try {
+        controlador.signal.throwIfAborted();
+        const resultado = await ejecutarInspeccion({
+          objetivo: texto, contextoConversacion, idConversacion: item.id,
+          nombre: item.adaptador?.name, adaptadorIdEsperado: item.adaptador?.id,
+          red: Boolean(permisoRed), permisoRed, historial: true,
+          alProgreso(fase) {
+            if (controlador.signal.aborted) return;
+            item.faseTurno = fase === "esperando" ? "Mensaje enviado · esperando respuesta…" : "Preparando la respuesta…";
+            actualizar();
+          },
+          alOperacion(operacion) {
+            operaciones.set(operacion.id, operacion);
+            if (!controlador.signal.aborted) {
+              item.faseTurno = operacion.estado !== "running" ? "Preparando la respuesta…" :
+                operacion.herramienta === "consultar_evidencia" ? "Recuperando evidencia…" : "Consultando el equipo…";
+            }
+            publicarTurno();
+          },
+        }, controlador.signal);
+        const estado = ["completed", "partial"].includes(resultado.motivo) ? "completo"
+          : resultado.motivo === "cancelled" ? "cancelado" : "error";
+        const respuesta = estado === "cancelado" ? "Turno cancelado." : resultado.respuestaConversacion ?? resultado.resumenConversacion ?? (
+          resultado.motivo === "completed" ? [...resultado.lineas, "/auditoria " + resultado.turnId].join("\n")
+            : resultado.motivo === "partial" && resultado.metricas.intentos === 0 ? resultado.lineas.join("\n")
+              : textoInspeccion(resultado));
+        return { estado, respuesta, scopeId: resultado.scopeId, auditoria: resultado.turnId,
+          detalle: resultado.detalleConversacion ?? resultado.lineas,
+          operaciones: cerrarOperaciones(estado === "cancelado" ? "cancelled" : "unavailable") };
+      } catch (error) {
+        return controlador.signal.aborted
+          ? { estado: "cancelado", respuesta: "Turno cancelado.", operaciones: cerrarOperaciones("cancelled") }
+          : { estado: "error", respuesta: seguro(ocultar(error.message)), operaciones: cerrarOperaciones("unavailable") };
+      }
+    }, ({ id, usuario }) => {
+      alAdmitir();
+      if (!controlador.signal.aborted) item.faseTurno = "Mensaje guardado · conectando con el modelo…";
+      bloqueUsuario = { id: id + "/usuario", turno: id, tipo: "mensaje", text: "Tú  " + usuario.content };
+      publicarTurno();
+    });
+    item.trabajo = trabajo;
+    actualizar();
+    try {
+      const resultado = await trabajo;
+      const guardada = await cargarAgente(agentesDir, item.id);
+      Object.assign(item, guardada);
+      item.actividad = resultado.estado === "completo" ? "Turno registrado" : resultado.estado === "error" ? "Error" : "Cancelado";
+      return resultado;
+    } finally {
+      item.controlador = undefined;
+      item.trabajo = undefined;
+      item.faseTurno = undefined;
+      item.estado = "lista";
+      actualizar();
+    }
+  }
+
+  async function menuPermisoRed(item) {
+    if (item.trabajo) throw new Error("Espera a que termine el turno.");
+    const actual = await leerControlWifi(proyectoWifi());
+    const tieneRed = item.adaptador && (actual.scope.allowedSsids.length || actual.scope.allowedBssids.length);
+    const permiso = await interfaz.elegir("Datos del próximo mensaje", [
+      { value: "host", label: "Solo datos del host" },
+      ...(tieneRed ? [{ value: "red", label: "Incluir la asociación autorizada del proyecto" }] : []),
+    ]);
+    if (!permiso) return;
+    item.permisoRed = permiso === "red" ? { revision: actual.revision, hash: hashAlcance(actual) } : undefined;
+    actualizar();
+  }
+
+  async function menuInspeccion(nombre, { adaptadorIdEsperado, pedirObjetivo = false } = {}) {
+    if (nombre === undefined) {
+      const perfil = await entorno("adaptadores-perfil", undefined, {tiempo: 15000, soloLectura: true});
+      const nombres = [...new Set(perfil.devices.flatMap(d => d.phys.flatMap(p => p.interfaces.map(i => i.ifname))))];
+      const valor = await interfaz.elegir("Inspección de solo lectura", [
+        {value: "host", label: "Inventario del host"},
+        ...nombres.map(value => ({value: "if:" + value, label: value})),
+      ], undefined, {id: "inspeccion-interfaz"});
+      if (!valor) return;
+      if (valor.startsWith("if:")) nombre = valor.slice(3);
+    }
+    let objetivo;
+    if (pedirObjetivo) {
+      objetivo = (await interfaz.preguntar("¿Qué quieres revisar con el agente?"))?.trim();
+      if (!objetivo) return;
+    }
+    const control = nombre ? await leerControlWifi(proyectoWifi()) : null;
+    let red = false;
+    if (control && (control.scope.allowedSsids.length || control.scope.allowedBssids.length)) {
+      const permiso = await interfaz.elegir("Alcance de la inspección", [
+        {value: "host", label: "Solo datos del host"},
+        {value: "red", label: "Incluir la asociación autorizada del proyecto"},
+      ], undefined, {id: "inspeccion-alcance"});
+      if (!permiso) return;
+      red = permiso === "red";
+    }
+    let contextoConversacion = [];
+    objetivo ??= red ? undefined : nombre
+      ? "Resume el estado del enlace local de la interfaz elegida y qué rutas por defecto IPv4 e IPv6 observas."
+      : "Resume qué radios Wi-Fi detectas y sus buses.";
+    while (!cerrando) {
+      objetivo ??= (await interfaz.preguntar(anterior ? "¿Qué quieres revisar a continuación?" : "¿Qué quieres revisar?"))?.trim();
+      if (!objetivo) return;
+      const resultado = await interfaz.consultar("Inspección Wi-Fi de solo lectura…",
+        signal => ejecutarInspeccion({objetivo, contextoConversacion, nombre, adaptadorIdEsperado, red, historial: true}, signal));
+      if (cerrando) return;
+      if (!resultado) {
+        const accion = await interfaz.elegir("Inspección cancelada", [
+          {value: "reintentar", label: "Reintentar"},
+          {value: "volver", label: "Volver"},
+        ], undefined, {id: "inspeccion-cancelada"});
+        if (accion !== "reintentar") return;
+        continue;
+      }
+      await interfaz.mostrarDetalle(textoInspeccion(resultado), "Inspección Wi-Fi");
+      if (!fixtures) return;
+      const siguiente = await interfaz.elegir("Inspección", [
+        {value: "otra", label: "Hacer otra pregunta"},
+        {value: "volver", label: "Terminar inspección"},
+      ], undefined, {id: "inspeccion-continuar"});
+      if (siguiente !== "otra") return;
+      contextoConversacion = [{ usuario: { content: objetivo }, respuesta: textoInspeccion(resultado), scopeId: resultado.scopeId, estado: "completo" }];
+      objetivo = undefined;
+    }
+  }
+
+  function textoInspeccion(resultado) {
+    const estado = {
+      completed: "Inspección completada",
+      partial: "Inspección parcial · se muestran los datos confirmados",
+      timeout: "Inspección sin completar · se agotó el tiempo",
+      budget_limit: "Inspección sin completar · se alcanzó el límite del turno",
+      provider_error: "Inspección sin completar · el modelo no devolvió una conclusión válida",
+      cancelled: "Inspección cancelada",
+    }[resultado.motivo] ?? "Inspección sin completar";
+    return [estado + " · /auditoria " + resultado.turnId, ...resultado.lineas].join("\n");
   }
 
   async function iniciarAgenteProyecto(objetivo, enfocarAlIniciar = false) {
@@ -970,12 +1211,12 @@ async function aplicar(destino) {
   }
 
   async function ejecutarDiagnostico(demo, cancelacion, seleccion) {
-    const actual = demo ? undefined : await leerControlWifi(proyectoWifi());
+    const actual = demo ? undefined : controlVisible(await leerControlWifi(proyectoWifi()));
     const adaptador = actual?.adapter;
     if (seleccion && (adaptador?.id !== seleccion.id || actual.revision !== seleccion.revision)) {
       throw new Error("El adaptador o el alcance cambiaron. Reabre Diagnóstico para confirmar la selección actual.");
     }
-    const esDemo = demo || adaptador?.id === "mock";
+    const esDemo = fixtures && (demo || adaptador?.id === "mock");
     diagnosticoPendiente = new AbortController();
     const signal = cancelacion ? AbortSignal.any([diagnosticoPendiente.signal, cancelacion]) : diagnosticoPendiente.signal;
     if (!interfaz || interfaz.enComandos()) mostrar(esDemo ? "Preparando muestra sintética…" : "Ejecutando diagnóstico en OpenSandbox…");
@@ -1101,8 +1342,15 @@ async function aplicar(destino) {
     }
   }
 
-  async function elegirAdaptador() {
-    controlWifi = await leerControlWifi(proyectoWifi());
+  async function cambiarAdaptadorAgentes(nombre, observado) {
+    controlWifi = controlVisible(await elegirAdaptadorInspeccion(proyectoWifi(), nombre, observado));
+    const texto = nombre ? `Adaptador de Agentes guardado · ${nombre} · solo lectura` : "Selección de Agentes eliminada";
+    mostrar(texto);
+    interfaz?.notificar(texto);
+  }
+
+  async function elegirAdaptador({ permitirInspeccion = false } = {}) {
+    controlWifi = controlVisible(await leerControlWifi(proyectoWifi()));
     actualizar();
     const guardado = controlWifi.adapter;
     await panelAdaptadores(interfaz, seguro(guardado?.name ?? (guardado ? "adaptador guardado" : "ninguno")), async (name, id, observado) => {
@@ -1119,6 +1367,9 @@ async function aplicar(destino) {
       mostrar("Adaptador seleccionado: " + controlWifi.adapter.name + " · Preflight: OK");
       interfaz.notificar("Adaptador seleccionado · Preflight correcto");
     }, {
+      mostrarMock: fixtures,
+      inspeccionar: permitirInspeccion ? menuInspeccion : undefined,
+      agentes: permitirInspeccion ? { actual: controlWifi.inspectionAdapter, elegir: cambiarAdaptadorAgentes } : undefined,
       alLeer(perfil) {
         if (!guardado || guardado.id === "mock") return;
         const presente = perfil.devices.some(({ phys }) => phys.some(({ interfaces }) =>
@@ -1151,7 +1402,7 @@ async function aplicar(destino) {
           allowedSsids: valores.ssids.split("\n").filter(Boolean),
           allowedBssids: valores.bssids.split(/\r?\n/).map((texto) => texto.trim()).filter(Boolean),
           allowedChannels: canales ? canales.split(",").map(Number) : [],
-        });
+        }, { permitirMock: fixtures });
         interfaz.notificar(controlWifi.preflight?.ok === false ? "Alcance guardado · Preflight bloqueado" : "Alcance guardado");
         actualizar();
         return;
@@ -1162,7 +1413,7 @@ async function aplicar(destino) {
   }
 
   async function menuAlcance() {
-    controlWifi = await leerControlWifi(proyectoWifi());
+    controlWifi = controlVisible(await leerControlWifi(proyectoWifi()));
     for (;;) {
       const opcion = await interfaz.elegir("Alcance autorizado · " + resumenAlcance(), [
         { value: "editar", label: "Editar alcance" },
@@ -1180,7 +1431,7 @@ async function aplicar(destino) {
         ].join("\n") : "Define los SSID o BSSID autorizados en Editar alcance.", "Alcance autorizado");
       }
       if (opcion === "revisar") {
-        const resultado = await interfaz.consultar("Comprobando preflight…", () => inspeccionarControlWifi(proyectoWifi()),
+        const resultado = await interfaz.consultar("Comprobando preflight…", verificarPreflight,
           { cancelable: false });
         if (!resultado) return;
         controlWifi = resultado.estado;
@@ -1193,16 +1444,18 @@ async function aplicar(destino) {
   }
 
   async function menuDiagnostico() {
-    controlWifi = await leerControlWifi(proyectoWifi());
+    controlWifi = controlVisible(await leerControlWifi(proyectoWifi()));
     const adaptador = controlWifi.adapter;
     const revision = controlWifi.revision;
     const opciones = [
       ...(adaptador ? [{ value: "actual", label: adaptador.id === "mock" ? "Ejecutar en modo simulado" : "Ejecutar en modo físico",
         description: adaptadorVisible() }] : [{ value: "adaptador", label: "Elegir adaptador" }]),
-      { value: "demo", label: "Generar muestra sintética" },
+      ...(fixtures ? [{ value: "demo", label: "Generar muestra sintética" }] : []),
+      { value: "inspeccion", label: fixtures ? "Inspección Wi-Fi de solo lectura" : "Consulta Wi-Fi puntual" },
     ];
     const modo = await interfaz.elegir("Diagnóstico", opciones, undefined, { id: "diagnostico" });
     if (!modo) return;
+    if (modo === "inspeccion") return menuInspeccion();
     if (modo === "adaptador") return elegirAdaptador();
     const simulado = modo === "demo" || adaptador?.id === "mock";
     const id = await interfaz.consultar(simulado ? "Generando muestra sintética…" : "Ejecutando diagnóstico físico en OpenSandbox…",
@@ -1214,6 +1467,11 @@ async function aplicar(destino) {
     interfaz.notificar("Informe guardado");
     const opcion = await interfaz.elegir("Informe guardado", [{ value: "auditoria", label: "Ver en Auditoría" }]);
     if (opcion) await detalleAuditoria(id);
+  }
+
+  async function verificarPreflight() {
+    const estado = controlVisible(await leerControlWifi(proyectoWifi()));
+    return estado.adapter ? inspeccionarControlWifi(proyectoWifi(), { permitirMock: fixtures }) : { estado, lockedBySession: null };
   }
 
   async function detalleAuditoria(id) {
@@ -1406,18 +1664,33 @@ async function aplicar(destino) {
   }
 
   async function menuAgentes() {
+    const guardadas = () => [...agentes.values()].filter(({ iniciado }) => iniciado)
+      .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
+      .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) }));
     for (;;) {
-      const haySesiones = [...agentes.values()].some(({ iniciado }) => iniciado);
-      const opcion = await interfaz.elegir(haySesiones ? "Agentes" : "Agentes · sin conversaciones", () => [
-        { value: "+nueva", label: "Nueva conversación", description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined },
-        ...[...agentes.values()].filter(({ iniciado }) => iniciado)
-          .sort((a, b) => (b.uso ?? "").localeCompare(a.uso ?? ""))
-          .map((item) => ({ value: item.id, label: item.objetivo || item.id, description: estadoAgente(item) })),
-      ], undefined, { id: "agentes" });
+      controlWifi = controlVisible(await leerControlWifi(proyectoWifi()));
+      const adaptador = controlWifi.inspectionAdapter;
+      const opcionReal = { value: "+inspeccion", label: fixtures
+        ? (adaptador ? `Nueva inspección con ${adaptador.name}` : "Nueva inspección Wi-Fi") + " · solo lectura"
+        : (adaptador ? `Nueva conversación · ${adaptador.name}` : "Nueva conversación · Inventario del host") };
+      const simulada = { value: "+nueva", label: "Nueva conversación simulada",
+        description: objetivosPendientes.has(proyecto) ? "Borrador guardado" : undefined };
+      const opciones = !fixtures ? [opcionReal] : adaptador ? [opcionReal, simulada] : [simulada, opcionReal];
+      if ([...agentes.values()].some(({ iniciado }) => iniciado)) {
+        opciones.push({ value: "+guardadas", label: "Abrir sesión guardada" });
+      }
+      const opcion = await interfaz.elegir("Agentes", opciones);
       if (!opcion) return;
       try {
-        if (opcion === "+nueva") await nuevoAgente();
-        else await enfocar(opcion);
+        if (opcion === "+inspeccion") {
+          if (fixtures) await menuInspeccion(adaptador?.name, { adaptadorIdEsperado: adaptador?.id, pedirObjetivo: true });
+          else await abrirConversacionNueva(adaptador);
+        }
+        else if (opcion === "+nueva") await nuevoAgente();
+        else {
+          const id = await interfaz.elegir("Sesiones de agente guardadas", guardadas, undefined, { id: "agentes/guardadas" });
+          if (id) await enfocar(id);
+        }
         if (agente) return;
       } catch (error) {
         mostrarError(error);
@@ -1434,6 +1707,7 @@ async function aplicar(destino) {
       if (!turnos.has(bloque.turno)) turnos.set(bloque.turno, []);
       turnos.get(bloque.turno).push(bloque.text);
     }
+    if (!interfaz) return mostrar([...turnos.values()].flat().join("\n") || "Todavía no hay turnos registrados.", null);
     if (!turnos.size) return interfaz.mostrarDetalle("Todavía no hay turnos registrados.", "Detalle de turnos");
     for (;;) {
       const turno = await interfaz.elegir("Detalle de turnos", [...turnos.keys()].reverse().map((value) => ({
@@ -1444,20 +1718,44 @@ async function aplicar(destino) {
     }
   }
 
+  async function detalleHerramientas() {
+    const item = agente;
+    await cargarHistorialAgente(item);
+    const herramientas = () => item.transcript.filter(bloque => bloque.tipo === "herramienta").slice(-20).reverse();
+    if (!herramientas().length) {
+      return interfaz.mostrarDetalle("Las llamadas aparecen aquí cuando el agente pide una lectura.", "Herramientas");
+    }
+    for (;;) {
+      const id = await interfaz.elegir("Herramientas", () => herramientas().map(({id, turno, operacion}) => ({
+        value: id, label: operacion.label, description: [estadoOperacion(operacion),
+          new Date(Number(turno.split("-")[0])).toLocaleTimeString()].join(" · "),
+      })), undefined, {id: "herramientas-inspeccion"});
+      if (!id) return;
+      const original = herramientas().find(bloque => bloque.id === id);
+      if (original) await interfaz.mostrarDetalle(() => {
+        const bloque = herramientas().find(bloque => bloque.id === id) ?? original;
+        return detalleOperacionInspeccion(bloque.operacion);
+      }, original.operacion.label, { compacto: true });
+    }
+  }
+
   async function menuAccionesAgente() {
     for (;;) {
       const opcion = await interfaz.elegir("Acciones del agente", () => [
-        { value: "operaciones", label: "Operaciones", description: String(agente.operaciones?.length ?? 0) },
+        ...(agente.inspeccion ? [{ value: "herramientas", label: "Herramientas" }, { value: "red", label: "Datos del próximo mensaje" }]
+          : [{ value: "operaciones", label: "Operaciones", description: String(agente.operaciones?.length ?? 0) }]),
         { value: "turnos", label: "Detalle de turnos" },
         ...(agente.controlador ? [{ value: "detener", label: "Detener turno" }] : []),
         { value: "volver", label: "Volver a Agentes" },
         { value: "ayuda", label: "Ayuda" },
       ], undefined, { id: "acciones-agente" });
       if (!opcion) return;
+      if (opcion === "herramientas") await detalleHerramientas();
+      if (opcion === "red") await menuPermisoRed(agente);
       if (opcion === "operaciones") await detalleOperacion();
       if (opcion === "turnos") await detalleTurnos();
       if (opcion === "detener") {
-        agente.controlador?.abort();
+        detenerTurno(agente);
         return;
       }
       if (opcion === "volver") {
@@ -1485,7 +1783,7 @@ async function aplicar(destino) {
       case "regresarAgentes":
         volver();
         return menuAgentes();
-      case "adaptador": return elegirAdaptador();
+      case "adaptador": return elegirAdaptador({ permitirInspeccion: true });
       case "alcance": return menuAlcance();
       case "diagnostico": return menuDiagnostico();
       case "ajustes": return menuAjustes();
@@ -1507,7 +1805,7 @@ async function aplicar(destino) {
     }
     if (texto === "/detener") {
       if (!agente?.controlador) throw new Error("No hay un turno activo en esta sesión.");
-      agente.controlador.abort();
+      detenerTurno(agente);
       return;
     }
     if (agente && texto === "/config") {
@@ -1520,7 +1818,13 @@ async function aplicar(destino) {
     }
     if (agente && !texto.startsWith("/")) {
       const item = agente;
-      if (item.autonoma) {
+      if (item.inspeccion) {
+        const resultado = await enviarInspeccion(item, texto);
+        if (!tty) {
+          mostrar(resultado.respuesta, null);
+          if (resultado.estado !== "completo") throw new Error(resultado.respuesta);
+        }
+      } else if (item.autonoma) {
         const previos = item.mensajes.length;
         await enviarConversacion(item, texto);
         if (!tty) {
@@ -1534,6 +1838,7 @@ async function aplicar(destino) {
       }
       return;
     }
+    if (agente?.inspeccion && texto === "/detalle") return detalleTurnos();
     if (agente?.autonoma && (texto === "/detalle" || texto.startsWith("/detalle "))) {
       return detalleOperacion(texto.slice("/detalle".length).trim());
     }
@@ -1592,7 +1897,7 @@ async function aplicar(destino) {
     }
     if (!proyecto) throw new Error("Usa /init para esta carpeta o /proyecto <ruta> para otra.");
     if (/^agent\s+harwiff(?:\s|$)/.test(texto)) return abrirAgente(texto);
-    if (!texto.startsWith("/")) return iniciarAgenteProyecto(texto, true);
+    if (!texto.startsWith("/")) return iniciarAgentePredeterminado(texto, true);
     switch (comando) {
       case "/model":
       case "/models":
@@ -1609,49 +1914,62 @@ async function aplicar(destino) {
         break;
       }
       case "/agente":
-        await iniciarAgenteProyecto(args);
+        if (!args && interfaz) return menuAgentes();
+        if (/^--inspeccion(?:\s|$)/.test(args)) {
+          await ejecutarInspeccionComando(interpretarInspeccion(args));
+        } else if (/^--mock(?:\s|$)/.test(args)) {
+          if (!fixtures) throw new Error("Usa /agente <objetivo> para iniciar una conversación Wi-Fi.");
+          await iniciarAgenteProyecto(args.slice("--mock".length).trim());
+        }
+        else await iniciarAgentePredeterminado(args);
         break;
       case "/adaptador": {
-        if (!args && interfaz) return elegirAdaptador();
+        if (!args && interfaz) return elegirAdaptador({ permitirInspeccion: true });
+        const seleccionAgentes = /^agentes\s+(\S+)$/.exec(args)?.[1];
+        if (seleccionAgentes) return cambiarAdaptadorAgentes(seleccionAgentes === "--quitar" ? null : seleccionAgentes);
         const detalle = /^detalle\s+(\S+)$/.exec(args)?.[1];
         if (detalle) {
+          if (!fixtures && detalle === "mock") throw new Error("Indica el nombre de una interfaz física.");
           const texto = seguro(await detalleAdaptador(detalle));
           if (interfaz) await interfaz.mostrarDetalle(texto, "Harwiff / Adaptadores · Esc vuelve a harwiff >");
           else mostrar(texto);
           break;
         }
         if (!args || args === "listar") {
-          const { adaptadores, aviso } = await entorno("adaptadores");
-          controlWifi = await leerControlWifi(proyectoWifi());
+          const inventario = await entorno("adaptadores");
+          const adaptadores = inventario.adaptadores.filter(item => fixtures || item.id !== "mock");
+          const aviso = inventario.aviso;
+          controlWifi = controlVisible(await leerControlWifi(proyectoWifi()));
           const seleccionado = adaptadores.find(({ id }) => id === controlWifi.adapter?.id);
           mostrar(resumen(adaptadores));
           if (aviso) mostrar(`Aviso: ${aviso}`);
           mostrar(`Seleccionado: ${seleccionado?.name ?? controlWifi.adapter?.name ?? "ninguno o desconectado"} · /adaptador usar <nombre>`);
+          if (controlWifi.inspectionAdapter) mostrar(`Agentes · ${controlWifi.inspectionAdapter.name} · solo lectura`);
           break;
         }
         let name = /^usar\s+(\S+)$/.exec(args)?.[1];
         let id;
         if (/^[1-9][0-9]*$/.test(args)) {
           const { adaptadores } = await entorno("adaptadores");
-          const elegido = adaptadores[Number(args) - 1];
+          const elegido = adaptadores.filter(item => fixtures || item.id !== "mock")[Number(args) - 1];
           name = elegido?.name;
           id = elegido?.id;
         }
-        if (!name) throw new Error("Usa /adaptador listar, /adaptador detalle <nombre>, /adaptador usar <nombre> o /adaptador <número>.");
+        if (!name || (!fixtures && name === "mock")) throw new Error("Usa /adaptador listar, /adaptador detalle <nombre>, /adaptador usar <nombre> o /adaptador <número>.");
         controlWifi = await usarAdaptador(proyectoWifi(), name, id);
         mostrar(`Adaptador seleccionado: ${controlWifi.adapter.name} · Preflight: OK`);
         break;
       }
       case "/alcance": {
         if (args === "ver") {
-          const { estado, lockedBySession } = await inspeccionarControlWifi(proyectoWifi());
+          const { estado, lockedBySession } = await verificarPreflight();
           controlWifi = estado;
           const adapter = estado.adapter && { name: estado.adapter.name, mode: estado.adapter.mode, lockedBySession };
           mostrar(JSON.stringify({ adapter, scope: estado.scope, snapshot: estado.snapshot, preflight: estado.preflight }, null, 2));
           break;
         }
         if (!/^set(?:\s|$)/.test(args)) throw new Error(USO_ALCANCE);
-        controlWifi = await guardarAlcance(proyectoWifi(), argumentosAlcance(args.slice(3).trim()));
+        controlWifi = await guardarAlcance(proyectoWifi(), argumentosAlcance(args.slice(3).trim()), { permitirMock: fixtures });
         mostrar("Alcance guardado.");
         if (controlWifi.preflight) {
           mostrar(controlWifi.preflight.ok ? "Preflight: OK" : controlWifi.preflight.errors.join(" "));
@@ -1708,7 +2026,7 @@ async function aplicar(destino) {
         break;
       }
       case "/diagnostico":
-        if (args && args !== "demo") throw new Error("Usa /diagnostico [demo].");
+        if (args && !(fixtures && args === "demo")) throw new Error("Usa /diagnostico o abre Agentes para conversar sobre el enlace.");
         return ejecutarDiagnostico(args === "demo");
       case "/auditoria":
         if (args) mostrar(JSON.stringify(await leerAuditoria(proyecto, args), null, 2));
@@ -1771,23 +2089,29 @@ async function aplicar(destino) {
   }
 }
 
-try {
-  const [destino, ...extra] = process.argv.slice(2);
-  if (destino === "proyectos") {
-    if (extra.length === 1 && ["--help", "-h"].includes(extra[0])) console.log(USO_LISTADO);
-    else {
-      const { resultado, json } = await listarProyectos(extra, true);
-      if (json) console.log(JSON.stringify(resultado, null, 2));
+export async function ejecutarConsola({ fixtures = false } = {}) {
+  try {
+    const [destino, ...extra] = process.argv.slice(2);
+    if (destino === "proyectos") {
+      if (extra.length === 1 && ["--help", "-h"].includes(extra[0])) console.log(USO_LISTADO);
       else {
-        console.log(seguro(textoProyectos(resultado)));
-        for (const aviso of resultado.avisos) console.error(seguro(`Aviso: ${aviso.ruta} · ${aviso.motivo}`));
+        const { resultado, json } = await listarProyectos(extra, true);
+        if (json) console.log(JSON.stringify(resultado, null, 2));
+        else {
+          console.log(seguro(textoProyectos(resultado)));
+          for (const aviso of resultado.avisos) console.error(seguro(`Aviso: ${aviso.ruta} · ${aviso.motivo}`));
+        }
       }
-    }
-  } else if (destino === "--version" && !extra.length) console.log(await versionInstalada());
-  else if (["--help", "-h"].includes(destino) && !extra.length) console.log(`Uso: harwiff [carpeta-del-proyecto]\n${USO_LISTADO}`);
-  else if (extra.length || destino?.startsWith("-")) throw new Error("Uso: harwiff [carpeta-del-proyecto]");
-  else await aplicar(destino);
-} catch (error) {
-  console.error(`Error: ${seguro(error.message)}`);
-  process.exitCode = 1;
+    } else if (destino === "--version" && !extra.length) console.log(await versionInstalada());
+    else if (["--help", "-h"].includes(destino) && !extra.length) console.log(`Uso: harwiff [carpeta-del-proyecto]\n${USO_LISTADO}`);
+    else if (extra.length || destino?.startsWith("-")) throw new Error("Uso: harwiff [carpeta-del-proyecto]");
+    else await aplicar(destino, fixtures);
+  } catch (error) {
+    console.error(`Error: ${seguro(error.message)}`);
+    process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && await realpath(process.argv[1]).catch(() => undefined) === fileURLToPath(import.meta.url)) {
+  await ejecutarConsola();
 }

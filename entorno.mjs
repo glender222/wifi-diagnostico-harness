@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 const python = process.env.WIFI_PYTHON || "python3";
 const fuente = (script) => fileURLToPath(new URL(script, import.meta.url));
 const { FOUNDRY_API_KEY, OPENAI_API_KEY, OPENSANDBOX_API_KEY, ...env } = process.env;
+const envLectura = Object.fromEntries(["PATH", "LANG", "LC_ALL", "DBUS_SYSTEM_BUS_ADDRESS"]
+  .filter(clave => process.env[clave] !== undefined).map(clave => [clave, process.env[clave]]));
 
-export function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000 } = {}) {
+export function ejecutar(script, args, { entrada = "", signal, tiempo = 480_000, soloLectura = false } = {}) {
   return new Promise((ok, fail) => {
     const proceso = execFile(python, ["-B", fuente(script), ...args],
-      { env, timeout: tiempo, signal, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) fail(new Error(stderr.trim().replace(/^Error: /, "") || "No se pudo completar la operación local."));
+      { env: soloLectura ? envLectura : env, timeout: tiempo, signal, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) fail(new Error((!soloLectura && stderr.trim().replace(/^Error: /, "")) || "No se pudo completar la operación local."));
         else ok(stdout.trim());
       });
     proceso.stdin.on("error", () => {});
@@ -25,12 +27,25 @@ export async function entorno(operacion, datos, opciones) {
   return JSON.parse(salida);
 }
 
+export function crearBrokerLocal(tipo) {
+  if (tipo !== "host_readonly" && tipo !== "fixture") throw new Error("Proveedor local desconocido.");
+  const host = tipo === "host_readonly";
+  const operacion = host ? "broker-lectura" : "broker-mock";
+  return {
+    async execute(solicitud, signal, tiempo = 5000) {
+      const resultado = await entorno(operacion, solicitud, {signal, tiempo, soloLectura: true});
+      if (host) return resultado;
+      return {version: 1, origin: tipo, status: resultado.ok ? "ok" : "denied", resultado};
+    },
+  };
+}
+
 export async function conBloqueoProyecto(raiz, tarea, mensajeOcupado = "Otra consola está actualizando el alcance. Vuelve a intentar.") {
   const directorio = await open(raiz, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     await new Promise((ok, fail) => {
       const proceso = spawn(python, ["-B", fuente("entorno.py"), "bloquear-config"], {
-        env, stdio: ["ignore", "ignore", "ignore", directorio.fd], signal: AbortSignal.timeout(5_000),
+        env: envLectura, stdio: ["ignore", "ignore", "ignore", directorio.fd], signal: AbortSignal.timeout(5_000),
       });
       proceso.once("error", () => fail(new Error("No se pudo reservar el estado Wi-Fi del proyecto.")));
       proceso.once("exit", (codigo) => {
