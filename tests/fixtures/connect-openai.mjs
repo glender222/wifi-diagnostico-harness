@@ -20,11 +20,14 @@ globalThis.fetch = async (input, init) => {
     name: operacion, arguments: operacion === "inspeccionar_enlace" ? '{"interfaz":"i1"}' : "{}", status: "completed" };
   if (!stream) return Response.json({ status: "completed", model, usage, output: [llamada] });
   const recibio = contexto.findLast((item) => item.type === "function_call_output");
+  const mensajeActual = contexto.findLast((item) => item.role === "user")?.content;
+  const identidad = !recibio && /como te llamas\?/.test(JSON.stringify(mensajeActual ?? ""));
   const pausa = Number(process.env.HARWIFF_FIXTURE_STREAM_DELAY);
   const seguimiento = contexto.some((item) => JSON.stringify(item).includes("Confirma lo que guardaste"));
   const fase = seguimiento ? "seguimiento" : "proveedor";
   const parcial = `Texto parcial del ${fase}.`;
   let texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
+  if (identidad) texto = JSON.stringify({version: 1, reply: "Me llamo Harwiff."});
   if (recibio && operacion === "comprobar") texto = JSON.stringify({ resultado: recibio.output });
   if (recibio && operacion === "inspeccionar_enlace") {
     const entrada = JSON.stringify(contexto);
@@ -40,7 +43,7 @@ globalThis.fetch = async (input, init) => {
     texto = JSON.stringify({ version: 1, claims: [typeof radios?.value === "number"
       ? { kind: "fact", refs: [radios.ref] } : { kind: "unknown", field: "radio_count" }] });
   }
-  const item = recibio ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
+  const item = recibio || identidad ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
     content: [{ type: "output_text", text: texto, annotations: [] }] } : llamada;
   const respuesta = { id: recibio ? "resp_fixture_2" : "resp_fixture_1", model };
   const eventos = [

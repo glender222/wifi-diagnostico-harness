@@ -900,7 +900,7 @@ async function aplicar(destino, fixtures) {
     const controlador = new AbortController();
     item.controlador = controlador;
     item.estado = "trabajando";
-    item.actividad = "Consultando evidencia";
+    item.actividad = "Respondiendo";
     item.avisos = [];
     const permisoRed = item.permisoRed;
     item.permisoRed = undefined;
@@ -914,8 +914,10 @@ async function aplicar(destino, fixtures) {
         }, controlador.signal);
         const estado = ["completed", "partial"].includes(resultado.motivo) ? "completo"
           : resultado.motivo === "cancelled" ? "cancelado" : "error";
-        const respuesta = resultado.motivo === "completed"
-          ? [...resultado.lineas, "/auditoria " + resultado.turnId].join("\n") : textoInspeccion(resultado);
+        const respuesta = resultado.respuestaConversacion ?? (
+          resultado.motivo === "completed" ? [...resultado.lineas, "/auditoria " + resultado.turnId].join("\n")
+            : resultado.motivo === "partial" && resultado.metricas.intentos === 0 ? resultado.lineas.join("\n")
+              : textoInspeccion(resultado));
         return { estado, respuesta, scopeId: resultado.scopeId, auditoria: resultado.turnId };
       } catch (error) {
         return controlador.signal.aborted ? { estado: "cancelado", respuesta: "Turno cancelado." }

@@ -6,7 +6,7 @@ import {createModels} from "@earendil-works/pi-ai";
 import {openaiProvider} from "@earendil-works/pi-ai/providers/openai";
 import {anthropicProvider} from "@earendil-works/pi-ai/providers/anthropic";
 import {inspeccionar, interpretarInspeccion} from "../inspeccion.mjs";
-import {leerAuditoria, idsAuditoria, guardarAlcance, elegirAdaptadorInspeccion, hashAlcance} from "../proyecto.mjs";
+import {leerAuditoria, idsAuditoria, guardarAlcance, elegirAdaptadorInspeccion, hashAlcance, crearIdAuditoria} from "../proyecto.mjs";
 import {entorno} from "../entorno.mjs";
 
 const raiz = await mkdtemp(join(tmpdir(), "harwiff-inspeccion-"));
@@ -96,6 +96,44 @@ try {
     nombre: "wlp1s0", historial: false, red: true, objetivo: "revisar",
   });
   assert.throws(() => interpretarInspeccion("--inspeccion --red-del-proyecto -- revisar"), /interfaz/);
+
+  for (const provider of [openaiProvider(), anthropicProvider()]) {
+    const capturas = [];
+    const conversacion = await inspeccionar({proyecto: {raiz}, idConversacion: crearIdAuditoria(),
+      objetivo: "como te llamas?",
+      comprobarModelo: async () => assert.fail("La conversación no necesita una prueba de herramienta."),
+      broker: async () => assert.fail("La conversación no debe consultar el inventario."),
+      conexion: conexion(provider, [payload => {
+        const texto = JSON.stringify(payload);
+        assert.match(texto, /Eres Harwiff/);
+        return {text: '{"version":1,"reply":"Me llamo Harwiff."}'};
+      }], capturas)});
+    assert.equal(conversacion.motivo, "completed");
+    assert.equal(conversacion.respuestaConversacion, "Me llamo Harwiff.");
+    assert.deepEqual(conversacion.afirmaciones, []);
+    assert.deepEqual(conversacion.lineas, []);
+    assert.equal(conversacion.metricas.intentos, 0);
+    assert.equal(capturas.length, 1);
+  }
+
+  llamadas = 0;
+  const lecturaEnChat = await inspeccionar({proyecto: {raiz}, idConversacion: crearIdAuditoria(),
+    objetivo: "¿Cuántos radios detectas en mi equipo?", broker,
+    conexion: conexion(openaiProvider(), [
+      () => ({name: "consultar_adaptadores", args: {}}),
+      ...probar,
+      () => ({text: '{"version":1,"reply":"Tu equipo tiene diez radios."}'}),
+      payload => {
+        assert.equal(payload.tool_choice, "none");
+        const {ref} = JSON.parse(ultimoResultado(payload)).observations[0];
+        return {text: JSON.stringify({version: 1, claims: [{kind: "fact", refs: [ref]}]})};
+      },
+    ])});
+  assert.equal(lecturaEnChat.motivo, "completed");
+  assert.equal(lecturaEnChat.respuestaConversacion, undefined);
+  assert.equal(llamadas, 1);
+  assert.match(lecturaEnChat.lineas[0], /Radios Wi‑Fi detectados/);
+  assert.doesNotMatch(lecturaEnChat.lineas.join("\n"), /diez/);
 
   let idHistorico;
   for (const provider of [openaiProvider(), anthropicProvider()]) {

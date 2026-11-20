@@ -696,6 +696,28 @@ else:
         return {**self.entorno_local(), "OPENAI_API_KEY": "sk-fixture-harwiff-terminal",
                 "NODE_OPTIONS": "--import=" + preload, "HARWIFF_FIXTURE_STREAM_DELAY": pausa}
 
+    def test_conversacion_responde_sin_inspeccionar(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            env = {**self.entorno_openai(), "HARWIFF_LLM_PROVIDER": "openai", "HARWIFF_LLM_MODEL": "gpt-4.1-mini"}
+            subprocess.run(["node", FUENTE_REAL], cwd=raiz, env=env, input=b"/init\n/salir\n",
+                           check=True, capture_output=True)
+            with terminal(raiz, env, filas=16, columnas=60, fuente=FUENTE_REAL) as (_, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("Nueva conversación")
+                escribir(b"\r")
+                esperar("Mensaje >")
+                escribir(b"como te llamas?\r")
+                captura = esperar("Agente  Me llamo Harwiff.")
+                self.assertNotIn("Inspección parcial".encode(), captura)
+                datos = Path(raiz) / ".harwiff"
+                [resultado] = (datos / "agentes").glob("*/turnos/*/resultado.json")
+                guardado = json.loads(resultado.read_text())
+                self.assertEqual(guardado["respuesta"], "Me llamo Harwiff.")
+                auditoria = json.loads((datos / "auditoria" / guardado["auditoria"] / "resultado.json").read_text())
+                self.assertEqual(auditoria["conclusion"]["metricas"]["intentos"], 0)
+                self.assertEqual(auditoria["conclusion"]["metricas"]["solicitudes"], 1)
+
     def test_sesion_mock_detach_continua_y_reabre(self):
         with tempfile.TemporaryDirectory() as raiz:
             proyecto = Path(raiz) / "prueba"

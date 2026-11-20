@@ -62,7 +62,7 @@ Usa **↑** y **↓** para moverte, **Enter** para abrir y **Esc** para volver. 
 
 1. En **Modelo y ajustes**, conecta un proveedor y elige el modelo.
 2. Abre **Agentes → Nueva conversación** y escribe «¿Qué rutas por defecto IPv4 e IPv6 observas?».
-3. Escribe otra pregunta en el mismo chat. Harwiff envía contexto reciente del mismo alcance y verifica las citas del turno.
+3. Puedes saludar, pedir explicaciones generales o hacer otra pregunta en el mismo chat. Harwiff envía contexto reciente del mismo alcance. Las preguntas sobre el estado de tu equipo usan lecturas verificables.
 
 **Esc** vuelve a Agentes. **Abrir sesión guardada** recupera la conversación después de reiniciar. **Tab** abre **Detalle de turnos**, **Detener turno** cuando está activo y **Datos del próximo mensaje**. Para consultar la asociación, configura una red autorizada y habilita **Incluir la asociación autorizada del proyecto** antes de enviar ese mensaje.
 

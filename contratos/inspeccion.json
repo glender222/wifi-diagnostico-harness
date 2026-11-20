@@ -99,6 +99,13 @@
       "type":"object","additionalProperties":false,"required":["kind","field"],
       "properties":{"kind":{"const":"unknown"},"field":{"$ref":"#/$defs/field"}}
     },
+    "dialogue": {
+      "type":"object","additionalProperties":false,"required":["version","reply"],
+      "properties":{
+        "version":{"const":1},
+        "reply":{"type":"string","minLength":1,"maxLength":1000}
+      }
+    },
     "conclusion": {
       "type":"object","additionalProperties":false,"required":["version","claims"],
       "properties":{
