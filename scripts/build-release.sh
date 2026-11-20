@@ -3,10 +3,10 @@ set -euo pipefail
 
 raiz="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 salida="$(realpath -m -- "${1:-$raiz/dist}")"
-version_node=22.23.5
+version_node="$(< "$raiz/.node-version")"
 archivo_node="node-v$version_node-linux-x64.tar.xz"
 sha_node=cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8
-version_python=3.12.14
+version_python="$(< "$raiz/.python-version")"
 paquete=harwiff-linux-x86_64.tar.gz
 
 if [[ "$(uname -s):$(uname -m)" != Linux:x86_64 ]]; then

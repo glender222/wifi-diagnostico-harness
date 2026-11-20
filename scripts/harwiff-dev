@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script="$(readlink -f -- "${BASH_SOURCE[0]}")"
+raiz="$(dirname -- "$(dirname -- "$script")")"
+version_node="$(< "$raiz/.node-version")"
+version_python="$(< "$raiz/.python-version")"
+python_dev="$raiz/.venv-dev/bin/python3"
+modo="${1-}"
+
+error() {
+  printf 'Harwiff dev · %s\n' "$1" >&2
+  exit 1
+}
+
+case "$modo" in
+  --dev-help)
+    cat <<'AYUDA'
+harwiff-dev [carpeta]     Ejecutar el código del checkout
+harwiff-dev --setup      Instalar las dependencias fijadas
+harwiff-dev --test       Ejecutar la suite local que usa CI
+harwiff-dev --test-host  Probar la tarjeta PCIe principal con el broker real y el LLM simulado
+harwiff-dev --version   Mostrar la versión y el commit del checkout
+AYUDA
+    exit 0
+    ;;
+  --setup|--test|--test-host)
+    [[ "$#" -eq 1 ]] || error "Usa $modo sin argumentos adicionales."
+    ;;
+esac
+
+if ! command -v node >/dev/null || [[ "$(node --version)" != "v$version_node" ]]; then
+  error "Activa Node.js $version_node en tu PATH."
+fi
+
+if [[ "$modo" == --setup ]]; then
+  command -v npm >/dev/null || error "Instala npm para el Node.js de este checkout."
+  command -v uv >/dev/null || error "Instala uv para preparar Python $version_python."
+  cd -- "$raiz"
+  npm ci --ignore-scripts
+  uv venv --no-project --allow-existing --managed-python --python "$version_python" .venv-dev
+  uv pip sync --python "$python_dev" requirements-runtime.txt
+  exit 0
+fi
+
+[[ -x "$python_dev" && -d "$raiz/node_modules" ]] ||
+  error "Desde el checkout, ejecuta ./scripts/harwiff-dev --setup."
+export WIFI_PYTHON="$python_dev" PYTHONNOUSERSITE=1
+
+case "$modo" in
+  --test|--test-host)
+    cd -- "$raiz"
+    export PATH="${python_dev%/*}:$PATH"
+    unset NODE_OPTIONS HARWIFF_TEST_HOST HARWIFF_LLM_PROVIDER HARWIFF_LLM_MODEL
+    unset OPENAI_API_KEY FOUNDRY_API_KEY FOUNDRY_HOST FOUNDRY_DEPLOYMENT OPENSANDBOX_API_KEY
+    if [[ "$modo" == --test-host ]]; then
+      HARWIFF_TEST_HOST=1 exec node tests/inspeccion.mjs
+    fi
+    for prueba in runtime inspeccion agente interactivo openai connect proyectos; do
+      node "tests/$prueba.mjs"
+    done
+    for prueba in inspeccion adaptadores terminal; do
+      "$python_dev" -B "tests/$prueba.py"
+    done
+    ;;
+  *)
+    exec node "$raiz/consola.mjs" "$@"
+    ;;
+esac

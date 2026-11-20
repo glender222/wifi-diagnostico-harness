@@ -23,7 +23,7 @@ Sustituye `wlp1s0` por la interfaz elegida. La selección de inspección admite 
 
 La inspección usa el proveedor configurado en el proyecto. Para usar otro adaptador de Pi compatible, establece `HARWIFF_LLM_PROVIDER` y `HARWIFF_LLM_MODEL` al iniciar Harwiff y configura las credenciales de ese proveedor mediante su mecanismo habitual. También puedes guardar `provider`, `model` y, cuando haga falta, `contextWindow` bajo `llm.inspeccion` en el manifiesto. El recorrido exige una comprobación sintética de tool calling antes de consultar el hardware. Los hechos se muestran con citas verificables y las interpretaciones se presentan como hipótesis con sus límites.
 
-Desde código fuente, instala `jsonschema==4.26.0` en el Python usado por Harwiff. Puedes seleccionar ese intérprete mediante `WIFI_PYTHON`. El paquete Linux lo incluye. Las pruebas de protocolos simulados se ejecutan con `node tests/inspeccion.mjs`. Para registrar corridas con un modelo real, usa `node tests/inspeccion-real.mjs <proyecto-autorizado> <interfaz>`. El runner separa el oráculo automático de la revisión humana. Agrega `--usb` para el perfil del segundo equipo.
+El paquete Linux y el entorno de desarrollo incluyen el validador Python. Consulta [Desarrollo](#desarrollo) para preparar el checkout y ejecutar las pruebas simuladas o físicas.
 
 ## Instalación
 
@@ -110,11 +110,51 @@ El lote mantiene los resultados en stdout, escribe los errores en stderr y devue
 
 ## Desarrollo
 
-Usa Node.js 22.23.5, Python 3.12 y `uv`. Para ejecutar la TUI desde el código fuente:
+Usa la rama `mvp-entorno` para trabajar con el código fuente. Activa la versión de Node.js indicada en `.node-version` y ten `uv` disponible. El lanzador prepara el Python fijado en `.python-version` dentro de `.venv-dev` e instala las dependencias de ambos lenguajes desde sus archivos de versiones.
 
 ```bash
-npm ci --ignore-scripts
-npm start
+git clone --branch mvp-entorno https://github.com/glender222/wifi-diagnostico-harness.git harwiff-mvp
+cd harwiff-mvp
+./scripts/harwiff-dev --setup
+./scripts/harwiff-dev --version
 ```
 
-`scripts/build-release.sh` prepara el instalador, el paquete y su checksum. CI ejecuta las pruebas de agente, CLI, terminal e instalación limpia en Ubuntu 22.04 y Debian 12. Las pruebas de proveedor emplean fixtures. [Acciones de GitHub](https://github.com/glender222/wifi-diagnostico-harness/actions) · [Atribuciones y licencias](THIRD_PARTY.md)
+Si ya tienes el checkout, puedes actualizarlo con `git pull --ff-only` desde `mvp-entorno`. Repite `--setup` al cambiar las versiones o dependencias. Para invocar el lanzador desde cualquier carpeta, añade un enlace desde el checkout que vas a usar.
+
+```bash
+mkdir -p "$HOME/.local/bin"
+ln -s "$PWD/scripts/harwiff-dev" "$HOME/.local/bin/harwiff-dev"
+```
+
+En cada arranque, `harwiff-dev` lee el código del checkout al que apunta. Reabre el programa después de editar. Puedes indicar la carpeta de un proyecto como argumento. Las dependencias de desarrollo, los proyectos locales `.harwiff/` y los artefactos de compilación se excluyen de Git.
+
+| Prueba | Comando desde el checkout | Verificación |
+| --- | --- | --- |
+| Suite local y de CI | `./scripts/harwiff-dev --test` | Contratos, políticas, proveedores simulados, CLI y TUI. Usa proyectos temporales y funciona sin credenciales. |
+| Wi-Fi real con LLM simulado | `./scripts/harwiff-dev --test-host` | Lee la ruta IPv4 de una tarjeta PCIe que sostiene la conexión principal. Requiere Linux e iproute2. |
+| Inspección manual con LLM real | `./scripts/harwiff-dev <carpeta-del-proyecto>` | Con el proveedor configurado, abre **Agentes → Nueva inspección con …**, escribe «¿Qué rutas por defecto IPv4 e IPv6 observas?» y elige **Solo datos del host** si se ofrece. Revisa los hechos y sus citas en **Auditoría**. |
+
+Para una primera prueba manual con datos de ejemplo, crea un proyecto temporal y ejecuta la muestra.
+
+```bash
+prueba="$(mktemp -d)"
+printf '%s\n' '/init' '/diagnostico demo' '/salir' | ./scripts/harwiff-dev "$prueba"
+```
+
+El runner de aceptación con un LLM real se ejecuta con `.venv-dev/bin/python3` como `WIFI_PYTHON`.
+
+```bash
+WIFI_PYTHON="$PWD/.venv-dev/bin/python3" node tests/inspeccion-real.mjs "$HOME/laboratorio-wifi" wlp1s0
+```
+
+Sustituye la ruta y la interfaz por las de tu equipo. Esa prueba requiere que la asociación actual esté autorizada en el proyecto. Agrega `--usb` para el perfil del segundo equipo. El runner registra los resultados automáticos para revisar luego las interpretaciones.
+
+Para verificar el paquete que se instala en otros equipos, compílalo y ejecuta la prueba de instalación. CI prueba también la instalación limpia en Ubuntu 22.04 y Debian 12.
+
+```bash
+artefactos="$(mktemp -d)"
+./scripts/build-release.sh "$artefactos"
+bash tests/instalacion.sh "file://$artefactos"
+```
+
+[Acciones de GitHub](https://github.com/glender222/wifi-diagnostico-harness/actions) · [Atribuciones y licencias](THIRD_PARTY.md)
