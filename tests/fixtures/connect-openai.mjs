@@ -20,6 +20,10 @@ globalThis.fetch = async (input, init) => {
     name: operacion, arguments: operacion === "inspeccionar_enlace" ? '{"interfaz":"i1"}' : "{}", status: "completed" };
   if (!stream) return Response.json({ status: "completed", model, usage, output: [llamada] });
   const recibio = contexto.findLast((item) => item.type === "function_call_output");
+  const demoraSolicitud = Number(process.env.HARWIFF_FIXTURE_DELAY_REQUEST);
+  if (!recibio && operacion !== "comprobar" && demoraSolicitud) {
+    await esperar(demoraSolicitud, undefined, {signal: solicitud.signal});
+  }
   const mensajeActual = contexto.findLast((item) => item.role === "user")?.content;
   const identidad = !recibio && /como te llamas\?/.test(JSON.stringify(mensajeActual ?? ""));
   const explicacion = !catalogo.size && /Pregunta actual: ohh y eso que dice\?/.test(JSON.stringify(mensajeActual ?? ""));

@@ -200,7 +200,9 @@ try {
   }
 
   llamadas = 0;
+  const invalidas = [];
   const incorrecta = await inspeccionar({proyecto: {raiz}, objetivo: "Solo inventario", broker,
+    alOperacion: operacion => invalidas.push(operacion),
     conexion: conexion(openaiProvider(), [...probar,
       () => ({name: "consultar_adaptadores", args: {foo: "x"}}),
       payload => {
@@ -213,6 +215,8 @@ try {
       },
     ])});
   assert.equal(llamadas, 0);
+  assert.ok(invalidas.length && invalidas.every(operacion => operacion.estado === "denied" && !operacion.parametros));
+  assert.doesNotMatch(JSON.stringify(invalidas), /"foo"/);
   assert.match(incorrecta.lineas.join("\n"), /Incógnita/);
   const audit = await Promise.all((await idsAuditoria(raiz)).map(id => leerAuditoria(raiz, id)));
   assert.ok(audit.some(x => x.operacion === "tool_denied" && x.estado === "bloqueado"));

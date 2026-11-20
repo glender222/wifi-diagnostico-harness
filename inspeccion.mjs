@@ -57,7 +57,32 @@ const explicaciones = {
   unstable_snapshot: "el estado cambió durante la lectura", conflicting: "las fuentes discrepan",
   historical: "la última observación caducó", not_observed: "sin observación suficiente",
   association_unknown: "asociación sin verificar", parse_unsupported: "formato de fuente desconocido",
+  identity_changed: "cambió la interfaz seleccionada", evidence_denied: "evidencia fuera del alcance o no verificable",
+  invalid_arguments: "parámetros rechazados", invalid_request: "solicitud rechazada",
+  duplicate_tool_call: "solicitud duplicada", tool_limit: "límite de lecturas alcanzado",
+  unknown_tool: "herramienta no admitida", broker_error: "falló la lectura local",
 };
+
+function vistaSalida(salida, code) {
+  const datos = salida?.datos ?? [];
+  const resumen = [];
+  const total = datos.find(dato => dato.field === "radio_count")?.value;
+  if (typeof total === "number") resumen.push(`${total} ${total === 1 ? "radio" : "radios"} Wi‑Fi`);
+  const enlace = datos.find(dato => dato.field === "link_state")?.value;
+  if (enlace) resumen.push(`enlace ${valores[enlace]}`);
+  for (const version of [4, 6]) {
+    const ruta = datos.find(dato => dato.field === `ipv${version}_route`);
+    if (ruta) resumen.push(`IPv${version} ${{direct: "por esta tarjeta", none_observed: "sin ruta por esta tarjeta"}[ruta.value] ?? "sin verificar"}`);
+  }
+  const observaciones = datos.map(dato => ({
+    nombre: texto[dato.field],
+    valor: dato.value === null ? explicaciones[dato.reason] ?? "sin verificar" : valores[dato.value] ?? dato.value,
+    referencia: dato.ref,
+  }));
+  return {resumen: resumen.join(" · "), observaciones,
+    motivos: [...new Set([...(salida?.reasons ?? []), code].filter(Boolean))]
+      .map(motivo => explicaciones[motivo] ?? "lectura sin resultado verificable")};
+}
 
 function fallo(code, message = code) {
   return Object.assign(new Error(message), {code, decision: "denegado", publico: message});
@@ -168,7 +193,7 @@ async function evidenciaHistorica(raiz, id, scopeId) {
 
 export async function inspeccionar({
   proyecto, objetivo, contextoConversacion = [], idConversacion, nombre, adaptadorIdEsperado, red = false, permisoRed,
-  historial = false, conexion, signal: cancelacion, alOperacion = () => {},
+  historial = false, conexion, signal: cancelacion, alOperacion = () => {}, alProgreso = () => {},
   broker = (op, datos, opciones) => op === "broker-lectura"
     ? brokerHost.execute(datos, opciones.signal, opciones.tiempo)
     : entorno("vincular-inspeccion", datos, {...opciones, soloLectura: true}),
@@ -220,7 +245,11 @@ export async function inspeccionar({
   let mensajeCorreccion;
   let invalidado;
   const control = {total: 0, envios: 0, final: false, referenciaFinal: new Set(), reportados: 0, estimados: 0,
-    async antesDeEnviar() { await vigente(); signal.throwIfAborted(); },
+    async antesDeEnviar() {
+      await vigente();
+      signal.throwIfAborted();
+      alProgreso(control.envios === 0 ? "esperando" : "sintetizando");
+    },
   };
   const secretos = [nombre, ...(filtros?.allowedSsids ?? []), ...(filtros?.allowedBssids ?? [])].filter(Boolean);
   const depurar = valor => secretos.reduce((limpio, dato) =>
@@ -327,6 +356,7 @@ export async function inspeccionar({
     let salida;
     await auditar(proyecto.raiz, {origen: "inspeccion", operacion: name, sessionId, padre: turnId, scopeId, networkRevision},
       async id => {
+        llamada.auditoria = id;
         signal.throwIfAborted();
         if (llamada.code) throw fallo(llamada.code);
         await (pruebaModelo ??= comprobarModelo(conexion, signal));
@@ -531,9 +561,13 @@ export async function inspeccionar({
               const code = limite ? "tool_limit" : llamadasVistas.has(toolCallId) ? "duplicate_tool_call"
                 : !ficha ? "unknown_tool" : !validar(ficha.schema, args) ? "invalid_arguments" : undefined;
               llamadasVistas.add(toolCallId);
-              const vista = {id: intentos, label: ficha?.label ?? "Herramienta no disponible"};
+              const vista = {id: intentos, label: ficha?.label ?? "Herramienta no disponible",
+                ...(ficha && {herramienta: name}),
+                ...(!code && {parametros: args, alcance: red && name !== "consultar_adaptadores"
+                  ? "Asociación autorizada" : "Solo datos del host"})};
               llamadas.set(toolCallId, {name, args, code, vista});
-              alOperacion({...vista, estado: "running"});
+              alOperacion({...vista, estado: code ? "denied" : "running",
+                ...(code && {resultado: vistaSalida(undefined, code)})});
               if (code) denegadas.add(toolCallId);
               if (limite) {
                 await auditar(proyecto.raiz, {origen: "inspeccion", operacion: "tool_denied", padre: turnId, scopeId},
@@ -543,13 +577,15 @@ export async function inspeccionar({
               const llamada = llamadas.get(evento.message.toolCallId);
               if (llamada?.code) {
                 await auditar(proyecto.raiz, {origen: "inspeccion", operacion: "tool_denied", padre: turnId, scopeId},
-                  async () => { throw fallo(llamada.code); }, signal).catch(error => {
+                  async id => { llamada.auditoria = id; throw fallo(llamada.code); }, signal).catch(error => {
                     if (error.code !== llamada.code) throw error;
                   });
               }
               proyecciones.set(evento.message, llamada?.salida ?? {status: "denied", reasons: [llamada?.code ?? "invalid_arguments"], datos: []});
               if (llamada) alOperacion({...llamada.vista, estado: llamada.code ? "denied" :
-                llamada.salida?.status ?? (signal.aborted ? "cancelled" : "unavailable")});
+                llamada.salida?.status ?? (signal.aborted ? "cancelled" : "unavailable"),
+                duracionMs: evento.message.durationMs, auditoria: llamada.auditoria,
+                resultado: vistaSalida(llamada.salida, llamada.code)});
               llamadas.delete(evento.message.toolCallId);
             } else if (evento.type === "message_end" && evento.message.role === "assistant") {
               const uso = evento.message.usage?.totalTokens;

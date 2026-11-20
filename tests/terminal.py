@@ -633,7 +633,8 @@ else:
                 esperar("→ Nueva inspección con wlanlab")
 
             # El recorrido de producción usa el editor de chat y conserva el historial al reiniciar.
-            with terminal(base, env, destino="prueba", filas=16, columnas=60, fuente=FUENTE_REAL) as (app, esperar, escribir):
+            lento = {**env, "HARWIFF_FIXTURE_DELAY_REQUEST": "450", "NO_COLOR": "1"}
+            with terminal(base, lento, destino="prueba", filas=16, columnas=60, fuente=FUENTE_REAL) as (app, esperar, escribir):
                 esperar("> Agentes")
                 escribir(b"\r")
                 pantalla = esperar("> Nueva conversación · wlanlab")
@@ -641,10 +642,27 @@ else:
                 escribir(b"\r")
                 esperar("Mensaje >")
                 escribir(b"Resume el enlace original\r")
+                esperar("Mensaje enviado · esperando respuesta")
                 en_curso = esperar("Enlace y rutas · En curso")
                 self.assertNotIn(b"pasa por esta tarjeta", en_curso)
                 esperar("Enlace y rutas · Completado")
                 esperar("ruta por defecto observada")
+                escribir(b"\t")
+                esperar("> Herramientas")
+                escribir(b"\r")
+                esperar("Enlace y rutas")
+                escribir(b"\r")
+                esperar("Operación · inspeccionar_enlace")
+                esperar("interfaz = i1")
+                esperar("Ruta por defecto IPv4 observada")
+                escribir.redimensionar(24, 80)
+                esperar("Ruta por defecto IPv6 observada")
+                escribir(b"\x1b")
+                esperar("Completado")
+                escribir(b"\x1b")
+                esperar("Acciones del agente")
+                escribir(b"\x1b")
+                esperar("Mensaje >")
                 escribir(b"\x1b")
                 esperar("Abrir sesión guardada")
                 escribir(b"\x1b")
@@ -675,6 +693,10 @@ else:
             inicial = json.loads(turnos[0].read_text())
             self.assertIn("pasa por esta tarjeta", inicial["respuesta"])
             self.assertIn("IPv6", inicial["respuesta"])
+            herramienta = inicial["operaciones"][0]
+            self.assertEqual(herramienta["parametros"], {"interfaz": "i1"})
+            self.assertEqual(len(herramienta["resultado"]["observaciones"]), 2)
+            self.assertTrue((control.parent / "auditoria" / herramienta["auditoria"] / "resultado.json").is_file())
             for archivo in turnos:
                 resultado = json.loads(archivo.read_text())
                 self.assertTrue(any("Ruta por defecto IPv4 observada" in linea for linea in resultado["detalle"]))
@@ -730,6 +752,34 @@ else:
                 auditoria = json.loads((datos / "auditoria" / guardado["auditoria"] / "resultado.json").read_text())
                 self.assertEqual(auditoria["conclusion"]["metricas"]["intentos"], 0)
                 self.assertEqual(auditoria["conclusion"]["metricas"]["solicitudes"], 1)
+
+    def test_chat_conserva_borrador_y_cancela_desde_editor(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            env = {**self.entorno_openai(), "HARWIFF_LLM_PROVIDER": "openai", "HARWIFF_LLM_MODEL": "gpt-4.1-mini",
+                   "HARWIFF_FIXTURE_DELAY_REQUEST": "1800", "NO_COLOR": "1"}
+            subprocess.run(["node", FUENTE_REAL], cwd=raiz, env=env, input=b"/init\n/salir\n",
+                           check=True, capture_output=True)
+            with terminal(raiz, env, filas=16, columnas=60, fuente=FUENTE_REAL) as (app, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("Nueva conversación")
+                escribir(b"\r")
+                esperar("Mensaje >")
+                escribir(b"como te llamas?\r")
+                esperar("Mensaje enviado · esperando respuesta")
+                escribir(b"Conservar mi borrador\r")
+                captura = esperar("Borrador conservado")
+                self.assertIn(b"Conservar mi borrador", captura)
+                escribir(b"\x03")
+                esperar("Turno cancelado.")
+                self.assertIsNone(app.poll())
+                escribir(b"!")
+                esperar("Conservar mi borrador!")
+                datos = Path(raiz) / ".harwiff"
+                [resultado] = (datos / "agentes").glob("*/turnos/*/resultado.json")
+                guardado = json.loads(resultado.read_text())
+                self.assertEqual(guardado["estado"], "cancelado")
+                self.assertEqual(guardado["usuario"]["content"], "como te llamas?")
 
     def test_sesion_mock_detach_continua_y_reabre(self):
         with tempfile.TemporaryDirectory() as raiz:

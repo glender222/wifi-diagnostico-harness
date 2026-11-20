@@ -1,6 +1,6 @@
 import {
   CombinedAutocompleteProvider, Container, decodeKittyPrintable, Editor, isKeyRelease, matchesKey, Markdown, ProcessTerminal,
-  HStack, ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
+  HStack, Loader, ScrollView, SelectList, Text, truncateToWidth, TuiAltScreen, visibleWidth, VStack,
 } from "@earendil-works/pi-tui";
 
 import { resumenControlWifi } from "./proyecto.mjs";
@@ -98,8 +98,9 @@ function actualizarBloques(zona, bloques, limpiar) {
   for (const bloque of bloques) {
     const texto = limpiar(bloque.text);
     const anterior = zona.bloques.get(bloque.id);
+    const herramienta = bloque.tipo === "herramienta";
     const componente = anterior?.componente ?? (bloque.markdown
-      ? new Markdown(texto, 1, 0, temaMarkdown) : new Text(texto, bloque.tipo === "herramienta" ? 3 : 1, bloque.tipo === "herramienta" ? 0 : 1));
+      ? new Markdown(texto, 1, 0, temaMarkdown) : new Text(texto, herramienta ? 3 : 1, herramienta || bloque.compacto ? 0 : 1));
     if (anterior && anterior.texto !== texto) componente.setText(texto);
     proximos.set(bloque.id, { componente, texto });
   }
@@ -162,6 +163,8 @@ export function pantalla(comandos, acciones) {
   const panel = new Container();
   const campoSecreto = new Text("", 1, 0);
   const aviso = new Text("", 1, 0);
+  const indicador = new Loader(ui, acento, simple, "", {frames: [""]});
+  const progreso = { render: width => indicador.render(width).slice(1, 2), invalidate: () => indicador.invalidate() };
   const pie = { render: (width) => [truncateToWidth(" " + ayudaTeclado(width), width, "")], invalidate() {} };
   const editor = new EditorConsola(ui, { borderColor: acento, selectList: tema }, { paddingX: 1 });
   const completar = new CombinedAutocompleteProvider(
@@ -206,6 +209,7 @@ export function pantalla(comandos, acciones) {
       visible: visible(() => !compatibilidad && (!estado?.agente || selector || pregunta || secreto) && !detalle) },
     { component: etiqueta, visible: visible(() => Boolean(compatibilidad && estado?.agente && !pregunta)) },
     { component: tituloCampo, visible: visible(() => Boolean(!compatibilidad && pregunta)) },
+    { component: progreso, visible: visible(() => Boolean(mensajeProgreso)) },
     { component: editor, visible: visible(() => !selector && !secreto && !detalle &&
       Boolean(compatibilidad || pregunta || (estado?.agente && !estado.soloConsulta))) },
     { component: campoSecreto, visible: visible(() => Boolean(secreto)) },
@@ -216,6 +220,7 @@ export function pantalla(comandos, acciones) {
   ]));
   let selector;
   let detalle;
+  let detalleCompacto = false;
   let consulta;
   let filtroSelector;
   let refrescarSelector;
@@ -235,19 +240,40 @@ export function pantalla(comandos, acciones) {
   let alCancelarPregunta;
   let secreto;
   let alcance;
+  let mensajeProgreso = "";
+  let arranqueProgreso;
+  let borradorEnEspera;
   const borradores = new Map();
   const chats = new Map();
   const selecciones = new Map();
 
+  function actualizarProgreso(texto) {
+    if (mensajeProgreso === texto) return;
+    const antes = mensajeProgreso;
+    mensajeProgreso = texto;
+    indicador.setMessage(texto);
+    if (!texto) {
+      clearTimeout(arranqueProgreso);
+      indicador.setIndicator({frames: [""]});
+    } else if (!antes && !sinColor && process.env.TERM !== "dumb") {
+      arranqueProgreso = setTimeout(() => {
+        if (mensajeProgreso) indicador.setIndicator();
+      }, 180);
+    }
+  }
+
   function ayudaTeclado(ancho) {
     if (consulta) return consulta.cancelable ? "Esc cancelar" : "Espera a que termine la operación";
-    if (detalle) return ancho < 80 ? "Flechas leer   Esc volver" : "↑↓ leer   Esc volver";
+    if (detalle) return ancho < 80 ? "Flechas leer   AvPág/RePág   Esc volver" : "↑↓ leer   AvPág/RePág   Esc volver";
     if (selector || menuRaizVisible()) {
       const mover = ancho < 80 ? "Flechas mover" : "↑↓ mover";
       return `${mover}   Enter abrir   ${selector ? "Esc volver" : "? ayuda"}`;
     }
     if (pregunta || secreto) return "Enter aceptar   Esc volver";
     const seguir = claveChat && !chats.get(claveChat).vista.isFollowingEnd ? "Ctrl+Fin seguir   " : "";
+    if (estado?.inspeccion) {
+      return (estado.respondiendo ? "Ctrl+C detener" : "Enter enviar") + "   Tab acciones   Esc volver   " + seguir;
+    }
     return (estado?.soloConsulta ? "" : "Enter enviar   ") + seguir + "Tab acciones   Esc volver";
   }
   function resolverEntrada(texto) {
@@ -259,6 +285,7 @@ export function pantalla(comandos, acciones) {
     secreto = undefined;
     selector = undefined;
     detalle = undefined;
+    detalleCompacto = false;
     filtroSelector = undefined;
     refrescarSelector = undefined;
     panel.clear();
@@ -275,7 +302,19 @@ export function pantalla(comandos, acciones) {
     if (!pregunta && estado?.autonoma && visible.trim() && !visible.trimStart().startsWith("/")) {
       avisoTexto = "";
       editor.addToHistory(visible);
-      acciones.enviar(estado.agente, visible.trim());
+      const destino = alcance;
+      const inspeccion = estado.inspeccion;
+      let admitido = false;
+      const envio = acciones.enviar(estado.agente, visible.trim(), () => { admitido = true; });
+      if (inspeccion) void Promise.resolve(envio).then(resultado => {
+        if (admitido || resultado !== false || cerrado) return;
+        if (destino === alcance && !editor.getText()) {
+          editor.setText(visible);
+          ui.requestRender();
+        } else if (destino !== alcance && !borradores.get(destino)) {
+          borradores.set(destino, visible);
+        }
+      });
       return;
     }
     if (!esperando) return;
@@ -307,7 +346,10 @@ export function pantalla(comandos, acciones) {
       return { consume: true };
     }
     if (matchesKey(dato, "ctrl+c") || (matchesKey(dato, "ctrl+d") && !secreto && !editor.getText())) {
-      if (compatibilidad) acciones.salir();
+      if (matchesKey(dato, "ctrl+c") && estado?.inspeccion && estado.respondiendo && !selector && !detalle && !pregunta && !secreto) {
+        borradorEnEspera = undefined;
+        acciones.detener(estado.agente);
+      } else if (compatibilidad) acciones.salir();
       else if (consulta) consulta.controlador?.abort();
       else if (selector || detalle || pregunta || secreto) resolverEntrada(undefined);
       else if (esperando) resolverEntrada({ accion: "salir" });
@@ -331,6 +373,11 @@ export function pantalla(comandos, acciones) {
         ui.requestRender();
         return { consume: true };
       }
+      if (matchesKey(dato, "pageUp") || matchesKey(dato, "pageDown")) {
+        const pagina = Math.max(1, inspector.vista.viewportHeight - 1);
+        inspector.vista.scrollBy(matchesKey(dato, "pageUp") ? -pagina : pagina);
+        return { consume: true };
+      }
       return undefined;
     }
     if (selector) {
@@ -352,6 +399,10 @@ export function pantalla(comandos, acciones) {
       return { consume: true };
     }
     if (!pregunta && estado?.respondiendo && matchesKey(dato, "enter") && !editor.getText().trimStart().startsWith("/")) {
+      if (editor.getText().trim()) {
+        borradorEnEspera = estado.agente;
+        render(estado);
+      }
       return { consume: true };
     }
     if ((!compatibilidad || estado?.inspeccion) && !pregunta) {
@@ -420,6 +471,10 @@ export function pantalla(comandos, acciones) {
       alcance = siguiente;
     }
     estado = nuevo;
+    if (!nuevo.respondiendo || borradorEnEspera !== nuevo.agente) borradorEnEspera = undefined;
+    actualizarProgreso(nuevo.inspeccion && !selector && !detalle && !pregunta && !secreto
+      ? borradorEnEspera ? "Borrador conservado · el turno sigue en curso" : nuevo.progresoChat ?? ""
+      : "");
     refrescarSelector?.();
     if (!nuevo.agentes.length) enFila = false;
     const contexto = nuevo.proyecto ? [nuevo.proyecto, nuevo.cliente].filter(Boolean).join("  ·  ") : "Sin proyecto";
@@ -432,11 +487,11 @@ export function pantalla(comandos, acciones) {
     aviso.setText(avisoTexto);
     editor.prefijo = compatibilidad ? pregunta || (nuevo.inspeccion ? "Mensaje >" : nuevo.agente ? undefined : nuevo.promptEntorno)
       : pregunta ? ">" : "Mensaje >";
-    etiqueta.setText(nuevo.inspeccion ? `Conversación · ${nuevo.interfazAgente} · ${nuevo.respondiendo ? "Respondiendo" : "Solo lectura"}`
+    etiqueta.setText(nuevo.inspeccion ? `Conversación · ${nuevo.interfazAgente} · Solo lectura`
       : nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}${nuevo.soloConsulta ? "  ·  Solo consulta" : ""}` : "");
     if (secreto) campoSecreto.setText(`${secreto.titulo} ${(ui.terminal.columns < 80 ? "*" : "•").repeat(Math.min(32, secreto.valor.length))}`);
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
-    if (compatibilidad && nuevo.inspeccion) fila.setText("Tab Acciones · Esc volver");
+    if (compatibilidad && nuevo.inspeccion) fila.setText(`${nuevo.respondiendo ? "Ctrl+C detener · " : ""}Tab acciones · Esc volver`);
     else if (compatibilidad) {
       const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
         const reciente = actividad ? ` · ${truncateToWidth(actividad, 28, "…")}` : "";
@@ -448,7 +503,8 @@ export function pantalla(comandos, acciones) {
         : ["Tab Agentes", ...agentes].join("   ·   "));
     }
     if (detalle) {
-      actualizarBloques(inspector, [{ id: "detalle", text: detalle }], acciones.limpiar);
+      actualizarBloques(inspector, [{ id: detalleCompacto ? "detalle-compacto" : "detalle", compacto: detalleCompacto,
+        text: typeof detalle === "function" ? detalle() : detalle }], acciones.limpiar);
     }
     const mensajes = nuevo.mensajes.map((text, n) => ({ id: `aviso/${n}`, text }));
     if (nuevo.agente) {
@@ -590,13 +646,14 @@ export function pantalla(comandos, acciones) {
         if (entrada !== undefined) borrador[opcion] = entrada;
       }
     },
-    mostrarDetalle(texto, titulo = "Detalles de operación · Esc vuelve a la sesión") {
+    mostrarDetalle(texto, titulo = "Detalles de operación · Esc vuelve a la sesión", { compacto = false } = {}) {
       if (cerrado) return Promise.resolve();
       return new Promise((resuelve) => {
         esperando = resuelve;
         detalle = texto;
+        detalleCompacto = compacto;
         inspector.vista.scrollToStart();
-        panel.addChild(new Text(acciones.limpiar(titulo), 1));
+        panel.addChild(new Text(acciones.limpiar(titulo), 1, compacto ? 0 : 1));
         render(estado);
       });
     },
@@ -621,6 +678,8 @@ export function pantalla(comandos, acciones) {
     cerrar() {
       if (cerrado) return;
       cerrado = true;
+      clearTimeout(arranqueProgreso);
+      indicador.stop();
       consulta?.controlador?.abort();
       secreto = undefined;
       esperando?.(undefined);

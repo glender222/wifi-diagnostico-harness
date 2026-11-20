@@ -8,12 +8,39 @@ const ESQUEMA = "harwiff-conversacion-inspeccion/v1";
 const LIMITE_VISTA = 100;
 const textoVisible = (texto) => String(texto).replace(/\s+/g, " ").trim();
 
-export function bloqueOperacion(turno, operacion) {
-  const estado = {
+export function estadoOperacion(operacion) {
+  return {
     running: "En curso", ok: "Completado", partial: "Datos parciales", historical: "Recuperado",
     denied: "Denegado", unavailable: "Sin datos", cancelled: "Cancelado",
   }[operacion.estado] ?? "Sin resultado";
-  return {id: `${turno}/herramienta/${operacion.id}`, tipo: "herramienta", text: `${operacion.label} · ${estado}`};
+}
+
+export function bloqueOperacion(turno, operacion) {
+  const total = operacion.resultado?.observaciones?.length;
+  const estado = [operacion.label, estadoOperacion(operacion),
+    total ? `${total} ${total === 1 ? "observación" : "observaciones"}` : ""].filter(Boolean).join(" · ");
+  const previa = operacion.resultado?.resumen || operacion.resultado?.motivos?.[0];
+  return {id: `${turno}/herramienta/${operacion.id}`, turno, tipo: "herramienta", operacion,
+    text: previa ? estado + "\n" + previa : estado};
+}
+
+export function detalleOperacionInspeccion(operacion) {
+  const parametros = operacion.parametros && Object.entries(operacion.parametros)
+    .map(([clave, valor]) => `${clave} = ${valor}`).join(" · ");
+  const duracion = operacion.duracionMs;
+  const resultado = operacion.resultado;
+  const observaciones = resultado?.observaciones?.map(dato => `${dato.nombre} · ${dato.valor}\n  [${dato.referencia}]`) ?? [];
+  const salida = operacion.estado === "running" ? "Salida pendiente." :
+    resultado ? "Salida sin observaciones guardadas." : "Consulta Detalle de turnos para ver las observaciones guardadas.";
+  return [
+    [`Estado · ${estadoOperacion(operacion)}` + (Number.isFinite(duracion) ? ` · ${(duracion / 1000).toFixed(1)} s` : ""),
+      operacion.herramienta && `Operación · ${operacion.herramienta}`,
+      operacion.alcance && `Alcance · ${operacion.alcance}`,
+      operacion.parametros && `Parámetros · ${parametros || "ninguno"}`].filter(Boolean).join("\n"),
+    observaciones.length ? "Salida\n" + observaciones.join("\n") : salida,
+    resultado?.motivos?.length && "Notas\n" + resultado.motivos.join("\n"),
+    operacion.auditoria && "/auditoria " + operacion.auditoria,
+  ].filter(Boolean).join("\n\n");
 }
 
 export async function crearConversacionInspeccion(raiz, adaptador) {

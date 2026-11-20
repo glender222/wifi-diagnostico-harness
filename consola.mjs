@@ -21,7 +21,8 @@ import {
 } from "./proyecto.mjs";
 import { comprobarHerramientasOpenAI, listarModelosOpenAI, ocultarClaveOpenAI, validarModeloOpenAI } from "./proveedor-openai.mjs";
 import { cargarSesionAutonoma, enviarMensajeAgente, etiquetaProveedor, iniciarSesionAgente, PROVEEDORES_AGENTE, proveedorAgente } from "./sesion-agente.mjs";
-import { bloqueOperacion, cargarConversacionInspeccion, crearConversacionInspeccion, guardarTurnoConversacion } from "./sesion-inspeccion.mjs";
+import { bloqueOperacion, cargarConversacionInspeccion, crearConversacionInspeccion, detalleOperacionInspeccion,
+  estadoOperacion, guardarTurnoConversacion } from "./sesion-inspeccion.mjs";
 
 import paquete from "./package.json" with { type: "json" };
 
@@ -284,7 +285,7 @@ async function aplicar(destino, fixtures) {
       agente.inspeccion ? `${agente.adaptador?.name ?? "Inventario del host"} · Solo lectura`
         : (agente.autonoma || agente.modo === "demo") && "Simulado",
       agente.permisoRed && "Asociación autorizada para el próximo mensaje",
-      agente.historialPendiente ? "Cargando historial" : estadoAgente(agente),
+      !agente.inspeccion && (agente.historialPendiente ? "Cargando historial" : estadoAgente(agente)),
       agente.soloConsulta && "Solo consulta",
       agente.modelId,
     ].filter(Boolean).join(" | ");
@@ -304,6 +305,7 @@ async function aplicar(destino, fixtures) {
       autonoma: agente?.autonoma, inspeccion: agente?.inspeccion, soloConsulta: agente?.soloConsulta,
       interfazAgente: agente?.inspeccion ? agente.adaptador?.name ?? "Inventario del host" : undefined,
       respondiendo: Boolean(agente?.inspeccion && agente.trabajo),
+      progresoChat: agente?.inspeccion ? (agente.historialPendiente ? "Cargando historial…" : agente.faseTurno) : undefined,
       comandos: disponibles(proyecto, agente),
       controlWifi, menu: menuPrincipal(), estadoResumen: seguro(ocultar(resumenPantalla())),
       actividad: actividadAgente(agente),
@@ -378,12 +380,17 @@ async function aplicar(destino, fixtures) {
           const item = agentes.get(id);
           void enfocar(id).catch((error) => mostrar(`Error: ${error.message}`, item));
         },
-        enviar(id, texto) {
+        detener(id) {
+          detenerTurno(agentes.get(id));
+        },
+        enviar(id, texto, alAdmitir) {
           const item = agentes.get(id);
-          if (item?.autonoma) {
-            const envio = item.inspeccion ? enviarInspeccion(item, texto) : enviarConversacion(item, texto);
-            void envio.catch((error) => mostrar(`Error: ${error.message}`, item));
-          }
+          if (!item?.autonoma) return false;
+          const envio = item.inspeccion ? enviarInspeccion(item, texto, alAdmitir) : enviarConversacion(item, texto);
+          return envio.catch((error) => {
+            mostrar(`Error: ${error.message}`, item);
+            return false;
+          });
         },
       });
       actualizar();
@@ -895,12 +902,20 @@ async function aplicar(destino, fixtures) {
     return item;
   }
 
-  async function enviarInspeccion(item, texto) {
+  function detenerTurno(item) {
+    if (!item?.controlador) return;
+    if (item.inspeccion) item.faseTurno = "Deteniendo el turno…";
+    item.controlador.abort();
+    actualizar();
+  }
+
+  async function enviarInspeccion(item, texto, alAdmitir = () => {}) {
     if (item.trabajo) throw new Error("El agente está respondiendo. Espera o detén el turno.");
     const controlador = new AbortController();
     item.controlador = controlador;
     item.estado = "trabajando";
     item.actividad = "Respondiendo";
+    item.faseTurno = "Guardando mensaje…";
     item.avisos = [];
     const permisoRed = item.permisoRed;
     item.permisoRed = undefined;
@@ -922,14 +937,23 @@ async function aplicar(destino, fixtures) {
           objetivo: texto, contextoConversacion, idConversacion: item.id,
           nombre: item.adaptador?.name, adaptadorIdEsperado: item.adaptador?.id,
           red: Boolean(permisoRed), permisoRed, historial: true,
+          alProgreso(fase) {
+            if (controlador.signal.aborted) return;
+            item.faseTurno = fase === "esperando" ? "Mensaje enviado · esperando respuesta…" : "Preparando la respuesta…";
+            actualizar();
+          },
           alOperacion(operacion) {
             operaciones.set(operacion.id, operacion);
+            if (!controlador.signal.aborted) {
+              item.faseTurno = operacion.estado !== "running" ? "Preparando la respuesta…" :
+                operacion.herramienta === "consultar_evidencia" ? "Recuperando evidencia…" : "Consultando el equipo…";
+            }
             publicarTurno();
           },
         }, controlador.signal);
         const estado = ["completed", "partial"].includes(resultado.motivo) ? "completo"
           : resultado.motivo === "cancelled" ? "cancelado" : "error";
-        const respuesta = resultado.respuestaConversacion ?? resultado.resumenConversacion ?? (
+        const respuesta = estado === "cancelado" ? "Turno cancelado." : resultado.respuestaConversacion ?? resultado.resumenConversacion ?? (
           resultado.motivo === "completed" ? [...resultado.lineas, "/auditoria " + resultado.turnId].join("\n")
             : resultado.motivo === "partial" && resultado.metricas.intentos === 0 ? resultado.lineas.join("\n")
               : textoInspeccion(resultado));
@@ -942,6 +966,8 @@ async function aplicar(destino, fixtures) {
           : { estado: "error", respuesta: seguro(ocultar(error.message)), operaciones: cerrarOperaciones("unavailable") };
       }
     }, ({ id, usuario }) => {
+      alAdmitir();
+      if (!controlador.signal.aborted) item.faseTurno = "Mensaje guardado · conectando con el modelo…";
       bloqueUsuario = { id: id + "/usuario", turno: id, tipo: "mensaje", text: "Tú  " + usuario.content };
       publicarTurno();
     });
@@ -956,6 +982,7 @@ async function aplicar(destino, fixtures) {
     } finally {
       item.controlador = undefined;
       item.trabajo = undefined;
+      item.faseTurno = undefined;
       item.estado = "lista";
       actualizar();
     }
@@ -1691,10 +1718,31 @@ async function aplicar(destino, fixtures) {
     }
   }
 
+  async function detalleHerramientas() {
+    const item = agente;
+    await cargarHistorialAgente(item);
+    const herramientas = () => item.transcript.filter(bloque => bloque.tipo === "herramienta").slice(-20).reverse();
+    if (!herramientas().length) {
+      return interfaz.mostrarDetalle("Las llamadas aparecen aquí cuando el agente pide una lectura.", "Herramientas");
+    }
+    for (;;) {
+      const id = await interfaz.elegir("Herramientas", () => herramientas().map(({id, turno, operacion}) => ({
+        value: id, label: operacion.label, description: [estadoOperacion(operacion),
+          new Date(Number(turno.split("-")[0])).toLocaleTimeString()].join(" · "),
+      })), undefined, {id: "herramientas-inspeccion"});
+      if (!id) return;
+      const original = herramientas().find(bloque => bloque.id === id);
+      if (original) await interfaz.mostrarDetalle(() => {
+        const bloque = herramientas().find(bloque => bloque.id === id) ?? original;
+        return detalleOperacionInspeccion(bloque.operacion);
+      }, original.operacion.label, { compacto: true });
+    }
+  }
+
   async function menuAccionesAgente() {
     for (;;) {
       const opcion = await interfaz.elegir("Acciones del agente", () => [
-        ...(agente.inspeccion ? [{ value: "red", label: "Datos del próximo mensaje" }]
+        ...(agente.inspeccion ? [{ value: "herramientas", label: "Herramientas" }, { value: "red", label: "Datos del próximo mensaje" }]
           : [{ value: "operaciones", label: "Operaciones", description: String(agente.operaciones?.length ?? 0) }]),
         { value: "turnos", label: "Detalle de turnos" },
         ...(agente.controlador ? [{ value: "detener", label: "Detener turno" }] : []),
@@ -1702,11 +1750,12 @@ async function aplicar(destino, fixtures) {
         { value: "ayuda", label: "Ayuda" },
       ], undefined, { id: "acciones-agente" });
       if (!opcion) return;
+      if (opcion === "herramientas") await detalleHerramientas();
       if (opcion === "red") await menuPermisoRed(agente);
       if (opcion === "operaciones") await detalleOperacion();
       if (opcion === "turnos") await detalleTurnos();
       if (opcion === "detener") {
-        agente.controlador?.abort();
+        detenerTurno(agente);
         return;
       }
       if (opcion === "volver") {
@@ -1756,7 +1805,7 @@ async function aplicar(destino, fixtures) {
     }
     if (texto === "/detener") {
       if (!agente?.controlador) throw new Error("No hay un turno activo en esta sesión.");
-      agente.controlador.abort();
+      detenerTurno(agente);
       return;
     }
     if (agente && texto === "/config") {
