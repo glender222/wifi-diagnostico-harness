@@ -34,12 +34,12 @@
         </div>
         <button class="control-red" id="control-red" type="button" hidden>Pausar red</button>
         <div class="portada-texto">
-          <p class="plataforma"><span aria-hidden="true"></span> v1.0.0 <span class="separador" aria-hidden="true">/</span> Linux x86-64</p>
+          <p class="plataforma"><span aria-hidden="true"></span> Versión estable <span class="separador" aria-hidden="true">/</span> Linux x86-64</p>
           <h1 id="titulo">Seguridad de<br><em>agentes de IA.</em></h1>
           <h2 class="producto">Infraestructura de red</h2>
-          <p class="introduccion">Observa infraestructura Wi-Fi en modo de solo lectura. En laboratorio, define el alcance del agente y audita sus operaciones simuladas.</p>
+          <p class="introduccion">Inspecciona el Wi-Fi de tu equipo en modo de solo lectura. Conversa con el agente y revisa las herramientas y la evidencia de cada inspección.</p>
           <div class="acciones">
-            <a class="boton principal" href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/install.sh">Descargar instalador</a>
+            <a class="boton principal" href="https://github.com/glender222/wifi-diagnostico-harness/releases/latest/download/install.sh">Descargar instalador</a>
             <a class="boton secundario" href="#guia">Ver guía rápida</a>
           </div>
           <div class="instalador" id="instalar">
@@ -48,7 +48,7 @@
               <button class="copiar" type="button" data-copy="comando" hidden>Copiar</button>
             </div>
             <pre><code id="comando">curl -fsSLo harwiff-install.sh \
-  https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/install.sh \
+  https://github.com/glender222/wifi-diagnostico-harness/releases/latest/download/install.sh \
   &amp;&amp; bash harwiff-install.sh</code></pre>
             <p class="solo-lector" id="estado-copia" role="status"></p>
           </div>
@@ -60,24 +60,24 @@
       <div class="ancho paquete-interior">
         <p>Paquete autónomo para <strong>Linux x86-64 con glibc</strong></p>
         <div class="paquete-enlaces">
-          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/harwiff-linux-x86_64.tar.gz">Paquete .tar.gz</a>
-          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/download/v1.0.0/SHA256SUMS">SHA-256</a>
-          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/tag/v1.0.0">Release</a>
+          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/latest/download/harwiff-linux-x86_64.tar.gz">Paquete .tar.gz</a>
+          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/latest/download/SHA256SUMS">SHA-256</a>
+          <a href="https://github.com/glender222/wifi-diagnostico-harness/releases/latest">Release</a>
         </div>
       </div>
     </div>
 
     <section class="guia ancho" id="guia" aria-labelledby="titulo-guia">
       <div>
-        <h2 id="titulo-guia">Tu primer laboratorio</h2>
-        <p>Prueba la muestra sintética sin Docker, adaptador USB ni credenciales.</p>
+        <h2 id="titulo-guia">Inspecciona tu Wi-Fi</h2>
+        <p>Consulta el inventario de tu equipo en solo lectura, sin Docker.</p>
         <pre class="inicio-comando"><code>mkdir -p ~/laboratorio-wifi
 cd ~/laboratorio-wifi
 harwiff</code></pre>
         <ol class="pasos">
           <li>Elige <strong>Inicializar esta carpeta</strong>.</li>
-          <li>Abre <strong>Diagnóstico → Generar muestra sintética</strong>.</li>
-          <li>Entra en <strong>Ver en Auditoría</strong> para leer el informe.</li>
+          <li>Abre <strong>Adaptadores</strong> y elige tu radio para ver sus interfaces y capacidades.</li>
+          <li>Usa <strong>Seleccionar para Agentes</strong> para asociar la interfaz al chat.</li>
         </ol>
         <p class="atajos"><kbd>↑</kbd><kbd>↓</kbd> Mover <kbd>Enter</kbd> Abrir <kbd>Esc</kbd> Volver</p>
       </div>
@@ -99,12 +99,12 @@ harwiff</code></pre>
         <div class="temas">
           <details open>
             <summary>Infraestructura Wi-Fi</summary>
-            <p><strong>Adaptadores</strong> muestra los radios e interfaces detectados por Linux. Para una lectura física configura el alcance en Harwiff y usa Docker, NetworkManager e iproute2. El preflight protege la conexión principal antes de seleccionar un adaptador.</p>
+            <p><strong>Adaptadores</strong> muestra los radios e interfaces detectados por Linux. La inspección de solo lectura admite la tarjeta que sostiene la ruta principal. El diagnóstico físico con OpenSandbox tiene su propio preflight.</p>
           </details>
           <details>
             <summary>Agentes y alcance</summary>
-            <p>Define el alcance de laboratorio, selecciona <code>mock</code> y conecta OpenAI API o Azure AI Foundry desde <strong>Modelo y ajustes</strong>. Ve a <strong>Agentes → Nueva conversación</strong>. El agente trabaja sobre un escenario simulado.</p>
-            <a href="capturas/agente.png">Ver captura del agente</a>
+            <p>Conecta un proveedor y un modelo compatible desde <strong>Modelo y ajustes</strong>. En <strong>Agentes → Nueva conversación</strong>, pregunta por tu equipo y revisa los resultados en <strong>Tab → Herramientas</strong>. Los datos de asociación requieren una red autorizada.</p>
+            <a href="https://github.com/glender222/wifi-diagnostico-harness#conversar-con-el-agente">Ver la guía del agente</a>
           </details>
           <details>
             <summary>Informes y auditoría</summary>
