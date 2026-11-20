@@ -40,18 +40,20 @@ with terminal(carpeta, ejecutable=ejecutable, filas=24, columnas=80) as (proceso
     esperar("> Abrir proyecto")
     escribir(b"\x1b[B\x1b[B\r")
     esperar("> Agentes")
-    escribir(b"\x1b[B\r")
-    esperar("Generar muestra sintética")
-    escribir(b"\x1b[B\r")
-    esperar("Ver en Auditoría")
-    assert len(list((carpeta / ".harwiff" / "informes").glob("*.json"))) == 1
+    escribir(b"\r")
+    esperar("Nueva conversación")
+    escribir(b"\r")
+    esperar("Mensaje >")
+    assert len(list((carpeta / ".harwiff" / "agentes").glob("*/sesion.json"))) == 1
     escribir(b"\x1b")
-    esperar("> Diagnóstico")
+    esperar("Abrir sesión guardada")
+    escribir(b"\x1b")
+    esperar("> Agentes")
     escribir(b"\x03")
     esperar("\x1b[?1049l")
     assert proceso.wait(timeout=5) == 0
 
-print("Menú y diagnóstico sintético verificados desde el comando instalado.")
+print("Menú y editor de conversación verificados desde el comando instalado.")
 TUI_TEST
 mkdir "$temporal/path-reducido"
 # Ejecuta el lector incluido y el DTO incluso con PATH sin utilidades de red.
@@ -89,8 +91,7 @@ mkdir -- "$proyecto"
 (cd "$proyecto" && printf '%s\n' '/salir' | "$ejecutable" > "$temporal/sin-proyecto")
 test ! -e "$proyecto/.harwiff"
 printf '%s\n' '/init' '/nueva registro Prueba de notas' '/guardar Nota de instalación' '/contexto' \
-  '/diagnostico demo' '/alcance set --ssid "Red de laboratorio"' \
-  '/adaptador detalle mock' '/adaptador usar mock' '/alcance ver' '/auditoria' '/salir' \
+  '/alcance set --ssid "Red de laboratorio"' '/adaptador listar' '/alcance ver' '/auditoria' '/salir' \
   | "$ejecutable" "$proyecto" > "$temporal/salida"
 test -f "$proyecto/.harwiff/harness.json"
 test ! -e "$proyecto/.harwiff/app.py"
@@ -98,11 +99,10 @@ test ! -e "$proyecto/.harwiff/harness"
 test ! -e "$proyecto/harness.json"
 grep -q 'Nota de instalación' "$proyecto/.harwiff/sesiones/registro/REGISTRO.md"
 grep -q 'Contexto de la sesión registro' "$temporal/salida"
-grep -q 'Mock · Simulado' "$temporal/salida"
-grep -q 'Adaptador seleccionado: mock' "$temporal/salida"
-grep -q '"preflightPassed": true' "$temporal/salida"
+! grep -qi 'mock' "$temporal/salida"
+grep -q '"adapter": null' "$temporal/salida"
 estado=0
-printf '%s\n' '/alcance set --ssid LAB_TEST_AP --canales 6' '/agente Revisar el fixture' '/config' '/salir' \
+printf '%s\n' '/config' '/agente Revisar el inventario' '/salir' \
   | env -u OPENAI_API_KEY -u DBUS_SESSION_BUS_ADDRESS -u FOUNDRY_API_KEY "$ejecutable" "$proyecto" \
     > "$temporal/sin-conexion" 2> "$temporal/error-conexion" || estado=$?
 test "$estado" -eq 1
@@ -110,22 +110,20 @@ grep -qx 'Proveedor LLM · Sin modelo configurado' "$temporal/sin-conexion"
 grep -q 'Proveedor de /agente: sin configurar' "$temporal/sin-conexion"
 grep -q 'Conecta un proveedor con /connect' "$temporal/error-conexion"
 ! grep -q '^Error:' "$temporal/sin-conexion"
-test ! -e "$proyecto/.harwiff/agentes"
 cp -- "$(dirname -- "$0")/fixtures/connect-openai.mjs" "$temporal/openai-fixture.mjs"
-printf '%s\n' '/model gpt-4.1-mini' '/agente Revisar el fixture' '/salir' \
+printf '%s\n' '/model gpt-4.1-mini' '/agente Revisar el inventario local' '/salir' \
   | env OPENAI_API_KEY=sk-fixture-harwiff-terminal NODE_OPTIONS="--import=$temporal/openai-fixture.mjs" \
     "$ejecutable" "$proyecto" > "$temporal/agente"
-grep -q 'OpenAI · gpt-4.1-mini' "$temporal/agente"
-grep -q 'observar_entorno · .*ALLOWED' "$temporal/agente"
-grep -q 'Conclusión basada en el fixture simulado.' "$temporal/agente"
-grep -q 'Sesión completada.' "$temporal/agente"
+grep -q 'Modelo OpenAI guardado: gpt-4.1-mini' "$temporal/agente"
+grep -q 'Radios Wi‑Fi detectados' "$temporal/agente"
+grep -q '/auditoria ' "$temporal/agente"
 "$ejecutable" proyectos --json "$temporal" | grep -q '"nombre": "proyecto nuevo"'
 printf '%s\n' "/proyectos $temporal" '/salir' | "$ejecutable" | grep 'proyecto nuevo · demo'
-printf '%s\n' 'agent harwiff' '/volver' '/salir' | "$ejecutable" "$proyecto" | grep 'Conclusión basada en el fixture simulado.'
+printf '%s\n' 'agent harwiff' '/volver' '/salir' | "$ejecutable" "$proyecto" | grep 'Radios Wi‑Fi detectados'
 (cd "$proyecto" && printf '%s\n' '/salir' | "$ejecutable" > "$temporal/reapertura")
 grep -q 'Actividad reciente del proyecto' "$temporal/reapertura"
-grep -q 'Adaptador: mock' "$temporal/reapertura"
-grep -Eq 'Agente agente-.* · completed' "$temporal/reapertura"
+grep -q 'Adaptador: ninguno' "$temporal/reapertura"
+grep -Eq 'Agente [0-9]{13}-.* · lista' "$temporal/reapertura"
 destino_previo="$(readlink "$HARWIFF_DATA_DIR/actual")"
 mkdir "$temporal/danado"
 printf 'archivo dañado\n' > "$temporal/danado/harwiff-linux-x86_64.tar.gz"

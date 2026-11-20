@@ -163,11 +163,12 @@ export async function buildScopeSnapshot(project) {
   return (await validarScopeSnapshot(project)).snapshot;
 }
 
-export async function guardarAlcance(proyecto, datos) {
+export async function guardarAlcance(proyecto, datos, { permitirMock = true } = {}) {
   const scope = await entorno("alcance", datos);
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
-    const resultado = await validarControlWifi({ ...anterior, projectId: anterior.projectId ?? randomUUID(), scope });
+    const adapter = !permitirMock && anterior.adapter?.id === "mock" ? null : anterior.adapter;
+    const resultado = await validarControlWifi({ ...anterior, adapter, projectId: anterior.projectId ?? randomUUID(), scope });
     const estado = revisarAlcance(anterior, resultado.estado);
     const huboCambio = hashAlcance({ ...anterior, scope: estado.scope }) !== hashAlcance(anterior);
     await guardarCambioConfiguracion(proyecto.raiz, huboCambio ? ["alcance"] : [], () => guardarControlWifi(proyecto, estado));
@@ -209,9 +210,12 @@ export async function elegirAdaptadorInspeccion(proyecto, name, observado) {
   });
 }
 
-export async function inspeccionarControlWifi(proyecto) {
+export async function inspeccionarControlWifi(proyecto, { permitirMock = true } = {}) {
   return conBloqueoProyecto(proyecto.raiz, async () => {
     const anterior = await leerControlWifi(proyecto);
+    if (!permitirMock && anterior.adapter?.id === "mock") {
+      return { estado: { ...anterior, adapter: null, snapshot: null, preflight: null }, lockedBySession: null };
+    }
     const resultado = await validarControlWifi(anterior);
     if (anterior.projectId && JSON.stringify(resultado.estado) !== JSON.stringify(anterior)) {
       await guardarControlWifi(proyecto, resultado.estado);

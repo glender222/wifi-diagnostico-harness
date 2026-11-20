@@ -71,7 +71,7 @@ export async function detalleAdaptador(nombre) {
   return [resumen(fila), capacidades(fila), restricciones(fila, perfil)].join("\n\n");
 }
 
-export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, inspeccionar, agentes } = {}) {
+export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, inspeccionar, agentes, mostrarMock } = {}) {
   let perfil;
   let estadoGuardado = "";
   for (;;) {
@@ -91,7 +91,7 @@ export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, i
     const perfilAgente = agentes?.actual;
     const resumenAgentes = agentes ? `\nAgentes (solo lectura) · ${perfilAgente?.name ?? "sin selección"}` : "";
     const opcion = await interfaz.elegir(`Harwiff / Adaptadores${parcial}${resumenAgentes}\nDiagnóstico · ${seleccionado ?? "ninguno"}${estadoGuardado}`, [
-      ...opciones, { value: "mock", label: "Mock · Simulado" }, { value: "actualizar", label: "Actualizar inventario" },
+      ...opciones, ...(mostrarMock ? [{ value: "mock", label: "Mock · Simulado" }] : []), { value: "actualizar", label: "Actualizar inventario" },
       ...(perfilAgente ? [{ value: "quitar", label: "Quitar selección para Agentes" }] : []),
       { value: "volver", label: "Volver" },
     ], undefined, { id: "inventario" });

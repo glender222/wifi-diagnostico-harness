@@ -16,14 +16,15 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-FUENTE = Path(__file__).resolve().parent.parent / "consola.mjs"
+FUENTE_REAL = Path(__file__).resolve().parent.parent / "consola.mjs"
+FUENTE = Path(__file__).resolve().parent / "fixtures" / "consola.mjs"
 
 
 @contextmanager
-def terminal(carpeta, env=None, destino=None, filas=28, columnas=110, ejecutable=None):
+def terminal(carpeta, env=None, destino=None, filas=28, columnas=110, ejecutable=None, fuente=FUENTE):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", filas, columnas, 0, 0))
-    comando = [str(ejecutable)] if ejecutable else ["node", str(FUENTE)]
+    comando = [str(ejecutable)] if ejecutable else ["node", str(fuente)]
     if destino is not None:
         comando.append(str(destino))
     proceso = subprocess.Popen(comando, cwd=carpeta, stdin=slave, stdout=slave, stderr=slave,
@@ -627,6 +628,55 @@ else:
                 esperar("harwiff >")
                 escribir(b"/agente\r")
                 esperar("→ Nueva inspección con wlanlab")
+
+            # El recorrido de producción usa el editor de chat y conserva el historial al reiniciar.
+            with terminal(base, env, destino="prueba", filas=16, columnas=64, fuente=FUENTE_REAL) as (app, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                pantalla = esperar("> Nueva conversación · wlanlab")
+                self.assertNotIn(b"simulada", pantalla)
+                escribir(b"\r")
+                esperar("Mensaje >")
+                escribir(b"Resume el enlace original\r")
+                esperar("Ruta por defecto IPv4 observada")
+                escribir(b"\x1b")
+                esperar("Abrir sesión guardada")
+                escribir(b"\x1b")
+                esperar("> Agentes")
+                escribir(b"\x03")
+                self.assertEqual(app.wait(timeout=5), 0)
+
+            with terminal(base, env, destino="prueba", filas=16, columnas=64, fuente=FUENTE_REAL) as (_, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("Abrir sesión guardada")
+                escribir(b"\x1b[B\r")
+                sesiones = esperar("Resume el enlace original")
+                self.assertNotIn("Sesión anterior".encode(), sesiones)
+                escribir(b"\r")
+                esperar("Ruta por defecto IPv4 observada")
+                escribir(b"Sigue con la pregunta anterior\r")
+                esperar("Sigue con la pregunta anterior")
+                [chat] = [d for d in (control.parent / "agentes").iterdir() if not d.name.startswith("fixture-")]
+                limite = time.monotonic() + 8
+                while len(list(chat.glob("turnos/*/resultado.json"))) < 2:
+                    self.assertLess(time.monotonic(), limite)
+                    time.sleep(0.05)
+            [chat] = [d for d in (control.parent / "agentes").iterdir() if not d.name.startswith("fixture-")]
+            turnos = sorted(chat.glob("turnos/*/resultado.json"))
+            self.assertEqual(len(turnos), 2)
+            for archivo in turnos:
+                resultado = json.loads(archivo.read_text())
+                self.assertIn("Ruta por defecto IPv4 observada", resultado["respuesta"])
+                registro = control.parent / "auditoria" / resultado["auditoria"] / "solicitud.json"
+                self.assertEqual(json.loads(registro.read_text())["sessionId"], chat.name)
+
+            denegado = subprocess.run(["node", str(FUENTE_REAL), str(base / "prueba")], cwd=base, env=env,
+                                      input="/adaptador listar\n/agente --mock prueba\n/diagnostico demo\n/salir\n",
+                                      text=True, capture_output=True, timeout=15)
+            self.assertEqual(denegado.returncode, 1)
+            self.assertNotIn("mock", denegado.stdout)
+            self.assertIn("Usa /agente <objetivo>", denegado.stderr)
 
             def ejecutar_objetivo():
                 return subprocess.run(["node", str(FUENTE), str(base / "prueba")], cwd=base, env=env,

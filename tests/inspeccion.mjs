@@ -6,7 +6,7 @@ import {createModels} from "@earendil-works/pi-ai";
 import {openaiProvider} from "@earendil-works/pi-ai/providers/openai";
 import {anthropicProvider} from "@earendil-works/pi-ai/providers/anthropic";
 import {inspeccionar, interpretarInspeccion} from "../inspeccion.mjs";
-import {leerAuditoria, idsAuditoria, guardarAlcance, elegirAdaptadorInspeccion} from "../proyecto.mjs";
+import {leerAuditoria, idsAuditoria, guardarAlcance, elegirAdaptadorInspeccion, hashAlcance} from "../proyecto.mjs";
 import {entorno} from "../entorno.mjs";
 
 const raiz = await mkdtemp(join(tmpdir(), "harwiff-inspeccion-"));
@@ -182,7 +182,7 @@ try {
   assert.doesNotMatch(contradictorio.lineas.join(" "), /Hecho/);
 
   const alcance = {allowedSsids: ["LAB_AUTORIZADO"], allowedBssids: [], allowedChannels: []};
-  await guardarAlcance({raiz}, alcance);
+  const autorizado = await guardarAlcance({raiz}, alcance);
   const revocada = conexion(openaiProvider(), [...probar, () => ({name: "inspeccionar_enlace", args: {interfaz: "i1"}})]);
   await assert.rejects(inspeccionar({proyecto: {raiz}, objetivo: "Lee el enlace", nombre: "wlan-test", red: true,
     conexion: revocada, broker: async op => {
@@ -192,6 +192,10 @@ try {
     }}), {code: "scope_changed"});
   assert.equal((await Promise.all((await idsAuditoria(raiz)).map(id => leerAuditoria(raiz, id))))
     .filter(item => item.operacion === "inspeccionar_enlace" && item.evidencia).length, 0);
+  await assert.rejects(inspeccionar({proyecto: {raiz}, objetivo: "Lee el enlace", nombre: "wlan-test", red: true,
+    permisoRed: {revision: autorizado.revision, hash: hashAlcance(autorizado)},
+    broker: async () => assert.fail("Se intentó ejecutar una lectura con el permiso revocado.")}),
+  /El alcance autorizado cambió/);
 
   if (process.env.HARWIFF_TEST_HOST === "1") {
     const perfil = await entorno("adaptadores-perfil", undefined, {soloLectura: true});

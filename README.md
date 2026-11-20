@@ -1,18 +1,16 @@
 # Harwiff
 
-**Diagnóstico Wi‑Fi de solo lectura desde la terminal.** Abre un proyecto, inspecciona sus adaptadores y conserva cada informe con su registro de auditoría. Puedes empezar con una muestra sintética y conectar un proveedor cuando quieras usar el agente.
+**Diagnóstico Wi‑Fi de solo lectura desde la terminal.** Abre un proyecto, inspecciona sus adaptadores y conversa con el agente sobre observaciones que puedes verificar en auditoría.
 
 [Instalar](#instalación) · [Primera prueba](#primera-prueba-sin-docker) · [Agente](#conversar-con-el-agente) · [Diagnóstico físico](#diagnóstico-físico) · [Descargas](https://github.com/glender222/wifi-diagnostico-harness/releases/latest)
 
-![Menú de Harwiff en el proyecto Laboratorio, con adaptador simulado, alcance y modelo configurados](docs/capturas/menu.png)
-
 ## Inspección Wi-Fi con el agente
 
-Para usar tu tarjeta habitualmente, elige **Adaptadores → tu radio → Seleccionar para Agentes**. El proyecto recuerda la interfaz y la ofrece en **Agentes → Nueva inspección con …**. En la consola, `/agente <objetivo>` usa esa interfaz con datos del host. La conversación simulada sigue disponible con `/agente --mock <objetivo>`.
+Para usar tu tarjeta habitualmente, elige **Adaptadores → tu radio → Seleccionar para Agentes**. En **Agentes → Nueva conversación**, Harwiff abre el chat con esa interfaz. Si el proyecto está sin interfaz seleccionada, puedes conversar sobre el inventario del host. En la consola, `/agente <objetivo>` inicia una conversación con ese objetivo.
 
 En la consola, pulsa **Tab** con la línea vacía o escribe `/agente` para abrir el menú **Agentes**. Allí también puedes elegir **Abrir sesión guardada** si el proyecto tiene conversaciones.
 
-Para una consulta puntual, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Diagnóstico → Inspección Wi-Fi de solo lectura**. **Solo datos del host** inicia el resumen de la interfaz de inmediato, incluso si la tarjeta sostiene la ruta principal. Después del resultado puedes hacer otra pregunta. Ejemplos de consola:
+Para una consulta puntual, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Diagnóstico → Consulta Wi-Fi puntual**. **Solo datos del host** inicia el resumen de la interfaz de inmediato, incluso si la tarjeta sostiene la ruta principal. Las preguntas de seguimiento se hacen en **Agentes**.
 
 ```text
 /agente --inspeccion -- ¿Qué radios Wi-Fi detectas?
@@ -42,10 +40,9 @@ Si `harwiff` no aparece en tu `PATH`, puedes ejecutarlo con `~/.local/bin/harwif
 
 | Modo | Requisitos adicionales | Resultado |
 | --- | --- | --- |
-| Muestra sintética | Ninguno | Informe de ejemplo y registro de auditoría |
 | Inventario local | Linux con adaptador Wi‑Fi para ver un radio físico | Dispositivos, interfaces, capacidades anunciadas y avisos |
 | Diagnóstico físico | Docker operativo, NetworkManager, iproute2 y adaptador seleccionado | Indicadores de solo lectura procesados con OpenSandbox |
-| Conversación con agente | OpenAI API o Azure AI Foundry, modelo compatible y alcance para `mock` | Respuesta, decisiones de herramientas y evidencia del escenario simulado |
+| Conversación con agente | Un proveedor y modelo compatible con llamadas a herramientas | Chat persistente y respuestas con citas a lecturas del host |
 
 ## Primera prueba sin Docker
 
@@ -56,30 +53,25 @@ harwiff
 ```
 
 1. Elige **Inicializar esta carpeta** y pulsa **Enter**.
-2. Abre **Diagnóstico → Generar muestra sintética**.
-3. Desde **Ver en Auditoría**, abre el resumen o el JSON. El informe queda guardado en `.harwiff/informes/`.
+2. Abre **Adaptadores** y selecciona tu radio para ver las interfaces y capacidades que anuncia.
+3. Elige **Seleccionar para Agentes** en la interfaz que quieras usar.
 
 Usa **↑** y **↓** para moverte, **Enter** para abrir y **Esc** para volver. **?** abre Ayuda en el menú principal. La TUI admite ventanas desde 60×16. En el chat, a partir de 120 columnas, la actividad aparece a la derecha.
 
-![Resumen de auditoría de un diagnóstico sintético con origen, referencia del informe y SHA‑256](docs/capturas/auditoria.png)
-
 ## Conversar con el agente
 
-1. En **Alcance → Editar alcance**, añade el SSID `LAB_TEST_AP` y el canal `6`.
-2. En **Adaptadores**, abre **Mock · Simulado** y elige **Usar este adaptador**.
-3. En **Modelo y ajustes**, conecta un proveedor y elige el modelo para sesiones nuevas.
-4. Abre **Agentes → Nueva conversación simulada** y escribe, por ejemplo, «Resume las observaciones del escenario de laboratorio».
+1. En **Modelo y ajustes**, conecta un proveedor y elige el modelo.
+2. Abre **Agentes → Nueva conversación** y escribe «¿Qué rutas por defecto IPv4 e IPv6 observas?».
+3. Escribe otra pregunta en el mismo chat. Harwiff envía contexto reciente del mismo alcance y verifica las citas del turno.
 
-![Conversación simulada con el agente y actividad de herramientas a la derecha](docs/capturas/agente.png)
-
-**Tab** abre **Operaciones**, **Detalle de turnos** y **Detener turno**. **Esc** vuelve a la lista y el turno puede seguir trabajando. Harwiff conserva el borrador y la posición de lectura al volver a la sesión. «Incorporado» indica que el mensaje fue admitido localmente. Las operaciones muestran su decisión, motivo y referencias de evidencia.
+**Esc** vuelve a Agentes. **Abrir sesión guardada** recupera la conversación después de reiniciar. **Tab** abre **Detalle de turnos**, **Detener turno** cuando está activo y **Datos del próximo mensaje**. Para consultar la asociación, configura una red autorizada y habilita **Incluir la asociación autorizada del proyecto** antes de enviar ese mensaje.
 
 ### Proveedores
 
 - **OpenAI API**. Introduce la clave en el campo oculto de **Conexiones de proveedor** o usa `OPENAI_API_KEY`. Harwiff puede conservar la clave en Secret Service. Si el almacén falla, la clave recién conectada permanece en memoria hasta cerrar la aplicación. El modelo debe admitir Responses y llamadas a herramientas.
 - **Azure AI Foundry**. Exporta `FOUNDRY_API_KEY` en la terminal desde la que arrancas Harwiff. Después configura el dominio y el deployment en **Conexiones de proveedor → Azure AI Foundry**. El deployment debe admitir Chat Completions v1 y herramientas.
 
-**Probar conexión** hace una solicitud al proveedor que puede consumir tokens. El modelo del proyecto se aplica a sesiones nuevas. Las sesiones existentes conservan su modelo. Los agentes operan sobre el escenario simulado. Pueden consultar un resumen depurado del inventario del host dentro de sus límites de turno. Las capturas del chat usan un proveedor simulado.
+**Probar conexión** hace una solicitud al proveedor que puede consumir tokens. La conversación usa el modelo que el proyecto tiene configurado al enviar cada mensaje.
 
 ## Diagnóstico físico
 
@@ -105,7 +97,7 @@ Los proyectos nuevos guardan sus datos en `.harwiff/`. Se reconocen también pro
 
 ```bash
 harwiff proyectos --json --profundidad 2 "$HOME/Proyectos"
-printf '%s\n' '/diagnostico demo' '/auditoria' '/salir' | harwiff ~/laboratorio-wifi
+printf '%s\n' '/adaptador listar' '/auditoria' '/salir' | harwiff ~/laboratorio-wifi
 ```
 
 El lote mantiene los resultados en stdout, escribe los errores en stderr y devuelve código 1 si alguna línea falla. El ejemplo supone un proyecto ya inicializado.
@@ -134,13 +126,13 @@ En cada arranque, `harwiff-dev` lee el código del checkout al que apunta. Reabr
 | --- | --- | --- |
 | Suite local y de CI | `./scripts/harwiff-dev --test` | Contratos, políticas, proveedores simulados, CLI y TUI. Usa proyectos temporales y funciona sin credenciales. |
 | Wi-Fi real con LLM simulado | `./scripts/harwiff-dev --test-host` | Lee la ruta IPv4 de una tarjeta PCIe que sostiene la conexión principal. Requiere Linux e iproute2. |
-| Inspección manual con LLM real | `./scripts/harwiff-dev <carpeta-del-proyecto>` | Con el proveedor configurado, abre **Agentes → Nueva inspección con …**, escribe «¿Qué rutas por defecto IPv4 e IPv6 observas?» y elige **Solo datos del host** si se ofrece. Revisa los hechos y sus citas en **Auditoría**. |
+| Conversación manual con LLM real | `./scripts/harwiff-dev <carpeta-del-proyecto>` | Abre **Agentes → Nueva conversación**, envía dos preguntas sobre el enlace y vuelve a abrir la sesión. Revisa las citas en **Auditoría**. |
 
-Para una primera prueba manual con datos de ejemplo, crea un proyecto temporal y ejecuta la muestra.
+Para comprobar el inventario local, inicializa un proyecto temporal y lista los adaptadores.
 
 ```bash
 prueba="$(mktemp -d)"
-printf '%s\n' '/init' '/diagnostico demo' '/salir' | ./scripts/harwiff-dev "$prueba"
+printf '%s\n' '/init' '/adaptador listar' '/salir' | ./scripts/harwiff-dev "$prueba"
 ```
 
 El runner de aceptación con un LLM real se ejecuta con `.venv-dev/bin/python3` como `WIFI_PYTHON`.

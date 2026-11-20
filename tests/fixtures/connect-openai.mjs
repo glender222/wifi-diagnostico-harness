@@ -14,7 +14,8 @@ globalThis.fetch = async (input, init) => {
   const usage = { input_tokens: 8, output_tokens: 2, total_tokens: 10 };
   const catalogo = new Set(tools?.map(({ name }) => name));
   const operacion = catalogo.has("comprobar") ? "comprobar" :
-    catalogo.has("inspeccionar_enlace") ? "inspeccionar_enlace" : "observar_entorno";
+    catalogo.has("inspeccionar_enlace") ? "inspeccionar_enlace" :
+      catalogo.has("observar_entorno") ? "observar_entorno" : "consultar_adaptadores";
   const llamada = { type: "function_call", id: "fc_fixture", call_id: "call_fixture",
     name: operacion, arguments: operacion === "inspeccionar_enlace" ? '{"interfaz":"i1"}' : "{}", status: "completed" };
   if (!stream) return Response.json({ status: "completed", model, usage, output: [llamada] });
@@ -26,8 +27,18 @@ globalThis.fetch = async (input, init) => {
   let texto = pausa ? `${parcial} Cierre del ${fase}.` : "Conclusión basada en el fixture simulado.";
   if (recibio && operacion === "comprobar") texto = JSON.stringify({ resultado: recibio.output });
   if (recibio && operacion === "inspeccionar_enlace") {
+    const entrada = JSON.stringify(contexto);
+    if (entrada.includes("Sigue con la pregunta anterior") &&
+        (!entrada.includes("sin valor probatorio") || !entrada.includes("Resume el enlace original"))) {
+      throw new Error("La conversación perdió la pregunta previa.");
+    }
     const { ref } = JSON.parse(recibio.output).observations.find(({ field }) => field === "ipv4_route");
     texto = JSON.stringify({ version: 1, claims: [{ kind: "fact", refs: [ref] }] });
+  }
+  if (recibio && operacion === "consultar_adaptadores") {
+    const radios = JSON.parse(recibio.output).observations?.find(({ field }) => field === "radio_count");
+    texto = JSON.stringify({ version: 1, claims: [typeof radios?.value === "number"
+      ? { kind: "fact", refs: [radios.ref] } : { kind: "unknown", field: "radio_count" }] });
   }
   const item = recibio ? { type: "message", id: "msg_fixture", role: "assistant", status: "completed",
     content: [{ type: "output_text", text: texto, annotations: [] }] } : llamada;

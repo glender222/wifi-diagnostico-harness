@@ -353,7 +353,7 @@ def diagnostico_fisico(identificador, alcance, ejecucion, puerto):
 @contextmanager
 def sandbox_administrado(puerto_pedido=0):
     if not docker("info", timeout=10):
-        raise RuntimeError("Docker no está accesible para Harwiff. Prueba /diagnostico demo.")
+        raise RuntimeError("Docker no está accesible para Harwiff. Usa Agentes para consultar el enlace de solo lectura.")
     for imagen in (EXECD, IMAGEN):
         if not docker("image", "inspect", imagen, timeout=10) and not docker("pull", imagen):
             raise RuntimeError("No se pudo descargar una imagen fijada de OpenSandbox.")

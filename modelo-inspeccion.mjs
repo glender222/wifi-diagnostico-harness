@@ -16,7 +16,7 @@ export async function resolverModeloInspeccion(config, env = process.env) {
   const proveedor = env.HARWIFF_LLM_PROVIDER ?? perfil.provider ?? config.llm?.proveedor
     ?? (config.foundry || env.FOUNDRY_HOST || config.cliente === "azure-foundry" ? "azure-foundry" : null);
   const id = env.HARWIFF_LLM_MODEL ?? perfil.model ?? (proveedor === "openai" ? config.llm?.openaiModelId : undefined);
-  if (!proveedor) throw new Error("Configura un proveedor y modelo para la inspección.");
+  if (!proveedor) throw new Error("Conecta un proveedor con /connect y elige un modelo para conversar.");
   const modelos = builtinModels();
   let modelo;
   let opciones = { env };

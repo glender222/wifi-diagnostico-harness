@@ -273,6 +273,7 @@ export function pantalla(comandos, acciones) {
     if (!texto && !pregunta) return;
     const visible = acciones.ocultar(texto);
     if (!pregunta && estado?.autonoma && visible.trim() && !visible.trimStart().startsWith("/")) {
+      avisoTexto = "";
       editor.addToHistory(visible);
       acciones.enviar(estado.agente, visible.trim());
       return;
@@ -350,7 +351,10 @@ export function pantalla(comandos, acciones) {
       resolverEntrada(undefined);
       return { consume: true };
     }
-    if (!compatibilidad && !pregunta) {
+    if (!pregunta && estado?.respondiendo && matchesKey(dato, "enter") && !editor.getText().trimStart().startsWith("/")) {
+      return { consume: true };
+    }
+    if ((!compatibilidad || estado?.inspeccion) && !pregunta) {
       if (menuRaizVisible() && (dato === "/" || matchesKey(dato, "/"))) {
         compatibilidad = true;
         render(estado);
@@ -421,16 +425,19 @@ export function pantalla(comandos, acciones) {
     const contexto = nuevo.proyecto ? [nuevo.proyecto, nuevo.cliente].filter(Boolean).join("  ·  ") : "Sin proyecto";
     const llm = !nuevo.agente && nuevo.proveedor ? `  ·  ${nuevo.proveedor}${nuevo.modelo ? ` / ${nuevo.modelo}` : ""}` : "";
     encabezado.setText(compatibilidad ? `${acento("Harwiff")}  ·  ${contexto}${llm}` :
-      `${fuerte("Harwiff")} / ${nuevo.proyecto ?? "Sin proyecto"}${nuevo.agente ? " / Agente" : ""}`);
+      `${fuerte("Harwiff")} / ${nuevo.proyecto ?? "Sin proyecto"}${nuevo.inspeccion ? " / Conversación" : nuevo.agente ? " / Agente" : ""}`);
     controlWifi.setText(resumenControlWifi(nuevo.controlWifi));
     estadoVisible.setText(nuevo.estadoResumen ?? "");
     tituloCampo.setText(pregunta ?? "");
     aviso.setText(avisoTexto);
-    editor.prefijo = compatibilidad ? pregunta || (nuevo.agente ? undefined : nuevo.promptEntorno) : pregunta ? ">" : "Mensaje >";
-    etiqueta.setText(nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}${nuevo.soloConsulta ? "  ·  Solo consulta" : ""}` : "");
+    editor.prefijo = compatibilidad ? pregunta || (nuevo.inspeccion ? "Mensaje >" : nuevo.agente ? undefined : nuevo.promptEntorno)
+      : pregunta ? ">" : "Mensaje >";
+    etiqueta.setText(nuevo.inspeccion ? `Conversación · ${nuevo.interfazAgente} · ${nuevo.respondiendo ? "Respondiendo" : "Solo lectura"}`
+      : nuevo.agente ? `agente/${nuevo.agente} >  ·  Esc vuelve a ${nuevo.promptEntorno}${nuevo.soloConsulta ? "  ·  Solo consulta" : ""}` : "");
     if (secreto) campoSecreto.setText(`${secreto.titulo} ${(ui.terminal.columns < 80 ? "*" : "•").repeat(Math.min(32, secreto.valor.length))}`);
     indice = Math.min(indice, Math.max(0, nuevo.agentes.length - 1));
-    if (compatibilidad) {
+    if (compatibilidad && nuevo.inspeccion) fila.setText("Tab Acciones · Esc volver");
+    else if (compatibilidad) {
       const agentes = nuevo.agentes.map(({ id, estado, actividad }, n) => {
         const reciente = actividad ? ` · ${truncateToWidth(actividad, 28, "…")}` : "";
         const texto = `${id} · ${estado}${reciente}`;
