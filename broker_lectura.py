@@ -55,7 +55,10 @@ def vincular(entrada):
     if not isinstance(nombre, str) or not core.NOMBRE.fullmatch(nombre):
         return {"identity": None}
     seleccion = seleccionar(nombre)
-    return {"identity": seleccion[0] if seleccion else None}
+    if not seleccion:
+        return {"identity": None}
+    identidad, _, interfaz = seleccion
+    return {"identity": identidad, "adapterId": interfaz["legacyAdapterId"]}
 
 
 def inventario(broker_request, seleccionado, fin):

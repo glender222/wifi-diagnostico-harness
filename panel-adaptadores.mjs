@@ -71,7 +71,7 @@ export async function detalleAdaptador(nombre) {
   return [resumen(fila), capacidades(fila), restricciones(fila, perfil)].join("\n\n");
 }
 
-export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, inspeccionar } = {}) {
+export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, inspeccionar, agentes } = {}) {
   let perfil;
   let estadoGuardado = "";
   for (;;) {
@@ -88,25 +88,37 @@ export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, i
         description: `${dispositivo.bus} · ${CRITICIDAD[phy.connectivity.criticality]} · ${RESERVA[phy.reservation.state]}${conexion(phy)}` };
     });
     const parcial = perfil.status === "complete" ? "" : " · inventario parcial";
-    const opcion = await interfaz.elegir(`Harwiff / Adaptadores${parcial}\nSeleccionado en el proyecto: ${seleccionado ?? "ninguno"}${estadoGuardado}`, [
+    const perfilAgente = agentes?.actual;
+    const resumenAgentes = agentes ? `\nAgentes (solo lectura) · ${perfilAgente?.name ?? "sin selección"}` : "";
+    const opcion = await interfaz.elegir(`Harwiff / Adaptadores${parcial}${resumenAgentes}\nDiagnóstico · ${seleccionado ?? "ninguno"}${estadoGuardado}`, [
       ...opciones, { value: "mock", label: "Mock · Simulado" }, { value: "actualizar", label: "Actualizar inventario" },
+      ...(perfilAgente ? [{ value: "quitar", label: "Quitar selección para Agentes" }] : []),
       { value: "volver", label: "Volver" },
     ], undefined, { id: "inventario" });
     if (!opcion || opcion === "volver") return;
+    if (opcion === "quitar") {
+      await agentes.elegir(null);
+      return;
+    }
     if (opcion === "actualizar") {
       perfil = undefined;
       continue;
     }
     const fila = filas.find(({ phy }) => phy.phyId === opcion);
-    if (await revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar)) return;
+    if (await revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar, agentes)) return;
   }
 }
 
-async function revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar) {
+async function revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar, agentes) {
   const phy = fila?.phy;
   const interfacesLectura = phy?.interfaces.filter(({ ifindex }) => ifindex) ?? [];
   const puedeInspeccionar = inspeccionar && interfacesLectura.length > 0;
+  const candidatosAgente = interfacesLectura.filter(({ legacyAdapterId }) => legacyAdapterId);
+  const seleccionado = candidatosAgente.some(({ ifname, legacyAdapterId }) =>
+    ifname === agentes?.actual?.name && legacyAdapterId === agentes.actual.id);
   const opciones = [
+    ...(agentes && candidatosAgente.length ? [{ value: "agentes", label: "Seleccionar para Agentes",
+      description: seleccionado ? "Predeterminado del proyecto" : "Solo lectura" }] : []),
     ...(puedeInspeccionar ? [{ value: "inspeccionar", label: "Inspeccionar en solo lectura" }] : []),
     { value: "usar", label: fila ? "Usar para diagnóstico físico" : "Usar este adaptador",
       description: phy?.connectivity.criticality === "critical" ? "Restringido por la ruta principal" : undefined },
@@ -120,11 +132,24 @@ async function revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar) {
       id: "perfil/" + (fila?.phy.phyId ?? "mock"),
     });
     if (!accion || accion === "volver") return false;
-    if (accion === "inspeccionar") {
-      const nombre = interfacesLectura.length === 1 ? interfacesLectura[0].ifname :
-        await interfaz.elegir("Interfaz para inspección",
-          interfacesLectura.map(({ ifname }) => ({ value: ifname, label: ifname })), undefined, { id: "inspeccionar/" + phy.phyId });
-      if (nombre) await inspeccionar(nombre);
+    if (accion === "agentes" || accion === "inspeccionar") {
+      const guardar = accion === "agentes";
+      const candidatos = guardar ? candidatosAgente : interfacesLectura;
+      const nombre = candidatos.length === 1 ? candidatos[0].ifname :
+        await interfaz.elegir(guardar ? "Interfaz para Agentes" : "Interfaz para inspección",
+          candidatos.map(({ ifname }) => ({ value: ifname, label: ifname })), undefined, { id: accion + "/" + phy.phyId });
+      if (!nombre) continue;
+      if (!guardar) {
+        await inspeccionar(nombre);
+        continue;
+      }
+      try {
+        await agentes.elegir(nombre, candidatos.find(({ ifname }) => ifname === nombre).legacyAdapterId);
+        return true;
+      } catch (error) {
+        if (interfaz.enComandos()) throw error;
+        await interfaz.mostrarDetalle(error.message, "Selección de Agentes");
+      }
     } else if (accion === "usar") {
       try {
         if (!fila) {

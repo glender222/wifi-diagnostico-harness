@@ -9,6 +9,9 @@ export const CLIENTES = ["demo", "azure-foundry", "chatgpt", "opencode"];
 export const ID_SESION = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const ID_EJECUCION = /^\d{13}-[a-f0-9-]{36}$/;
 
+const NOMBRE_INTERFAZ = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,14}$/;
+const ID_ADAPTADOR = /^[a-f0-9]{20}$/;
+
 export function resumenControlWifi(control) {
   const adaptador = control?.adapter;
   const alcance = control?.scope;
@@ -65,6 +68,7 @@ export async function leerControlWifi(proyecto) {
       projectId: null,
       revision: 0,
       adapter: typeof id === "string" ? { id, name: null, mode: "sandbox" } : null,
+      inspectionAdapter: null,
       scope: { allowedBssids: [], allowedSsids: [], allowedChannels: [], maxIterations: 8 },
       preflight: null,
       snapshot: null,
@@ -76,10 +80,13 @@ export async function leerControlWifi(proyecto) {
     if (estado?.esquema !== "harwiff-control-wifi/v1" || typeof estado.projectId !== "string"
         || !["allowedBssids", "allowedSsids", "allowedChannels"].every((campo) => Array.isArray(estado.scope?.[campo]))
         || (estado.revision !== undefined && (!Number.isSafeInteger(estado.revision) || estado.revision < 0))
-        || (estado.adapter !== null && typeof estado.adapter?.id !== "string")) {
+        || (estado.adapter !== null && typeof estado.adapter?.id !== "string")
+        || (estado.inspectionAdapter != null &&
+          (typeof estado.inspectionAdapter.name !== "string" || !NOMBRE_INTERFAZ.test(estado.inspectionAdapter.name) ||
+           typeof estado.inspectionAdapter.id !== "string" || !ID_ADAPTADOR.test(estado.inspectionAdapter.id)))) {
       throw new TypeError();
     }
-    return { revision: 0, ...estado };
+    return { revision: 0, inspectionAdapter: null, ...estado };
   } catch (error) {
     if (error instanceof SyntaxError || error instanceof TypeError) {
       throw new Error("Revisa control-wifi.json. El estado Wi-Fi del proyecto tiene un formato inválido.");
@@ -176,6 +183,28 @@ export async function usarAdaptador(proyecto, name, id, observed) {
     if (!estado.snapshot) throw errorPreflight(estado.preflight, resultado.code);
     const cambio = estado.adapter.id !== anterior.adapter?.id || estado.adapter.mode !== anterior.adapter?.mode;
     await guardarCambioConfiguracion(proyecto.raiz, cambio ? ["adaptador"] : [], () => guardarControlWifi(proyecto, estado));
+    return estado;
+  });
+}
+
+export async function elegirAdaptadorInspeccion(proyecto, name, observado) {
+  let seleccion = null;
+  if (name !== null) {
+    if (typeof name !== "string" || !NOMBRE_INTERFAZ.test(name)) throw new Error("Interfaz Wi-Fi inválida.");
+    const actual = await entorno("vincular-inspeccion", { name }, { tiempo: 2000, soloLectura: true });
+    if (typeof actual?.adapterId !== "string" || !ID_ADAPTADOR.test(actual.adapterId) ||
+        (observado !== undefined && observado !== actual.adapterId)) {
+      throw new Error("La interfaz Wi-Fi ya no coincide con el inventario. Actualízalo y vuelve a elegirla.");
+    }
+    seleccion = { id: actual.adapterId, name };
+  }
+  return conBloqueoProyecto(proyecto.raiz, async () => {
+    const anterior = await leerControlWifi(proyecto);
+    if (anterior.inspectionAdapter?.id === seleccion?.id && anterior.inspectionAdapter?.name === seleccion?.name) {
+      return anterior;
+    }
+    const estado = { ...anterior, projectId: anterior.projectId ?? randomUUID(), inspectionAdapter: seleccion };
+    await guardarCambioConfiguracion(proyecto.raiz, ["adaptador_inspeccion"], () => guardarControlWifi(proyecto, estado));
     return estado;
   });
 }
@@ -294,6 +323,7 @@ export async function idsAuditoria(proyecto) {
 const AJUSTES = new Map([
   ["proveedor", "proveedor LLM"], ["modelo", "modelo predeterminado"], ["foundry", "configuración de Foundry"],
   ["sandbox", "puerto de OpenSandbox"], ["alcance", "alcance"], ["adaptador", "adaptador"],
+  ["adaptador_inspeccion", "adaptador de Agentes"],
 ]);
 
 export async function guardarCambioConfiguracion(raiz, campos, guardar) {

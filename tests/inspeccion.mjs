@@ -6,7 +6,7 @@ import {createModels} from "@earendil-works/pi-ai";
 import {openaiProvider} from "@earendil-works/pi-ai/providers/openai";
 import {anthropicProvider} from "@earendil-works/pi-ai/providers/anthropic";
 import {inspeccionar, interpretarInspeccion} from "../inspeccion.mjs";
-import {leerAuditoria, idsAuditoria, guardarAlcance} from "../proyecto.mjs";
+import {leerAuditoria, idsAuditoria, guardarAlcance, elegirAdaptadorInspeccion} from "../proyecto.mjs";
 import {entorno} from "../entorno.mjs";
 
 const raiz = await mkdtemp(join(tmpdir(), "harwiff-inspeccion-"));
@@ -197,7 +197,9 @@ try {
     const perfil = await entorno("adaptadores-perfil", undefined, {soloLectura: true});
     const nombre = perfil.devices.find(d => d.bus === "pci")?.phys.find(p => p.connectivity.criticality === "critical")?.interfaces[0]?.ifname;
     assert.ok(nombre, "Hace falta una interfaz PCIe crítica para la prueba física.");
+    const {inspectionAdapter} = await elegirAdaptadorInspeccion({raiz}, nombre);
     const fisico = await inspeccionar({proyecto: {raiz}, objetivo: "Revisa la ruta IPv4 de la interfaz elegida", nombre,
+      adaptadorIdEsperado: inspectionAdapter.id,
       conexion: conexion(anthropicProvider(), [...probar,
         () => ({name: "inspeccionar_enlace", args: {interfaz: "i1"}}),
         payload => {

@@ -105,7 +105,7 @@ async function evidenciaHistorica(raiz, id, scopeId) {
 }
 
 export async function inspeccionar({
-  proyecto, objetivo, anterior, nombre, red = false, historial = false, conexion, signal: cancelacion,
+  proyecto, objetivo, anterior, nombre, adaptadorIdEsperado, red = false, historial = false, conexion, signal: cancelacion,
   broker = (op, datos, opciones) => op === "broker-lectura"
     ? brokerHost.execute(datos, opciones.signal, opciones.tiempo)
     : entorno("vincular-inspeccion", datos, {...opciones, soloLectura: true}),
@@ -123,9 +123,13 @@ export async function inspeccionar({
     throw new Error("Define un alcance de red válido con /alcance set antes de habilitarlo.");
   }
 
-  const tecnico = await comprobarModelo(conexion, signal);
-  const identity = nombre ? (await broker("vincular-inspeccion", {name: nombre}, {signal, tiempo: 2000}))?.identity : null;
+  const seleccion = nombre ? await broker("vincular-inspeccion", {name: nombre}, {signal, tiempo: 2000}) : null;
+  const identity = seleccion?.identity ?? null;
+  if (adaptadorIdEsperado && seleccion?.adapterId !== adaptadorIdEsperado) {
+    throw new Error("La interfaz guardada para Agentes cambió o está desconectada. Vuelve a elegirla en Adaptadores.");
+  }
   if (nombre && !validar("hash", identity)) throw new Error("La interfaz Wi‑Fi no está disponible o su identidad es ambigua.");
+  const tecnico = await comprobarModelo(conexion, signal);
   const binding = nombre ? {name: nombre, identity} : null;
   const networkRevision = configuracion?.revision ?? null;
   const networkHash = configuracion ? hashAlcance(configuracion) : null;
@@ -159,9 +163,13 @@ export async function inspeccionar({
     .replace(/\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b|\bsk-[A-Za-z0-9_-]{6,}/gi, "[identificador omitido]");
 
   async function vigente() {
-    if (!red) return;
+    if (!red && !adaptadorIdEsperado) return;
     const ahora = await leerControlWifi(proyecto);
-    if (ahora.revision !== networkRevision || hashAlcance(ahora) !== networkHash) {
+    if (adaptadorIdEsperado && (ahora.inspectionAdapter?.id !== adaptadorIdEsperado || ahora.inspectionAdapter.name !== nombre)) {
+      invalidado = "scope_changed";
+      throw fallo("scope_changed", "El adaptador de Agentes cambió durante la inspección.");
+    }
+    if (red && (ahora.revision !== networkRevision || hashAlcance(ahora) !== networkHash)) {
       invalidado = "scope_changed";
       throw fallo("scope_changed", "El alcance cambió durante la inspección.");
     }

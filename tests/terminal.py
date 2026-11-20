@@ -519,11 +519,13 @@ elif sys.argv[-1] == "preflight":
         os.execvp("python3", ["python3", *sys.argv[1:]])
 elif sys.argv[-1] == "vincular-inspeccion":
     assert json.load(sys.stdin) == {"name": "wlanlab"}
-    print(json.dumps({"identity": "b" * 64}))
+    adapter_id = "c" * 20 if Path("adaptador-sustituido").exists() else "a" * 20
+    identity = "d" * 64 if Path("interfaz-recreada").exists() else "b" * 64
+    print(json.dumps({"identity": identity, "adapterId": adapter_id}))
 elif sys.argv[-1] == "broker-lectura":
     entrada = json.load(sys.stdin)
     assert entrada["network"] is None
-    assert entrada["binding"]["identity"] == "b" * 64
+    assert entrada["binding"]["identity"] == ("d" if Path("interfaz-recreada").exists() else "b") * 64
     assert entrada["operation"] == "inspeccionar_enlace"
     print(json.dumps({"version": 1, "origin": "host_readonly", "status": "ok", "reasons": [],
                       "observations": [{"subject": "p1", "field": "ipv4_route", "source": "ip",
@@ -541,6 +543,8 @@ else:
                 escribir(b"/adaptador\r")
                 esperar("Conexión principal")
                 escribir(b"\r")
+                esperar("→ Seleccionar para Agentes")
+                escribir(b"\x1b[B")
                 esperar("→ Inspeccionar en solo lectura")
                 escribir(b"\r")
                 esperar("Solo datos del host")
@@ -554,7 +558,7 @@ else:
                 self.assertEqual(control.read_bytes(), previo)
                 escribir(b"\r")
                 esperar("Ver restricciones y motivos")
-                escribir(b"\x1b[B" * 2)
+                escribir(b"\x1b[B" * 3)
                 esperar("→ Ver capacidades completas")
                 escribir(b"\x1b[B")
                 esperar("→ Ver restricciones y motivos")
@@ -564,13 +568,49 @@ else:
                 esperar("Harwiff / Adaptadores")
                 escribir(b"\r")
                 esperar("Restringido por la ruta principal")
-                escribir(b"\x1b[B")
+                escribir(b"\x1b[B" * 2)
                 esperar("→ Usar para diagnóstico físico")
                 escribir(b"\r")
                 esperar("La interfaz cambió.")
                 self.assertEqual(control.read_bytes(), previo)
+                escribir(b"/adaptador\r")
+                esperar("Harwiff / Adaptadores")
+                escribir(b"\r")
+                esperar("→ Seleccionar para Agentes")
+                escribir(b"\r")
+                esperar("Adaptador de Agentes guardado · wlanlab")
+                original = json.loads(previo)
+                con_preferencia = json.loads(control.read_text())
+                self.assertEqual(con_preferencia.pop("inspectionAdapter"), {"id": "a" * 20, "name": "wlanlab"})
+                original.pop("inspectionAdapter", None)
+                self.assertEqual(con_preferencia, original)
                 escribir(b"/salir\r")
                 self.assertEqual(proceso.wait(timeout=5), 0)
+
+            (base / "interfaz-recreada").touch()
+            with terminal(base, env, destino="prueba", filas=18, columnas=105) as (_, esperar, escribir):
+                esperar("> Agentes")
+                escribir(b"\r")
+                esperar("> Nueva inspección con wlanlab")
+                escribir(b"\r")
+                esperar("¿Qué quieres revisar con el agente?")
+                escribir(b"Resume las rutas locales\r")
+                esperar("Solo datos del host")
+                escribir(b"\r")
+                esperar("Ruta por defecto IPv4 observada")
+
+            def ejecutar_objetivo():
+                return subprocess.run(["node", str(FUENTE), str(base / "prueba")], cwd=base, env=env,
+                                      input="/agente Resume las rutas locales\n/salir\n", text=True,
+                                      capture_output=True, timeout=15)
+
+            resultado = ejecutar_objetivo()
+            self.assertEqual(resultado.returncode, 0, resultado.stderr)
+            self.assertIn("Ruta por defecto IPv4 observada", resultado.stdout)
+            (base / "adaptador-sustituido").touch()
+            resultado = ejecutar_objetivo()
+            self.assertEqual(resultado.returncode, 1)
+            self.assertIn("La interfaz guardada para Agentes cambió", resultado.stderr)
 
     def entorno_openai(self, pausa="0"):
         preload = (Path(__file__).parent / "fixtures" / "connect-openai.mjs").resolve().as_uri()

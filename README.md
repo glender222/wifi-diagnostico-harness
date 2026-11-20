@@ -8,7 +8,9 @@
 
 ## Inspección Wi-Fi con el agente
 
-Desde un proyecto abierto en Harwiff, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Diagnóstico → Inspección Wi-Fi de solo lectura**. **Solo datos del host** inicia el resumen de la interfaz de inmediato, incluso si la tarjeta sostiene la ruta principal. Después del resultado puedes hacer otra pregunta. En la consola:
+Para usar tu tarjeta habitualmente, elige **Adaptadores → tu radio → Seleccionar para Agentes**. El proyecto recuerda la interfaz y la ofrece en **Agentes → Nueva inspección con …**. En la consola, `/agente <objetivo>` usa esa interfaz con datos del host. La conversación simulada sigue disponible con `/agente --mock <objetivo>`.
+
+Para una consulta puntual, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Diagnóstico → Inspección Wi-Fi de solo lectura**. **Solo datos del host** inicia el resumen de la interfaz de inmediato, incluso si la tarjeta sostiene la ruta principal. Después del resultado puedes hacer otra pregunta. Ejemplos de consola:
 
 ```text
 /agente --inspeccion -- ¿Qué radios Wi-Fi detectas?
