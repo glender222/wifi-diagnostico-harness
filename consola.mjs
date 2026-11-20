@@ -848,15 +848,17 @@ async function aplicar(destino) {
     }
   }
 
-  async function menuInspeccion() {
-    const perfil = await entorno("adaptadores-perfil", undefined, {tiempo: 15000, soloLectura: true});
-    const nombres = [...new Set(perfil.devices.flatMap(d => d.phys.flatMap(p => p.interfaces.map(i => i.ifname))))];
-    const valor = await interfaz.elegir("Inspección de solo lectura", [
-      {value: "host", label: "Inventario del host"},
-      ...nombres.map(value => ({value: "if:" + value, label: value})),
-    ], undefined, {id: "inspeccion-interfaz"});
-    if (!valor) return;
-    const nombre = valor.startsWith("if:") ? valor.slice(3) : undefined;
+  async function menuInspeccion(nombre) {
+    if (nombre === undefined) {
+      const perfil = await entorno("adaptadores-perfil", undefined, {tiempo: 15000, soloLectura: true});
+      const nombres = [...new Set(perfil.devices.flatMap(d => d.phys.flatMap(p => p.interfaces.map(i => i.ifname))))];
+      const valor = await interfaz.elegir("Inspección de solo lectura", [
+        {value: "host", label: "Inventario del host"},
+        ...nombres.map(value => ({value: "if:" + value, label: value})),
+      ], undefined, {id: "inspeccion-interfaz"});
+      if (!valor) return;
+      if (valor.startsWith("if:")) nombre = valor.slice(3);
+    }
     const control = nombre ? await leerControlWifi(proyectoWifi()) : null;
     let red = false;
     if (control && (control.scope.allowedSsids.length || control.scope.allowedBssids.length)) {
@@ -877,7 +879,7 @@ async function aplicar(destino) {
       await interfaz.mostrarDetalle(textoInspeccion(resultado), "Inspección Wi-Fi");
       const siguiente = await interfaz.elegir("Inspección", [
         {value: "otra", label: "Hacer otra pregunta"},
-        {value: "volver", label: "Volver a Agentes"},
+        {value: "volver", label: "Terminar inspección"},
       ], undefined, {id: "inspeccion-continuar"});
       if (siguiente !== "otra") return;
       anterior = {objetivo, scopeId: resultado.scopeId};
@@ -1161,7 +1163,7 @@ async function aplicar(destino) {
     }
   }
 
-  async function elegirAdaptador() {
+  async function elegirAdaptador({ permitirInspeccion = false } = {}) {
     controlWifi = await leerControlWifi(proyectoWifi());
     actualizar();
     const guardado = controlWifi.adapter;
@@ -1179,6 +1181,7 @@ async function aplicar(destino) {
       mostrar("Adaptador seleccionado: " + controlWifi.adapter.name + " · Preflight: OK");
       interfaz.notificar("Adaptador seleccionado · Preflight correcto");
     }, {
+      inspeccionar: permitirInspeccion ? menuInspeccion : undefined,
       alLeer(perfil) {
         if (!guardado || guardado.id === "mock") return;
         const presente = perfil.devices.some(({ phys }) => phys.some(({ interfaces }) =>
@@ -1547,7 +1550,7 @@ async function aplicar(destino) {
       case "regresarAgentes":
         volver();
         return menuAgentes();
-      case "adaptador": return elegirAdaptador();
+      case "adaptador": return elegirAdaptador({ permitirInspeccion: true });
       case "alcance": return menuAlcance();
       case "diagnostico": return menuDiagnostico();
       case "ajustes": return menuAjustes();
@@ -1680,7 +1683,7 @@ async function aplicar(destino) {
         } else await iniciarAgenteProyecto(args);
         break;
       case "/adaptador": {
-        if (!args && interfaz) return elegirAdaptador();
+        if (!args && interfaz) return elegirAdaptador({ permitirInspeccion: true });
         const detalle = /^detalle\s+(\S+)$/.exec(args)?.[1];
         if (detalle) {
           const texto = seguro(await detalleAdaptador(detalle));

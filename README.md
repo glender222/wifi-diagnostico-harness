@@ -8,7 +8,7 @@
 
 ## Inspección Wi-Fi con el agente
 
-Desde un proyecto abierto en Harwiff, usa el menú **Agentes → Inspección Wi-Fi de solo lectura**. En la consola:
+Desde un proyecto abierto en Harwiff, usa **Adaptadores → tu radio → Inspeccionar en solo lectura** o **Agentes → Inspección Wi-Fi de solo lectura**. La tarjeta que sostiene la ruta principal también está disponible para esta inspección. En la consola:
 
 ```text
 /agente --inspeccion -- ¿Qué radios Wi-Fi detectas?
@@ -82,7 +82,7 @@ Usa **↑** y **↓** para moverte, **Enter** para abrir y **Esc** para volver. 
 Abre **Adaptadores** para consultar radios, interfaces, restricciones y capacidades anunciadas por el kernel. El lector usa sysfs y `nl80211`. Puede mostrar un inventario parcial cuando falte una fuente. Las capacidades anunciadas de monitor y concurrencia aparecen como **sin pruebas operativas**.
 
 1. Guarda los SSID o BSSID autorizados y, si corresponde, los canales en **Alcance**. Cada lista configurada debe coincidir con la asociación observada.
-2. En **Adaptadores**, abre el radio, revisa las restricciones y elige **Usar este adaptador**. Harwiff guarda la selección cuando supera el preflight.
+2. En **Adaptadores**, abre el radio, revisa las restricciones y elige **Usar para diagnóstico físico**. Harwiff guarda la selección cuando supera el preflight.
 3. Con Docker, NetworkManager e iproute2 operativos, abre **Diagnóstico → Ejecutar en modo físico**. El informe y su verificación quedan en **Auditoría**.
 
 Harwiff bloquea la operación si el radio sostiene una ruta por defecto IPv4 o IPv6, o si no puede verificar esa dependencia. El colector consulta la asociación local y envía indicadores depurados a OpenSandbox. La lectura cubre el estado local informado por NetworkManager. El diagnóstico no mide acceso a Internet ni resolución DNS. En el primer uso físico se descargan las imágenes de contenedor fijadas por el proyecto. [OpenSandbox](https://open-sandbox.ai/getting-started/installation)

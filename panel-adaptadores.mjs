@@ -37,7 +37,7 @@ function restricciones({ phy }, perfil) {
     })[razon]),
     RESERVA[phy.reservation.state],
     `Bloqueo rfkill lógico ${bloqueo(phy.rfkill.softBlocked)} · físico ${bloqueo(phy.rfkill.hardBlocked)}`,
-    "Coordinación limitada a Harwiff. La selección requiere preflight.",
+    "El diagnóstico físico requiere preflight.",
     ...avisos([...perfil.warnings, ...phy.probe.warnings]),
   ].join("\n");
 }
@@ -71,7 +71,7 @@ export async function detalleAdaptador(nombre) {
   return [resumen(fila), capacidades(fila), restricciones(fila, perfil)].join("\n\n");
 }
 
-export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer } = {}) {
+export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer, inspeccionar } = {}) {
   let perfil;
   let estadoGuardado = "";
   for (;;) {
@@ -98,13 +98,18 @@ export async function panelAdaptadores(interfaz, seleccionado, usar, { alLeer } 
       continue;
     }
     const fila = filas.find(({ phy }) => phy.phyId === opcion);
-    if (await revisarAdaptador(interfaz, fila, perfil, usar)) return;
+    if (await revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar)) return;
   }
 }
 
-async function revisarAdaptador(interfaz, fila, perfil, usar) {
+async function revisarAdaptador(interfaz, fila, perfil, usar, inspeccionar) {
+  const phy = fila?.phy;
+  const interfacesLectura = phy?.interfaces.filter(({ ifindex }) => ifindex) ?? [];
+  const puedeInspeccionar = inspeccionar && interfacesLectura.length > 0;
   const opciones = [
-    { value: "usar", label: "Usar este adaptador" },
+    ...(puedeInspeccionar ? [{ value: "inspeccionar", label: "Inspeccionar en solo lectura" }] : []),
+    { value: "usar", label: fila ? "Usar para diagnóstico físico" : "Usar este adaptador",
+      description: phy?.connectivity.criticality === "critical" ? "Restringido por la ruta principal" : undefined },
     ...(fila ? [{ value: "capacidades", label: "Ver capacidades completas" },
       { value: "restricciones", label: "Ver restricciones y motivos" }] :
       [{ value: "avisos", label: "Ver avisos del inventario" }]),
@@ -115,13 +120,17 @@ async function revisarAdaptador(interfaz, fila, perfil, usar) {
       id: "perfil/" + (fila?.phy.phyId ?? "mock"),
     });
     if (!accion || accion === "volver") return false;
-    if (accion === "usar") {
+    if (accion === "inspeccionar") {
+      const nombre = interfacesLectura.length === 1 ? interfacesLectura[0].ifname :
+        await interfaz.elegir("Interfaz para inspección",
+          interfacesLectura.map(({ ifname }) => ({ value: ifname, label: ifname })), undefined, { id: "inspeccionar/" + phy.phyId });
+      if (nombre) await inspeccionar(nombre);
+    } else if (accion === "usar") {
       try {
         if (!fila) {
           await usar("mock");
           return true;
         }
-        const { phy } = fila;
         const candidatos = phy.interfaces.filter(({ legacyAdapterId, ifindex }) => legacyAdapterId && ifindex);
         if (!candidatos.length) {
           await interfaz.mostrarDetalle("El radio no tiene una interfaz operativa identificable.", "Interfaz no disponible");
